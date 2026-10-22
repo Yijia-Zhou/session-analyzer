@@ -20,6 +20,10 @@ Tool result pairing is confined to the same ancestor path and exact call identit
 
 ## Mapping and boundaries / 映射与边界
 
+Assistant thinking, termination errors/aborts and usage are interpreted only for `message.role === 'assistant'`. The same fields on user messages remain unmodeled Protocol/Raw evidence, including residual Detail fields, without adding reasoning or issue counts or Main search hits. / 仅当 `message.role === 'assistant'` 时解释助手 thinking、终止错误／中止与 usage。用户消息中的同名字段保持未建模的 Protocol／Raw 依据，包括 Detail 残余字段，不增加推理或问题计数，也不进入 Main 搜索。
+
+Recency uses the last entry with a usable recorded timestamp in source order: within the selected branch for a Session, and within each artifact for project discovery. Malformed, missing-timestamp and invalid-timestamp tails are skipped; the header timestamp is the fallback only when no entry supplies one. Project recency is the maximum of these per-artifact values. No sibling branch is consulted to date a Session. / 更新时间按来源顺序取最后一个有效 entry 时间戳：Session 限于所选分支，项目发现限于每个工件。跳过无效 JSON、缺失或无效时间戳的尾部记录；仅当没有 entry 提供有效值时回退至 header。项目更新时间取各工件所得值的最大值；Session 不借用兄弟分支的时间。
+
 | Native evidence / 原生依据 | Reader meaning / 阅读含义 |
 | --- | --- |
 | User and assistant text / 用户与助手文本 | Main messages with recorded content / 按记录内容展示 Main 消息 |

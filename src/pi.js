@@ -80,7 +80,7 @@ async function discoverPiProjects({ sourceHome, signal, onDiagnostic }) {
       const project = projects.get(repoRoot) || { repoRoot, sessionCount: 0, updatedAt: '', bytes: 0, exists: false, source: 'pi-sessions' };
       project.sessionCount += document.invalidTree ? 1 : Math.max(document.leaves.length, 1);
       project.bytes += document.acceptedBytes;
-      const updatedAt = logical.iso(document.entries.at(-1)?.parsed?.timestamp || document.header.timestamp);
+      const updatedAt = logical.lastRecordedTimestamp(document.entries, document.header.timestamp);
       if (updatedAt > project.updatedAt) project.updatedAt = updatedAt;
       projects.set(repoRoot, project);
     } catch (error) { report(error, file, onDiagnostic, signal); }

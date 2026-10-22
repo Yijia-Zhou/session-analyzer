@@ -37,8 +37,8 @@ function residualFields(raw, event) {
   const remove = (...keys) => { for (const key of keys) delete rest[key]; };
   if (type === 'session') remove('version', 'cwd', 'parentSession');
   if (type === 'message' && rest.message && typeof rest.message === 'object') {
-    const { role, timestamp: messageTimestamp, model, provider, api, stopReason, errorMessage, usage,
-      durationMs, ...message } = rest.message;
+    const { role, timestamp: messageTimestamp, model, provider, api, durationMs, ...message } = rest.message;
+    if (role === 'assistant') for (const key of ['stopReason', 'errorMessage', 'usage']) delete message[key];
     // Main content and tool requests/results have their own sections. Unknown
     // blocks retain only that block; never repeat the whole message envelope.
     const unknownBlock = event.subtype.match(/^pi_content_.*_(\d+)$/);
@@ -88,7 +88,7 @@ async function buildPiEventDetail(index, session, eventId, layer = 'main', optio
     ['Branch tip', session.sourceDerivedId], ['Provider', facts.provider || raws[0]?.parsed?.message?.provider],
     ['Model', facts.model || raws[0]?.parsed?.message?.model],
     ['API', raws[0]?.parsed?.message?.api],
-    ['Status', event.status], ['Stop reason', raws[0]?.parsed?.message?.stopReason],
+    ['Status', event.status], ['Stop reason', raws[0]?.role === 'assistant' ? raws[0]?.parsed?.message?.stopReason : undefined],
     ['Tool call id', facts.callId], ['Pairing evidence', facts.pairing]];
   if (event.kind === 'command' || event.kind === 'other_tool_call') {
     if (facts.command) detail.timelineSections.push({ type: 'code', purpose: 'request', language: 'bash', code: facts.command });

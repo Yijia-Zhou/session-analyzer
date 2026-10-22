@@ -21,6 +21,15 @@ const preview = (value) => string(value).trim().slice(0, 240);
 // cannot alias another source identity. Ordinary UUID/entry ids stay readable.
 const identityPart = (value) => string(value).replace(/[^a-zA-Z0-9_-]/g, (character) => `%${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
 function iso(value) { const date = new Date(value); return value != null && !Number.isNaN(date.getTime()) ? date.toISOString() : ''; }
+function lastRecordedTimestamp(rows, fallback) {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const value = rows[i].parsed?.timestamp;
+    // Unsupported timestamp shapes are evidence, not dates to coerce.
+    const timestamp = typeof value === 'string' || typeof value === 'number' ? iso(value) : '';
+    if (timestamp) return timestamp;
+  }
+  return iso(fallback);
+}
 function blocks(content) { return Array.isArray(content) ? content : typeof content === 'string' ? [{ type: 'text', text: content }] : []; }
 function contentText(content) { return blocks(content).filter((b) => b?.type === 'text').map((b) => string(b.text)).join('\n'); }
 function piRawRef(raw) { return { file: raw.source.file, line: raw.source.line, rawId: raw.rawId,
@@ -111,7 +120,7 @@ function makeSession(document, sourceFile, leafId, selectedRows, invalidTree) {
     id: `pi:${identityPart(header.id)}:${identityPart(branchName)}`, sourceKind: SOURCE_KIND, sourceSessionId: header.id,
     sourceDerivedId: branchName, sourceClientVersion: '', projectAssociation: header.cwd, sourceFile,
     title: '', agentNickname: '', primarySessionMetaKind: '', derivedRunId: '',
-    startedAt: iso(header.timestamp), updatedAt: iso(selectedRows.at(-1)?.parsed?.timestamp || header.timestamp),
+    startedAt: iso(header.timestamp), updatedAt: lastRecordedTimestamp(selectedRows, header.timestamp),
     bytes: document.acceptedBytes, lineCount: document.lines.length, cwdSet: header.cwd ? [header.cwd] : [],
     counts: emptyCounts(), rawEventCount: 0, logicalEventCount: 0,
     parentSessionId: '', forkedFromSessionId: '', forkStorageMode: '', forkedAt: '', forkPointUuid: '',
@@ -154,7 +163,7 @@ function makeSession(document, sourceFile, leafId, selectedRows, invalidTree) {
       let projected = false;
       for (const [blockIndex, block] of blocks(message.content).entries()) {
         const suffix = `block:${blockIndex}`;
-        if (block?.type === 'text' || block?.type === 'thinking') {
+        if (block?.type === 'text' || (block?.type === 'thinking' && message.role === 'assistant')) {
           const text = safe(string(block.type === 'thinking' ? block.thinking : block.text));
           if (!text) continue;
           projected = true;
@@ -192,12 +201,15 @@ function makeSession(document, sourceFile, leafId, selectedRows, invalidTree) {
         }
       }
       if (!projected) session.logicalEvents.push(protocol(session, raw, 'pi_empty_message'));
-      if (message.stopReason === 'error' || message.stopReason === 'aborted') session.logicalEvents.push(eventFor(session, raw, 'termination', {
+      if (message.role === 'assistant' && (message.stopReason === 'error' || message.stopReason === 'aborted')) session.logicalEvents.push(eventFor(session, raw, 'termination', {
         kind: message.stopReason === 'aborted' ? 'abort' : 'error', status: 'failed', severity: 'error',
         preview: string(message.errorMessage) || message.stopReason, searchText: safe(string(message.errorMessage)),
         pi: { text: safe(string(message.errorMessage) || message.stopReason) },
       }));
-      if (message.usage) session.logicalEvents.push(protocol(session, raw, 'pi_usage', 'Recorded assistant usage', { pi: { usage: safe(message.usage) } }));
+      if (message.role === 'assistant' && message.usage) session.logicalEvents.push(protocol(session, raw, 'pi_usage', 'Recorded assistant usage', { pi: { usage: safe(message.usage) } }));
+      if (message.role === 'user' && ['stopReason', 'errorMessage', 'usage'].some((key) => Object.hasOwn(message, key))) {
+        session.logicalEvents.push(protocol(session, raw, 'pi_unmodeled_user_fields', 'Unmodeled user message fields'));
+      }
     } else if (entry.type === 'message' && message?.role === 'toolResult') {
       if (!consumedResults.has(row.line)) session.logicalEvents.push(protocol(session, raw, 'pi_unpaired_tool_result', 'Tool result without a unique ancestor call'));
     } else if (entry.type === 'message' && message?.role === 'bashExecution') {
@@ -247,4 +259,4 @@ function sessionsFromPiDocument(document, sourceFile, requestedLeafId) {
   });
 }
 
-module.exports = { SOURCE_KIND, contentText, emptyCounts, iso, piRawRef, search, sessionsFromPiDocument, sanitizePiValue: safe };
+module.exports = { SOURCE_KIND, contentText, emptyCounts, iso, lastRecordedTimestamp, piRawRef, search, sessionsFromPiDocument, sanitizePiValue: safe };
