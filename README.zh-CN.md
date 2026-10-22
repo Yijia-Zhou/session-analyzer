@@ -111,6 +111,18 @@ Claude Code 外置的 `tool-results/*` payload 暂不加载或搜索。受支持
 
 [在线启动与验收指南](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/usage/agent-quickstart.md)涵盖版本选择、配置及实际阅读核验。使用指南是在线文档，不承诺包含在 npm 包内。
 
+## 此 checkout 的原生 pi 会话支持
+
+原生 pi 支持是新增的源码 checkout 功能；上文已发布的 `session-analyzer@0.2.1` 命令**不包含**该功能。完成[源码配置与构建](docs/development.md)后运行：
+
+```sh
+node server.js --source pi --repo /path/to/project --pi-home /path/to/pi/agent
+```
+
+`--pi-home` 指包含 `sessions/` 的 agent 目录，不是 sessions 目录本身。默认使用已设置的 `PI_CODING_AGENT_DIR`，否则使用 `~/.pi/agent`。也可以在项目选择器选择 **pi** 来切换来源。
+
+适配器读取原生 session version **3**，已按 pi **1.4.0** 核验，不通过 pi 打开或迁移会话。每条根到叶分支作为独立可选 Session，标题显示叶节点 ID。共享历史在每条所属分支中出现，因此计数与搜索命中按分支而非文件计算。重建索引时，延长分支会改变其身份。不支持的版本跳过并报告诊断；无效树保留 Protocol／Raw 回退。详见 [pi 支持范围与限制](docs/design-docs/pi-native-sessions.md)。
+
 ## 开发与贡献
 
 源码 checkout 新增面向 agent 的只读 `history` 接口：在独立固定项目／来源实例中进行有界事件搜索、上下文窗口及可核验证据读取。`history open --ref <返回的引用>` 将选中事件交给绑定同一快照的查看页；加 `--no-browser` 可返回核对链接。这是开发中新增能力，不表示已发布 `0.2.1` 命令已支持。参见[历史检索指南](docs/usage/history-retrieval.md)和[随包检索 skill](skills/history-retrieval/SKILL.md)。

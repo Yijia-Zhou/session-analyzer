@@ -69,7 +69,7 @@ test('package metadata exposes the session-analyzer CLI', () => {
     assert.match(keyword, /^[a-z0-9]+(?:-[a-z0-9]+)*$/u);
   }
   assert.equal(new Set(pkg.keywords).size, pkg.keywords.length);
-  for (const source of ['codex', 'claude-code', 'deepseek-harness']) {
+  for (const source of ['codex', 'claude-code', 'deepseek-harness', 'pi']) {
     assert.ok(pkg.keywords.includes(source), `keywords should include ${source}`);
   }
   assert.equal(lock.name, pkg.name);
@@ -290,7 +290,7 @@ test('CLI parse errors print ordered stderr and help without starting the server
   assert.equal(result.stdout, `${require('../src/cli').formatHelp()}\n`);
   assert.equal(result.stderr, [
     'Error: Invalid value for --port: "0". Expected an integer between 1 and 65535.',
-    'Error: Invalid value for --source: "invalid-value". Expected one of: codex, claude-code, deepseek-harness.',
+    'Error: Invalid value for --source: "invalid-value". Expected one of: codex, claude-code, deepseek-harness, pi.',
     '',
   ].join('\n'));
 });
@@ -382,6 +382,10 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'src/codex-turn-lineage.js',
     'src/codex-configuration.js',
     'src/deepseek-harness.js',
+    'src/pi.js',
+    'src/pi-detail.js',
+    'src/pi-logical.js',
+    'src/pi-storage.js',
     'src/deepseek-harness-detail.js',
     'src/deepseek-harness-storage.js',
     'src/deepseek-harness-stream.js',

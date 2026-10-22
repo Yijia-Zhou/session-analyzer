@@ -212,11 +212,11 @@ function isPackageStatePayload(response) {
   const sourceKind = response?.json?.sourceKind;
   const sourcePresentationShape = sourceKind === 'codex'
     ? Array.isArray(response.json.codeModeRequests)
-    : (sourceKind === 'claude-code' || sourceKind === 'deepseek-harness')
+    : (sourceKind === 'claude-code' || sourceKind === 'deepseek-harness' || sourceKind === 'pi')
       && !Object.hasOwn(response.json, 'codeModeRequests');
   return response.statusCode === 200
     && response.json
-    && ['codex', 'claude-code', 'deepseek-harness'].includes(sourceKind)
+    && ['codex', 'claude-code', 'deepseek-harness', 'pi'].includes(sourceKind)
     && response.json.totals
     && Array.isArray(response.json.supportedLocales)
     && response.json.eventKinds
@@ -354,11 +354,25 @@ async function main() {
     const codexHome = path.join(smokeRoot, 'codex-home');
     const claudeHome = path.join(smokeRoot, 'claude-home');
     const dshHome = path.join(smokeRoot, 'dsh-sessions');
+    const piHome = path.join(smokeRoot, 'pi-agent');
     const claudeContainer = path.join(claudeHome, 'projects', '-package-smoke');
     const claudeSessionId = '11111111-1111-4111-8111-111111111111';
     await fsp.mkdir(projectDir, { recursive: true });
     await fsp.mkdir(path.join(codexHome, 'sessions'), { recursive: true });
     await fsp.mkdir(claudeContainer, { recursive: true });
+    const piSessionDir = path.join(piHome, 'sessions', '--package-smoke-project--');
+    await fsp.mkdir(piSessionDir, { recursive: true });
+    const piSessionId = '44444444-4444-4444-8444-444444444444';
+    const piText = 'Verify the installed pi adapter.';
+    const piUser = {
+      type: 'message', id: 'package-smoke-user', parentId: null,
+      timestamp: '2026-10-22T00:00:01.000Z',
+      message: { role: 'user', content: [{ type: 'text', text: piText }], timestamp: 1792627201000 },
+    };
+    await fsp.writeFile(path.join(piSessionDir, 'package-smoke.jsonl'), [
+      { type: 'session', version: 3, id: piSessionId, cwd: projectDir, timestamp: '2026-10-22T00:00:00.000Z' },
+      piUser,
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n', 'utf8');
     const dshSessionDir = path.join(dshHome, '-package-smoke-project-', 'session-package-smoke');
     await fsp.mkdir(dshSessionDir, { recursive: true });
     const codexSessionId = '22222222-2222-4222-8222-222222222222';
@@ -500,6 +514,7 @@ async function main() {
     if (!help.stdout.includes('--source <source>')) {
       throw new Error('Installed CLI help did not include transcript source selection');
     }
+    assert.ok(help.stdout.includes('--pi-home <path>'), 'Installed CLI must expose the pi agent directory option');
 
     const packagedServer = path.join(smokeRoot, 'node_modules', 'session-analyzer', 'server.js');
     const packageRoot = path.dirname(packagedServer);
@@ -573,10 +588,26 @@ async function main() {
     }
     await stopChild(child);
     child = null;
+    launched = await launchPackagedServer(packagedServer, smokeRoot, [
+      '--source', 'pi', '--repo', projectDir, '--pi-home', piHome,
+    ]);
+    child = launched.child;
+    baseUrl = `http://127.0.0.1:${launched.port}`;
+    const piState = await waitForPackageState(baseUrl);
+    await verifyPackageReading(baseUrl, piState.json, {
+      sourceKind: 'pi', repoRoot: projectDir, sourceHome: piHome,
+      sessions: [{ id: piSessionId, text: piText, record: piUser }],
+    });
+    html = await requestText(`${baseUrl}/`);
+    assert.ok(html.statusCode === 200 && html.body.includes('src="/assets/app.js"'),
+      'Installed pi root HTML must reference the generated browser bundle');
+    await stopChild(child);
+    child = null;
     for (const fixture of [
       { source: 'codex', rootOption: '--codex-home', home: codexHome, text: codexText, count: codexSessions.length },
       { source: 'claude-code', rootOption: '--claude-home', home: claudeHome, text: claudeRecords[1].message.content, count: 1 },
       { source: 'deepseek-harness', rootOption: '--dsh-home', home: dshHome, text: dshSessions[0].text, count: dshSessions.length },
+      { source: 'pi', rootOption: '--pi-home', home: piHome, text: piText, count: 1 },
     ]) {
       launched = await launchPackagedServer(packagedServer, smokeRoot, [
         'history', 'serve', '--source', fixture.source, '--repo', projectDir, fixture.rootOption, fixture.home,
@@ -668,7 +699,7 @@ async function main() {
       child = null;
       console.log(fixture.source + ': packaged history status -> search -> context -> read -> raw -> open passed.');
     }
-    console.log('Codex, Claude Code, and DeepSeek Harness UI and history package smoke passed.');
+    console.log('Codex, Claude Code, DeepSeek Harness, and pi UI and history package smoke passed.');
   } finally {
     await stopChild(child);
     if (tarballPath) {
