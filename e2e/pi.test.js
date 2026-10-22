@@ -45,17 +45,23 @@ for (const width of [1440, 390]) test(`pi branch search, detail and Raw reading 
   const page = await browser.newPage({ locale: 'en-US', viewport: { width, height: 900 } });
   page.setDefaultTimeout(10000);
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
-  const open = async (hit) => {
+  const open = async (hit, expectedText) => {
     await page.goto(`${url}/#ref=${encodeURIComponent(hit.ref)}`);
     await page.waitForFunction(({ sessionId, eventId }) =>
       document.querySelector('#sessionList .sessionItem.active')?.dataset.sessionId === sessionId
         && document.querySelector('#timeline article.selected')?.dataset.eventId === eventId,
     { sessionId: hit.sessionId, eventId: hit.eventId });
+    // Selection can precede asynchronous Detail rendering. Wait for this
+    // linked record's body, not merely its selected loading placeholder.
+    await page.waitForFunction(({ eventId, expectedText }) => {
+      const selected = document.querySelector('#timeline article.selected');
+      return selected?.dataset.eventId === eventId && selected.innerText.includes(expectedText);
+    }, { eventId: hit.eventId, expectedText });
   };
-  await open(alpha[0]);
+  await open(alpha[0], 'ALPHA_BRANCH_ONLY');
   assert.match(await page.locator('#timeline').innerText(), /ALPHA_BRANCH_ONLY/);
   assert.doesNotMatch(await page.locator('#timeline').innerText(), /BETA_BRANCH_ONLY|BETA_FINAL/);
-  await open(beta[0]);
+  await open(beta[0], 'BETA_TOOL_OUTPUT');
   assert.doesNotMatch(await page.locator('#timeline').innerText(), /ALPHA_BRANCH_ONLY/);
   if (width < 760) await page.getByRole('button', { name: 'Detail', exact: true }).click();
   await page.locator('#detail [data-detail-action="raw"]').click();

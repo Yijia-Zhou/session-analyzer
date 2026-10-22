@@ -44,6 +44,8 @@ Reading controls must remain visible and operable without document-level horizon
 
 ## Native pi history / 原生 pi 历史
 
+Unsupported structured timestamps and invalid parent IDs must not prevent indexing or fallback Detail reading. Raw preserves their recorded values; scalar parent context uses an explicit invalid-ID marker. Embedded media data URLs are omitted from previews and search snippets before truncation, while explicit physical Raw remains exact. / 不支持的结构化时间戳与无效 parent ID 不得阻止索引或回退详情读取。Raw 保留其记录值；标量父节点上下文使用明确的无效 ID 提示。嵌入式媒体 data URL 在截取前从预览与搜索摘要中排除，显式物理 Raw 保持原文。
+
 Assistant-only thinking, termination and usage fields on user messages stay in Protocol/Raw fallback; they do not create Main reasoning/error/abort events or assistant-usage facts. Session and project recency skip malformed or undated trailing records rather than reverting immediately to creation time; each Session uses only its own selected branch. / 用户消息中的助手专属 thinking、终止及 usage 字段保留为 Protocol／Raw 回退，不生成 Main 推理／错误／中止事件或助手用量事实。会话与项目更新时间跳过无效 JSON 或没有有效时间戳的尾部记录，不立即退回创建时间；各 Session 仅使用自身所选分支。
 
 The source checkout supports explicit `pi` selection for native session version 3, verified against pi 1.4.0. It reads local JSONL directly without migration or source-file writes. `--pi-home` selects the agent directory containing `sessions/`; discovery uses the saved header `cwd`. The published 0.2.1 command is not promised to contain this feature. / 源码 checkout 支持显式选择 `pi`，读取按 pi 1.4.0 核验的原生 session version 3。直接只读解析本地 JSONL，不迁移或写入来源文件。`--pi-home` 选择包含 `sessions/` 的 agent 目录；按 header 保存的 `cwd` 发现项目。不承诺已发布 0.2.1 命令包含此功能。

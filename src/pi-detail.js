@@ -16,8 +16,10 @@ function boundedDetail(detail) {
   }
   return detail;
 }
+const contextText = (value) => value === null || ['string', 'number', 'boolean'].includes(typeof value)
+  ? String(value) : '[unsupported value; see raw refs]';
 const kv = (entries, purpose = 'context', title = '') => ({ type: 'kv', purpose, ...(title ? { title } : {}),
-  entries: entries.filter(([, value]) => value !== undefined && value !== '').map(([key, value]) => ({ key, value: String(value) })) });
+  entries: entries.filter(([, value]) => value !== undefined && value !== '').map(([key, value]) => ({ key, value: contextText(value) })) });
 const notice = (text, purpose = 'context') => ({ type: 'notice', purpose, level: 'info', text });
 const content = (text, purpose = 'content') => ({ type: 'markdown', purpose, html: markdown.render(String(text || '').slice(0, 100_000)) });
 

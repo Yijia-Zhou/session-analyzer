@@ -16,16 +16,20 @@ const string = (value) => typeof value === 'string' ? value : '';
 // depth limit so extension data cannot exhaust the recursive sanitizer's stack.
 const safe = (value) => sanitizeLogicalDetailValue(value, { maxDepth: 32 });
 const search = (value) => projectSearchJson(value, searchPolicy);
-const preview = (value) => string(value).trim().slice(0, 240);
+const preview = (value) => redactEmbeddedDataUrls(string(value)).trim().slice(0, 240);
 // Encode UTF-16 code units so separators and even malformed surrogate strings
 // cannot alias another source identity. Ordinary UUID/entry ids stay readable.
 const identityPart = (value) => string(value).replace(/[^a-zA-Z0-9_-]/g, (character) => `%${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
-function iso(value) { const date = new Date(value); return value != null && !Number.isNaN(date.getTime()) ? date.toISOString() : ''; }
+function iso(value) {
+  // Date coercion can recurse through untrusted arrays or invoke malformed
+  // conversion properties. Only native scalar timestamp forms are supported.
+  if (typeof value !== 'string' && typeof value !== 'number') return '';
+  const date = new Date(value);
+  return !Number.isNaN(date.getTime()) ? date.toISOString() : '';
+}
 function lastRecordedTimestamp(rows, fallback) {
   for (let i = rows.length - 1; i >= 0; i--) {
-    const value = rows[i].parsed?.timestamp;
-    // Unsupported timestamp shapes are evidence, not dates to coerce.
-    const timestamp = typeof value === 'string' || typeof value === 'number' ? iso(value) : '';
+    const timestamp = iso(rows[i].parsed?.timestamp);
     if (timestamp) return timestamp;
   }
   return iso(fallback);
@@ -50,7 +54,11 @@ function makeRaw(row, session) {
     role: string(message.role), turnId: '', callId: string(message.toolCallId), toolName: string(message.toolName),
     preview: preview(contentText(message.content) || string(record.summary) || text),
     messageText: safe(contentText(message.content)), searchText: text, parsed: safe(row.parsed),
-    parseError: row.parseError, entryId: string(record.id), parentId: record.parentId ?? null,
+    parseError: row.parseError, entryId: string(record.id),
+    // Invalid parent values remain in parsed/physical Raw, never in a scalar
+    // context field that Detail will coerce to a string.
+    parentId: typeof record.parentId === 'string' ? record.parentId
+      : record.parentId == null ? null : '[invalid parent id; see raw refs]',
     touchedFiles: [],
   };
 }
