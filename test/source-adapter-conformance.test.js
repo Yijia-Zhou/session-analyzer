@@ -57,6 +57,36 @@ async function buildClaudeFixtureIndex(t) {
   return getSourceAdapter('claude-code').buildIndex({ repoRoot, sourceHome: home });
 }
 
+async function buildPiFixtureIndex(t) {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-conformance-pi-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const repoRoot = path.join(home, 'repo');
+  const directory = path.join(home, 'sessions', '--conformance-fixture--');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(directory, { recursive: true });
+  const timestamp = '2026-10-22T00:00:00.000Z';
+  const assistant = (content, stopReason) => ({
+    role: 'assistant', content, api: 'openai-responses', provider: 'synthetic', model: 'fixture',
+    usage: { input: 5, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 7,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason, timestamp: 1792627200000,
+  });
+  const records = [
+    { type: 'session', version: 3, id: 'pi-conformance', cwd: repoRoot, timestamp },
+    { type: 'message', id: 'user', parentId: null, timestamp,
+      message: { role: 'user', content: [{ type: 'text', text: 'PI_USER_PRIMARY_SENTINEL' }], timestamp: 1792627200000 } },
+    { type: 'message', id: 'call', parentId: 'user', timestamp,
+      message: assistant([{ type: 'toolCall', id: 'bash-call', name: 'bash', arguments: { command: 'printf pi-conformance', timeout: 15 } }], 'toolUse') },
+    { type: 'message', id: 'result', parentId: 'call', timestamp,
+      message: { role: 'toolResult', toolCallId: 'bash-call', toolName: 'bash',
+        content: [{ type: 'text', text: 'pi-conformance' }], isError: false, timestamp: 1792627200000 } },
+    { type: 'message', id: 'answer', parentId: 'result', timestamp,
+      message: assistant([{ type: 'text', text: 'PI_ASSISTANT_PRIMARY_SENTINEL' }], 'stop') },
+  ];
+  await fsp.writeFile(path.join(directory, 'session.jsonl'), records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+  return getSourceAdapter('pi').buildIndex({ repoRoot, sourceHome: home });
+}
+
 async function buildCodeModeFixtureIndex(t) {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-conformance-code-mode-'));
   t.after(() => fsp.rm(home, { recursive: true, force: true }));
@@ -331,6 +361,11 @@ async function assertResponsibilityFixture(fixture) {
     }
     materializedFixture = {
       ...fixture,
+      // Scan materialized events while preserving the accepted index that owns
+      // each descriptor and dependency snapshot during lazy detail reads.
+      buildDetail: (owner) => buildEventDetailForSession(
+        fixture.index, owner.session, owner.event.id, owner.event.layer,
+      ),
       index: {
         ...fixture.index,
         sessions,
@@ -343,8 +378,26 @@ async function assertResponsibilityFixture(fixture) {
 }
 
 test('all registered adapters satisfy one source-neutral detail and Raw readback suite', async (t) => {
-  assert.deepEqual(supportedSourceKinds(), ['codex', 'claude-code', 'deepseek-harness']);
+  assert.deepEqual(supportedSourceKinds(), ['codex', 'claude-code', 'deepseek-harness', 'pi']);
   const fixtures = [
+    {
+      kind: 'pi',
+      index: await buildPiFixtureIndex(t),
+      expectedPurposes: ['content', 'request', 'result', 'context'],
+      expectedArchetypes: {
+        'readable-user-message': {
+          matchOwner: ({ event }) => event.preview === 'PI_USER_PRIMARY_SENTINEL',
+        },
+        'readable-assistant-message': {
+          matchOwner: ({ event }) => event.preview === 'PI_ASSISTANT_PRIMARY_SENTINEL',
+        },
+        'completed-command': {
+          matchOwner: ({ event }) => event.kind === 'command' && event.preview === 'printf pi-conformance',
+          fullRequestEvidence: (section) => section?.value?.timeout === 15
+            || (section?.type === 'code' && /"timeout"\s*:\s*15/.test(section.code || '')),
+        },
+      },
+    },
     {
       kind: 'codex',
       index: await getSourceAdapter('codex').buildIndex({
@@ -438,11 +491,11 @@ test('all registered adapters satisfy one source-neutral detail and Raw readback
   for (const fixture of fixtures) {
     await t.test(fixture.kind, () => assertAdapterIndexConforms(
       fixture.index,
-      fixture.kind === 'codex'
+      fixture.expectedPurposes || (fixture.kind === 'codex'
         ? ['content', 'request', 'result', 'context', 'traceability', 'fallback']
         : (fixture.kind === 'deepseek-harness'
           ? ['content', 'request', 'result', 'context', 'traceability']
-          : ['content', 'request', 'result', 'context']),
+          : ['content', 'request', 'result', 'context'])),
     ));
     await t.test(`${fixture.kind} conditional responsibility scenarios`, () => (
       assertResponsibilityFixture(fixture)

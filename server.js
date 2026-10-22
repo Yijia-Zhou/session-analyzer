@@ -1279,6 +1279,7 @@ async function main() {
     codexHome: opts.codexHome,
     claudeHome: opts.claudeHome,
     dshHome: opts.dshHome,
+    piHome: opts.piHome,
     repo: opts.repo,
     logDir: opts.logDir,
     onProjectJobSettled(job) {
