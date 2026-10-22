@@ -48,6 +48,16 @@ async function corpus(t) {
   return { service, options, sourceFile, home, repo };
 }
 
+async function multilineBudgetCorpus(t) {
+  const fixture = await corpus(t);
+  const text = Array.from({ length: 7 }, (_, n) => (n === 3 ? 'BUDGET_MIDDLE ' : '') + '检'.repeat(360)).join('\n');
+  await fs.appendFile(fixture.sourceFile, JSON.stringify({ timestamp: '2026-09-03T00:00:00Z', type: 'response_item',
+    payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } }) + '\n');
+  const service = await createHistoryService(fixture.options);
+  t.after(() => service.close());
+  return { ...fixture, service };
+}
+
 test('real spilled index preserves search, coordinates, grouped pages and retrieval-artifact policies', async (t) => {
   const { options, sourceFile, repo } = await corpus(t);
   const giant = 'x'.repeat(262140) + 'CROSS_BLOCK' + ' \t\n'.repeat(120000) + 'PHRASE\n'
@@ -506,10 +516,13 @@ test('compact evidence remains durable and legacy evidence remains readable', as
   const session = index.sessionsById.get(hit.sessionId);
   const old = 'er1.' + Buffer.from(JSON.stringify({
     p: hash([index.repoRoot, 'codex', path.resolve(options.codexHome)]), s: session.id,
-    v: hash([session.materializationDescriptor.sourceSnapshotId, session.queryProjectionDigest]), l: 'main', e: hit.eventId,
+    v: hash([session.materializationDescriptor.sourceSnapshotId, session.queryProjectionDigest]), l: 'main', e: hit.eventId, h: hit.excerpt.hitOffset,
   })).toString('base64url');
   const read = await service.execute('read', { refs: [old], parts: ['message'] });
   assert.match(read.items[0].parts[0].text, /Earlier independent/);
+  const aroundHit = { before: 2, after: 4 };
+  assert.deepEqual((await service.execute('read', { refs: [old], aroundHit })).items[0].parts,
+    (await service.execute('read', { refs: [hit.ref], aroundHit })).items[0].parts);
   const restarted = await createHistoryService(options);
   t.after(() => restarted.close());
   assert.equal((await restarted.execute('read', { refs: [hit.ref] })).items[0].ref, hit.ref);
@@ -732,6 +745,9 @@ test('persistent refs survive restart while contexts and cursors expire; source/
   const restarted = await createHistoryService(options);
   t.after(() => restarted.close());
   assert.equal((await restarted.execute('read', { refs: [ref] })).items[0].ref, ref);
+  const focusedInput = { refs: [ref], aroundHit: { before: 20, after: 40 } };
+  const focused = await service.execute('read', focusedInput);
+  assert.deepEqual((await restarted.execute('read', focusedInput)).items[0].parts, focused.items[0].parts);
   await assert.rejects(restarted.execute('read', { refs: [ref], contextRef: found.contextRef }), { code: 'CONTEXT_EXPIRED' });
   await assert.rejects(restarted.execute('search', { queries: ['queryNeedle'], cursor: found.nextCursor }), { code: 'INVALID_CURSOR' });
   const otherRepo = path.join(home, 'other-repo');
@@ -742,14 +758,18 @@ test('persistent refs survive restart while contexts and cursors expire; source/
   await fs.appendFile(sourceFile, JSON.stringify({ timestamp: '2026-09-02T00:00:00.000Z', type: 'event_msg', payload: { type: 'agent_message', message: 'New source content.' } }) + '\n');
   const preserved = await service.execute('read', { refs: [ref], parts: ['message'] });
   assert.match(preserved.items[0].parts[0].text, /Preserve exact counts/);
+  assert.deepEqual((await service.execute('read', focusedInput)).items[0].parts, focused.items[0].parts);
   const changed = await createHistoryService(options);
   t.after(() => changed.close());
   await assert.rejects(changed.execute('read', { refs: [ref] }), { code: 'STALE_REFERENCE' });
+  await assert.rejects(changed.execute('read', focusedInput), { code: 'STALE_REFERENCE' });
   const source = await fs.readFile(sourceFile, 'utf8');
   await fs.writeFile(sourceFile, source.replace('Preserve exact counts', 'Preserve wrong counts'));
   await assert.rejects(service.execute('read', { refs: [ref] }), { code: 'STALE_REFERENCE' });
+  await assert.rejects(service.execute('read', focusedInput), { code: 'STALE_REFERENCE' });
   await fs.unlink(sourceFile);
   await assert.rejects(restarted.execute('read', { refs: [ref] }), { code: 'STALE_REFERENCE' });
+  await assert.rejects(restarted.execute('read', focusedInput), { code: 'STALE_REFERENCE' });
 });
 
 test('UTF-8 output budgets are enforced for multibyte text and resume without losing candidates', async (t) => {
@@ -769,6 +789,270 @@ test('UTF-8 output budgets are enforced for multibyte text and resume without lo
   assert.equal(allRefs.length, search.scan.matchedEvents);
   const long = (await service.execute('search', { queries: ['LONG_UNICODE'] })).items[0];
   await assert.rejects(service.execute('read', { refs: [long.ref], parts: ['projection'], length: 20000, maxBytes: 4096 }), { code: 'OUTPUT_BUDGET_TOO_SMALL' });
+});
+
+test('context length rejection explains nearby versus session-start recovery in either presentation', async (t) => {
+  const { service } = await corpus(t);
+  const hit = (await service.execute('search', { query: 'NEEDLE MATCH' })).items[0];
+  for (const presentation of ['full', 'compact']) {
+    await assert.rejects(service.execute('context', { refs: [hit.ref], length: 30, presentation }), (error) => {
+      assert.equal(error.code, 'INVALID_ARGUMENT');
+      assert.match(error.message, /Remove length.*nearby outline/u);
+      assert.match(error.message, /view=full.*session beginning/u);
+      assert.match(error.message, /presentation=full.*response shape/u);
+      return true;
+    });
+    const nearby = await service.execute('context', { refs: [hit.ref], presentation });
+    assert.notEqual(nearby.items[0].boundaries.mode, 'session_start');
+    const full = await service.execute('context', { refs: [hit.ref], view: 'full', length: 30, limit: 2, presentation });
+    assert.equal(full.items[0].boundaries.mode, 'session_start');
+    assert.equal(full.items[0].boundaries.anchor, 'outside_page');
+    const first = (full.events || full.items[0].events)[0];
+    assert.equal(first.timelineIndex, 0);
+    assert.ok(first.excerpt.text.length <= 30);
+  }
+});
+
+test('read budget repairs distinguish ordinary text, aroundHit, Raw text and source locators', async (t) => {
+  const { service, sourceFile } = await corpus(t);
+  const hit = (await service.execute('search', { query: 'LONG_UNICODE' })).items[0];
+  const cases = [
+    [{ refs: [hit.ref], parts: ['projection'], length: 20000 },
+      { refs: [hit.ref], parts: ['projection'], length: 80 }, /reduce length/u],
+    [{ refs: [hit.ref], aroundHit: { before: 1000, after: 15000 } },
+      { refs: [hit.ref], aroundHit: { before: 0, after: 79 } }, /reduce aroundHit.before\/after/u],
+  ];
+  const rawRef = (await service.execute('read', { refs: [hit.ref], parts: ['raw'] })).items[0].rawRefs[0];
+  cases.push([{ refs: [rawRef], parts: ['raw'], length: 20000 },
+    { refs: [rawRef], parts: ['raw'], length: 80 }, /length when reading Raw-record text/u]);
+  const rows = (await fs.readFile(sourceFile, 'utf8')).trim().split('\n');
+  const source = { sourcePath: sourceFile, locator: { type: 'jsonl-line', line: rows.length } };
+  cases.push([{ source, length: 20000 }, { source, length: 80 }, /length for selected text.*limit.*logicalRefs/u]);
+  for (const [input, repair, hint] of cases) {
+    await assert.rejects(service.execute('read', { ...input, maxBytes: 4096 }), (error) => {
+      assert.equal(error.code, 'OUTPUT_BUDGET_TOO_SMALL');
+      assert.match(error.message, /No item fits.*UTF-8 JSON bytes/u);
+      assert.match(error.message, hint);
+      assert.match(error.message, /omit cursor/u);
+      if (input.aroundHit) assert.doesNotMatch(error.message, /reduce length|select fewer parts/u);
+      return true;
+    });
+    const result = await service.execute('read', { ...repair, maxBytes: 4096 });
+    assert.equal(result.items.length, 1);
+    assert.ok(result.items[0].parts[0].text.length <= 80);
+    assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 4096);
+  }
+});
+
+test('context budget repairs respect the event-neighborhood and full-view limits', async (t) => {
+  const { service } = await multilineBudgetCorpus(t);
+  const hit = (await service.execute('search', { query: 'BUDGET_MIDDLE' })).items[0];
+  await assert.rejects(service.execute('context', { refs: [hit.ref], maxBytes: 4096 }), (error) => {
+    assert.equal(error.code, 'OUTPUT_BUDGET_TOO_SMALL');
+    assert.match(error.message, /for a range ref reduce limit; for an event ref use read/u);
+    assert.doesNotMatch(error.message, /reduce length/u);
+    return true;
+  });
+  assert.equal((await service.execute('read', { refs: [hit.ref], length: 80, maxBytes: 4096 })).items.length, 1);
+  const overview = await service.execute('context', { refs: [hit.ref], view: 'full', length: 1, limit: 100, maxBytes: 100000 });
+  const range = hit.ref.split('.').slice(0, 5).concat(['f', '0', String(overview.items[0].events.at(-1).timelineIndex)]).join('.');
+  await assert.rejects(service.execute('context', { refs: [range], view: 'full', length: 20000, limit: 100, maxBytes: 4096 }), (error) => {
+    assert.equal(error.code, 'OUTPUT_BUDGET_TOO_SMALL');
+    assert.match(error.message, /reduce length for event text and limit for events per window/u);
+    return true;
+  });
+  const retry = await service.execute('context', { refs: [range], view: 'full', length: 30, limit: 1, maxBytes: 4096 });
+  assert.equal(retry.items[0].events.length, 1);
+  assert.ok(retry.items[0].next);
+});
+
+test('duplicate Raw selectors recover a large linked-record item by reducing limit', async (t) => {
+  const { options, sourceFile } = await corpus(t);
+  const rows = [
+    { type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'many-raw',
+      arguments: JSON.stringify({ cmd: 'RAW_LINK_BUDGET' }) } },
+    ...Array.from({ length: 60 }, (_, n) => ({ type: 'response_item',
+      payload: { type: 'function_call_output', call_id: 'many-raw', output: `Synthetic fragment ${n}` } })),
+  ];
+  await fs.appendFile(sourceFile, rows.map((row) => JSON.stringify({ timestamp: '2026-09-03T00:00:00Z', ...row })).join('\n') + '\n');
+  const service = await createHistoryService(options);
+  t.after(() => service.close());
+  const ref = (await service.execute('search', { query: 'RAW_LINK_BUDGET' })).items[0].ref;
+  const input = { refs: [ref], parts: ['raw', 'raw'], maxBytes: 4096 };
+  await assert.rejects(service.execute('read', { ...input, limit: 100 }), (error) => {
+    assert.equal(error.code, 'OUTPUT_BUDGET_TOO_SMALL');
+    assert.match(error.message, /reduce limit for Raw-reference links/u);
+    assert.doesNotMatch(error.message, /select fewer parts|reduce length/u);
+    return true;
+  });
+  const first = await service.execute('read', { ...input, limit: 1 });
+  assert.equal(first.items[0].parts.length, 1);
+  assert.equal(first.items[0].rawRefsNextOffset, 1);
+  const next = await service.execute('read', { ...input, limit: 1, offset: first.items[0].rawRefsNextOffset });
+  assert.notEqual(next.items[0].rawRefs[0], first.items[0].rawRefs[0]);
+  assert.equal(next.items[0].rawRefsNextOffset, 2);
+});
+
+test('search budget repairs name flat versus grouped budgets without unsupported length', async (t) => {
+  const { service } = await multilineBudgetCorpus(t);
+  for (const grouped of [false, true]) {
+    const query = { query: 'BUDGET_MIDDLE', maxBytes: 4096 };
+    const input = grouped ? { groups: [{ id: 'long', ...query }] } : query;
+    await assert.rejects(service.execute('search', input), (error) => {
+      assert.equal(error.code, 'OUTPUT_BUDGET_TOO_SMALL');
+      assert.match(error.message, grouped ? /Increase this group's maxBytes \(group long\)/u : /Increase maxBytes/u);
+      assert.doesNotMatch(error.message, /reduce length/u);
+      return true;
+    });
+    const repaired = grouped ? { groups: [{ id: 'long', ...query, maxBytes: 12000 }] } : { ...query, maxBytes: 12000 };
+    const result = await service.execute('search', repaired);
+    assert.equal((grouped ? result.groups[0] : result).items.length, 1);
+  }
+});
+
+test('metadata-only budget errors do not suggest reducing text and compact reuse repairs them', async (t) => {
+  const { options, sourceFile, home } = await corpus(t);
+  // Project identity is metadata; the repository path need not exist for history retrieval.
+  const repo = path.join(home, ...Array(600).fill('virtual'));
+  const rows = (await fs.readFile(sourceFile, 'utf8')).trim().split('\n').map(JSON.parse);
+  rows[0].payload.cwd = repo;
+  await fs.writeFile(sourceFile, rows.map(JSON.stringify).join('\n\n') + '\n');
+  const service = await createHistoryService({ ...options, repo });
+  t.after(() => service.close());
+  const status = await service.execute('status');
+  const hit = (await service.execute('search', { query: 'Earlier independent' })).items[0];
+  for (const [operation, input] of [['status', {}], ['search', { query: 'absent' }],
+    ['search', { query: 'Earlier independent' }], ['read', { refs: [hit.ref], length: 1 }],
+    ['read', { source: { sourcePath: sourceFile, locator: { type: 'jsonl-line', line: 2 } }, length: 1 }]]) {
+    await assert.rejects(service.execute(operation, { ...input, maxBytes: 4096 }), (error) => {
+      assert.equal(error.code, 'OUTPUT_BUDGET_TOO_SMALL');
+      assert.match(error.message, /metadata alone exceeds maxBytes/u);
+      assert.doesNotMatch(error.message, /reduce length|aroundHit|reduce limit/u);
+      return true;
+    });
+    const retry = await service.execute(operation, { ...input, maxBytes: 12000 });
+    assert.ok(retry.coverage);
+    if (operation !== 'status') {
+      const compact = await service.execute(operation, { ...input, maxBytes: 4096, presentation: 'compact', contextRef: status.contextRef });
+      assert.equal(compact.coverageRef, status.contextRef);
+      assert.ok(Buffer.byteLength(JSON.stringify(compact)) <= 4096);
+    }
+  }
+  const groups = Array.from({ length: 8 }, (_, n) => ({ id: 'g'.repeat(60) + n, query: 'absent' }));
+  await assert.rejects(service.execute('search', { groups, maxBytes: 4096 }), (error) => {
+    assert.equal(error.code, 'OUTPUT_BUDGET_TOO_SMALL');
+    assert.match(error.message, /Group metadata exceeds top-level maxBytes/u);
+    assert.doesNotMatch(error.message, /length/u);
+    return true;
+  });
+  const groupedRetry = await service.execute('search', { groups: [groups[0]], maxBytes: 4096, presentation: 'compact', contextRef: status.contextRef });
+  assert.equal(groupedRetry.groups[0].state, 'complete');
+  assert.equal(groupedRetry.groups[0].scan.matchedEvents, 0);
+});
+
+test('around-hit reads preserve middle/tail UTF-16 positions and exact adjacent ranges', async (t) => {
+  const { options, sourceFile } = await corpus(t);
+  const texts = [
+    'prefix 验证😀 '.repeat(900) + 'İSTANBUL_MIDDLE' + ' suffix😀'.repeat(700),
+    'tail prefix😀'.repeat(900) + 'TAIL_TARGET',
+  ];
+  await fs.appendFile(sourceFile, texts.map((text) => JSON.stringify({ timestamp: '2026-09-03T00:00:00Z',
+    type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } })).join('\n') + '\n');
+  const service = await createHistoryService(options);
+  t.after(() => service.close());
+  const hits = (await service.execute('search', { queries: ['i\u0307stanbul_middle', 'TAIL_TARGET'] })).items;
+  assert.equal(hits.length, 2);
+  const aroundHit = { before: 50, after: 60 };
+  const batch = await service.execute('read', { refs: hits.map((hit) => hit.ref), aroundHit });
+  assert.notEqual(batch.items[0].parts[0].offset, batch.items[1].parts[0].offset);
+  for (let i = 0; i < hits.length; i += 1) {
+    const hit = hits[i];
+    const full = (await service.execute('read', { refs: [hit.ref], parts: ['projection'], length: 100000, maxBytes: 100000 })).items[0].parts[0].text;
+    const part = batch.items[i].parts[0];
+    assert.equal(part.representation, 'search_projection');
+    assert.equal(part.hitOffset, hit.excerpt.hitOffset);
+    assert.ok(part.hitOffset > 10000);
+    assert.equal(part.offset, part.hitOffset - 50);
+    assert.equal(part.endOffset, Math.min(full.length, part.hitOffset + 61));
+    assert.equal(part.text, full.slice(part.offset, part.endOffset));
+    assert.equal(part.totalLength, full.length);
+    assert.equal(part.nextOffset, part.endOffset < full.length ? part.endOffset : null);
+    for (const [direction, range] of [['previous', part.previous], ['next', part.next]]) {
+      if (!range) { assert.equal(direction, 'next'); assert.equal(part.endOffset, full.length); continue; }
+      const continuation = (await service.execute('read', { refs: [hit.ref], parts: ['projection'], ...range })).items[0].parts[0];
+      assert.equal(continuation.text, full.slice(range.offset, range.offset + range.length));
+      if (direction === 'previous') assert.equal(range.offset + range.length, part.offset);
+      else assert.equal(range.offset, part.endOffset);
+    }
+    const compact = await service.execute('read', { refs: [hit.ref], aroundHit, presentation: 'compact', contextRef: batch.contextRef });
+    assert.equal(compact.items[0].evidenceRef, hit.ref);
+    assert.deepEqual(compact.items[0].parts[0], part);
+    const fromHandle = await service.execute('read', { refs: [compact.items[0].ref], contextRef: compact.contextRef, aroundHit });
+    assert.deepEqual(fromHandle.items[0].parts[0], part);
+  }
+  const zero = (await service.execute('search', { query: 'LONG_UNICODE' })).items[0];
+  const part = (await service.execute('read', { refs: [zero.ref], aroundHit: { before: 50, after: 0 } })).items[0].parts[0];
+  assert.equal(part.hitOffset, 0);
+  assert.equal(part.offset, 0);
+  assert.equal(part.endOffset, 1);
+  assert.equal(part.text, 'L');
+  assert.equal(part.previous, null);
+  assert.deepEqual(part.next, { offset: 1, length: 51 });
+});
+
+test('around-hit options never infer offsets or cross representation coordinates', async (t) => {
+  const { service } = await corpus(t);
+  const hit = (await service.execute('search', { query: 'NEEDLE MATCH' })).items[0];
+  const aroundHit = { before: 3, after: 20 };
+  for (const invalid of [null, false, [], {}, { before: 1 }, { before: 0, after: -1 },
+    { before: 0.5, after: 0 }, { before: 0, after: Number.MAX_SAFE_INTEGER },
+    { before: 50000, after: 50000 }, { before: 0, after: 0, offset: 0 }]) {
+    await assert.rejects(service.execute('read', { refs: [hit.ref], aroundHit: invalid }), { code: 'INVALID_ARGUMENT' });
+  }
+  for (const extra of [{ offset: 0 }, { length: 10 }, { textFormat: 'text' },
+    { parts: ['message'] }, { parts: ['raw'] }, { parts: ['projection', 'result'] }, { parts: [] },
+    { source: { sourcePath: 'unused', locator: { type: 'jsonl-line', line: 1 } } }]) {
+    await assert.rejects(service.execute('read', { refs: [hit.ref], aroundHit, ...extra }), { code: 'INVALID_ARGUMENT' });
+  }
+  await assert.rejects(service.execute('context', { refs: [hit.ref], aroundHit }), { code: 'INVALID_ARGUMENT' });
+  const noHit = hit.ref.split('.').slice(0, 7).join('.');
+  await assert.rejects(service.execute('read', { refs: [noHit], aroundHit }), { code: 'HIT_OFFSET_UNAVAILABLE' });
+  assert.ok((await service.execute('read', { refs: [noHit] })).items.length);
+  const outside = noHit + '.99999999';
+  await assert.rejects(service.execute('read', { refs: [outside], aroundHit }), { code: 'INVALID_REFERENCE' });
+  const range = (await service.execute('context', { refs: [hit.ref] })).items[0].previous;
+  assert.ok(range);
+  await assert.rejects(service.execute('read', { refs: [range], aroundHit }), { code: 'INVALID_REFERENCE' });
+});
+
+test('around-hit item cursors bind windows and preserve selected-page and byte-budget behavior', async (t) => {
+  const { service } = await corpus(t);
+  const hit = (await service.execute('search', { query: 'LONG_UNICODE' })).items[0];
+  const aroundHit = { before: 100, after: 200 };
+  const refs = [hit.ref, hit.ref];
+  const first = await service.execute('read', { refs, aroundHit, limit: 1, parts: ['projection', 'projection'] });
+  assert.equal(first.hasMore, true);
+  const next = await service.execute('read', { refs, aroundHit, limit: 2, maxBytes: 10000, cursor: first.nextCursor });
+  assert.deepEqual(next.items[0].parts, first.items[0].parts);
+  assert.equal(next.hasMore, false);
+  for (const input of [{ parts: ['projection'] }, { aroundHit: { before: 99, after: 200 } }]) {
+    await assert.rejects(service.execute('read', { refs, ...input, cursor: first.nextCursor }), { code: 'INVALID_CURSOR' });
+  }
+  const selectedRefs = [hit.ref, hit.ref.split('.').slice(0, 7).join('.')];
+  const selected = await service.execute('read', { refs: selectedRefs, aroundHit, limit: 1 });
+  assert.equal(selected.items.length, 1);
+  await assert.rejects(service.execute('read', { refs: selectedRefs, aroundHit, limit: 1, cursor: selected.nextCursor }), { code: 'HIT_OFFSET_UNAVAILABLE' });
+  const manyRefs = Array(20).fill(hit.ref);
+  let cursor;
+  let count = 0;
+  do {
+    const page = await service.execute('read', { refs: manyRefs, aroundHit, limit: 20, maxBytes: 4096, cursor });
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 4096);
+    count += page.items.length;
+    cursor = page.nextCursor;
+  } while (cursor);
+  assert.equal(count, manyRefs.length);
+  await assert.rejects(service.execute('read', { refs: [hit.ref], aroundHit: { before: 0, after: 20000 }, maxBytes: 4096 }), { code: 'OUTPUT_BUDGET_TOO_SMALL' });
 });
 
 test('existing Codex, Claude Code and DeepSeek sources support history search/context/read', async (t) => {
@@ -792,5 +1076,25 @@ test('existing Codex, Claude Code and DeepSeek sources support history search/co
     const read = await service.execute('read', { refs: [found.items[0].ref], parts: ['projection', 'raw'] });
     assert.equal(read.items[0].parts[0].available, true);
     assert.ok(read.items[0].rawRefs.length);
+    for (const layer of ['main', 'protocol', 'raw']) {
+      const candidates = await service.execute('search', { layer, limit: 1, retrievalArtifacts: 'include' });
+      // Some sources have no Protocol events; require their admitted layer's
+      // query projection rather than inventing an event or a hit position.
+      if (!candidates.items.length) { assert.equal(layer, 'protocol', options.source); continue; }
+      const text = (await service.execute('read', { refs: [candidates.items[0].ref], parts: ['projection'], length: 100000, maxBytes: 1048576 })).items[0].parts[0].text;
+      const queryStart = Math.min(8, text.trim().length - 1);
+      const query = text.trim().slice(queryStart, queryStart + 32);
+      assert.ok(query, `${options.source}/${layer}`);
+      const queried = await service.execute('search', { query, layer, limit: 1, retrievalArtifacts: 'include' });
+      assert.equal(queried.items.length, 1, `${options.source}/${layer}`);
+      const hit = queried.items[0];
+      const aroundHit = { before: 5, after: 40 };
+      const focused = (await service.execute('read', { refs: [hit.ref], aroundHit })).items[0].parts[0];
+      const absolute = (await service.execute('read', { refs: [hit.ref], parts: ['projection'],
+        offset: focused.offset, length: focused.endOffset - focused.offset })).items[0].parts[0];
+      assert.equal(focused.hitOffset, hit.excerpt.hitOffset, `${options.source}/${layer}`);
+      assert.equal(focused.text, absolute.text, `${options.source}/${layer}`);
+      assert.ok(focused.hitOffset >= focused.offset && focused.hitOffset < focused.endOffset);
+    }
   }
 });

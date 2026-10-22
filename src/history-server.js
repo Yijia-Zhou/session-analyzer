@@ -17,7 +17,14 @@ function historyError(code, message, statusCode = 400) {
 function validateHistoryInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw historyError('INVALID_INPUT', 'Input must be a JSON object.');
   for (const [key, value] of Object.entries(input)) {
-    if (key === 'groups') {
+    if (key === 'aroundHit') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)
+          || Object.keys(value).some((field) => !['before', 'after'].includes(field))
+          || ![value.before, value.after].every((n) => Number.isSafeInteger(n) && n >= 0)
+          || value.before + value.after + 1 > 100000) {
+        throw historyError('INVALID_INPUT', 'aroundHit requires non-negative before/after counts totaling at most 99999 UTF-16 code units.');
+      }
+    } else if (key === 'groups') {
       validateGroups(value);
       for (const { id, ...query } of value) validateHistoryInput(query);
     } else if (key === 'source') {

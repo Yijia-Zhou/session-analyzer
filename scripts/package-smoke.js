@@ -21,6 +21,31 @@ const npmCommand = process.platform === 'win32'
   ? { command: process.env.ComSpec || 'cmd.exe', prefixArgs: ['/d', '/s', '/c', 'npm'] }
   : { command: 'npm', prefixArgs: [] };
 
+function verifyPackagedHistorySkill(packageRoot) {
+  const skillRoot = path.join(packageRoot, 'skills', 'history-retrieval');
+  const pending = [path.join(skillRoot, 'SKILL.md')];
+  const files = new Set();
+  while (pending.length) {
+    const file = pending.pop();
+    const relative = path.relative(packageRoot, file).split(path.sep).join('/');
+    if (files.has(relative)) continue;
+    assert.ok(fs.statSync(file).isFile(), 'Missing packaged skill file: ' + relative);
+    const content = fs.readFileSync(file, 'utf8');
+    assert.ok(content.trim(), 'Empty packaged skill file: ' + relative);
+    files.add(relative);
+    for (const match of content.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
+      const target = match[1].split('#')[0];
+      if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
+      const resolved = path.resolve(path.dirname(file), target);
+      const skillRelative = path.relative(skillRoot, resolved);
+      assert.ok(skillRelative && !skillRelative.startsWith('..') && !path.isAbsolute(skillRelative),
+        'Skill reference must be self-contained: ' + target);
+      pending.push(resolved);
+    }
+  }
+  return [...files].sort();
+}
+
 function run(command, args, options = {}) {
   const result = childProcess.spawnSync(command, args, {
     cwd: options.cwd || repoRoot,
@@ -506,6 +531,7 @@ async function main() {
     for (const relative of ['src/history-cli.js', 'src/history-browser-open.js', 'src/history-server.js', 'src/history-service.js', 'src/history-presentation.js', 'src/history-search-groups.js', 'src/history-source-locator.js', 'src/history-artifacts.js', 'skills/history-retrieval/SKILL.md']) {
       assert.ok((await fsp.stat(path.join(packageRoot, relative))).isFile(), 'Missing packaged history file: ' + relative);
     }
+    verifyPackagedHistorySkill(packageRoot);
     const historyHelpCommand = binCommand(bin, ['history', '--help']);
     const historyHelp = run(historyHelpCommand.command, historyHelpCommand.args, { cwd: smokeRoot, ...historyHelpCommand.options });
     assert.ok(historyHelp.stdout.includes('history serve'), 'Installed CLI must expose history help');
@@ -690,5 +716,6 @@ module.exports = {
   isPackageStatePayload,
   normalizePackManifest,
   packageRegistry,
+  verifyPackagedHistorySkill,
   waitForPackageState,
 };
