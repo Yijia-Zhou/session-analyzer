@@ -3,20 +3,27 @@
 const http = require('node:http');
 const { validateGroups } = require('./history-search-groups');
 
-const OPERATIONS = new Set(['status', 'search', 'context', 'read', 'open']);
+const OPERATIONS = new Set(['status', 'observe', 'search', 'context', 'read', 'open']);
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-const STRING_FIELDS = new Set(['contextRef', 'cursor', 'query', 'order', 'session', 'layer', 'kind', 'status', 'tool', 'file', 'retrievalArtifacts', 'presentation', 'view', 'textFormat', 'from', 'to']);
+const STRING_FIELDS = new Set(['contextRef', 'cursor', 'query', 'order', 'session', 'callerSessionId', 'layer', 'kind', 'status', 'tool', 'file', 'retrievalArtifacts', 'presentation', 'view', 'textFormat', 'from', 'to']);
 const ARRAY_FIELDS = new Set(['queries', 'exclude', 'refs', 'parts']);
-const NUMBER_FIELDS = new Set(['limit', 'maxBytes', 'offset', 'length']);
+const NUMBER_FIELDS = new Set(['limit', 'maxBytes', 'maxFiles', 'offset', 'length']);
+const OBSERVE_FIELDS = new Set(['callerSessionId', 'maxFiles', 'limit', 'maxBytes', 'presentation', 'contextRef']);
 
 function historyError(code, message, statusCode = 400) {
   return Object.assign(new Error(message), { code, statusCode });
 }
 
-function validateHistoryInput(input) {
+function validateHistoryInput(input, operation) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw historyError('INVALID_INPUT', 'Input must be a JSON object.');
   for (const [key, value] of Object.entries(input)) {
+    if (operation === 'observe' && !OBSERVE_FIELDS.has(key)) {
+      throw historyError('INVALID_ARGUMENT', `observe does not accept ${key}. Remove retrieval and cursor options; use callerSessionId, maxFiles, limit, maxBytes, presentation or contextRef. Each explicit observe starts a new metadata-only scan, without cursor continuation.`);
+    }
+    if (operation && operation !== 'observe' && ['callerSessionId', 'maxFiles'].includes(key)) {
+      throw historyError('INVALID_ARGUMENT', `${key} is only accepted by observe. Remove it from ${operation}; run observe explicitly when a source check is needed.`);
+    }
     if (key === 'aroundHit') {
       if (!value || typeof value !== 'object' || Array.isArray(value)
           || Object.keys(value).some((field) => !['before', 'after'].includes(field))
@@ -117,7 +124,7 @@ function createHistoryServer(service) {
     return viewerPending;
   }
   const server = http.createServer(async (req, res) => {
-    const match = /^\/api\/history\/(status|search|context|read|open)$/.exec(req.url);
+    const match = /^\/api\/history\/(status|observe|search|context|read|open)$/.exec(req.url);
     const operation = match?.[1];
     try {
       if (req.headers.origin || req.headers.host !== `127.0.0.1:${server.address().port}`) throw historyError('LOCAL_CLIENT_REQUIRED', 'Use a local non-browser client at 127.0.0.1.', 403);
@@ -125,7 +132,7 @@ function createHistoryServer(service) {
       if (req.method !== 'POST') throw historyError('METHOD_NOT_ALLOWED', 'Use POST with a JSON object.', 405);
       if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) throw historyError('CONTENT_TYPE_REQUIRED', 'Content-Type must be application/json.', 415);
       if (Number(req.headers['content-length']) > MAX_BODY_BYTES) throw historyError('BODY_TOO_LARGE', `Request exceeds ${MAX_BODY_BYTES} bytes.`, 413);
-      const input = validateHistoryInput(await readBody(req));
+      const input = validateHistoryInput(await readBody(req), operation);
       const result = await service.execute(operation, input);
       if (operation === 'open') {
         let viewer;

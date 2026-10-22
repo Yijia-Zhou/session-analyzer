@@ -4,6 +4,8 @@
 
 ### English
 
+- Add explicit Codex history source observation with bounded physical metadata checks, caller-associated change counts, partial-coverage reporting and fixed snapshot preservation; keep content verification and deliberate refresh separate.
+
 - Enforce the uncompressed Codex primary-source contract for history path/line locators using indexed source identity, including compressed artifacts with canonical `.jsonl` paths; preserve search and Raw evidence access to admitted compressed and historical records.
 
 - Clarify history filter, context-view and output-budget guidance, and include operation-specific recovery steps in related argument and budget errors.
@@ -17,6 +19,8 @@
 - Skip browser CI for narrowly classified documentation-only pull requests while retaining Node and package checks; execute publish-workflow release checks once through the guarded directory dry-run.
 
 ### 中文
+
+- 新增显式 Codex 历史来源观察，提供有界物理 metadata 检查、调用方关联变化计数及部分覆盖报告，保留固定快照；内容核验与主动刷新仍分别处理。
 
 - 历史路径／行号定位按索引来源身份落实仅准入未压缩 Codex 主来源的契约，覆盖规范路径为 `.jsonl` 的压缩工件；保留已准入压缩及历史记录的搜索与 Raw 证据读取。
 

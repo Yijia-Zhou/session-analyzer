@@ -47,6 +47,7 @@
     "src/history-presentation.js",
     "src/history-search-groups.js",
     "src/history-source-locator.js",
+    "src/history-source-observation.js",
     "src/history-artifacts.js",
     "skills/history-retrieval/",
     "src/canonical-contract.js",

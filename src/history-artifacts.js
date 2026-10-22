@@ -3,7 +3,7 @@
 // This is deliberately a recognizer for a small invocation grammar, not a shell
 // parser. Unknown wrappers and mixed operations remain searchable.
 const COMMAND_TOOLS = new Set(['exec_command', 'shell_command', 'Bash']);
-const OPERATIONS = new Set(['status', 'search', 'context', 'read', 'open']);
+const OPERATIONS = new Set(['status', 'observe', 'search', 'context', 'read', 'open']);
 const UNKNOWN = Object.freeze({ recognized: false, reason: null });
 // Materialized sessions are immutable snapshots. Weak ownership lets their
 // parsed evidence indexes disappear with the materialized session itself.

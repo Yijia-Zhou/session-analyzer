@@ -116,6 +116,40 @@ async function historyFixture(t) {
   return { repoRoot, codexHome, sessionsRoot, firstRows, secondRows, options: { repoRoot, codexHome, currentRolloutPathsForTests: new Map([[ROOT, path.join(sessionsRoot, file(ONE))]]) } };
 }
 
+test('history observation samples full physical ancestors including compressed and admitted archived dependencies', async (t) => {
+  for (const archived of [false, true]) for (const compressed of [false, true]) {
+    await t.test(`${archived ? 'archived' : 'live'} ${compressed ? 'Zstd' : 'plain'}`, async (t) => {
+      const f = await historyFixture(t);
+      let ancestor = path.join(f.sessionsRoot, file(ROOT));
+      if (archived) {
+        const target = path.join(f.codexHome, 'archived_sessions', file(ROOT));
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.rename(ancestor, target);
+        ancestor = target;
+      }
+      if (compressed) {
+        await fs.writeFile(ancestor + '.zst', zstdCompressSync(await fs.readFile(ancestor)));
+        await fs.unlink(ancestor);
+        ancestor += '.zst';
+      }
+      const service = await createHistoryService({ repo: f.repoRoot, source: 'codex', codexHome: f.codexHome });
+      t.after(() => service.close());
+      const hit = (await service.execute('search', { query: 'kept-ancestor' })).items[0];
+      assert.ok(hit);
+      assert.match((await service.execute('read', { refs: [hit.ref], parts: ['projection'] })).items[0].parts[0].text, /kept-ancestor/u);
+      const before = await service.execute('observe', { callerSessionId: hit.sessionId });
+      assert.equal(before.observation.counts.metadata_unchanged, 2);
+      assert.equal(before.observation.baseline.dependencies.sampledFiles, archived ? 1 : 0);
+      await fs.appendFile(ancestor, 'suffix');
+      const after = await service.execute('observe', { callerSessionId: hit.sessionId });
+      assert.equal(after.observation.caller.counts.size_increased, 1);
+      assert.equal(after.items[0].physicalPath, ancestor);
+      assert.equal(after.items[0].baseline.basis, archived ? 'post_index_dependency_observation' : 'pre_index_inventory');
+      assert.equal(after.items[0].projectMembership, 'indexed_dependency');
+    });
+  }
+});
+
 test('resident history combines only explicit ancestor prefixes, preserving physical Raw', async (t) => {
   const f = await historyFixture(t);
   const index = await codex.__testOnly.buildUncompactedIndexForDetailTests(f.options);

@@ -11,6 +11,7 @@ const { classifyRetrievalArtifact, mayContainRetrievalArtifact } = require('./hi
 const { createHistoryPresentation, detailText } = require('./history-presentation');
 const { groupedSearch, validateGroups } = require('./history-search-groups');
 const { createHistorySourceLocator } = require('./history-source-locator');
+const { createHistorySourceObservation } = require('./history-source-observation');
 const { matchText, containsText, excerptText } = require('./history-search-text');
 
 const VERSION = 1;
@@ -72,8 +73,12 @@ async function createHistoryService(options = {}) {
   const adapter = requireSourceAdapter(options.source || 'codex');
   const sourceHome = path.resolve(options[adapter.homeOption] || adapter.defaultHome());
   const diagnostics = createSourceDiagnostics();
+  const sourceObservation = adapter.kind === 'codex' ? await createHistorySourceObservation({ sourceHome }) : null;
+  const indexStartedAt = new Date().toISOString();
   const index = await adapter.buildIndex({ repoRoot: options.repo, sourceHome,
     onDiagnostic: (entry) => diagnostics.add(entry) });
+  const indexEndedAt = new Date().toISOString();
+  if (sourceObservation) await sourceObservation.bindIndex(index, { startedAt: indexStartedAt, endedAt: indexEndedAt });
   const sourceRoot = index.sourceRoot || sourceHome;
   const sourceRootAccessible = await fs.stat(sourceRoot).then((stat) => stat.isDirectory(), () => false);
   const scope = digest([index.repoRoot, adapter.kind, sourceHome]);
@@ -223,15 +228,18 @@ async function createHistoryService(options = {}) {
   async function execute(operation, input = {}, groupId) {
     if (closed) fail('CONTEXT_EXPIRED', 'The retrieval service is closed');
     if (operation === 'open') return resolveEvidence(input, 'open');
-    if (!['status', 'search', 'context', 'read'].includes(operation)) fail('INVALID_OPERATION', 'Unknown history operation');
+    if (!['status', 'observe', 'search', 'context', 'read'].includes(operation)) fail('INVALID_OPERATION', 'Unknown history operation');
     if (!input || typeof input !== 'object' || Array.isArray(input)) fail('INVALID_ARGUMENT', 'Input must be an object');
     const allowed = new Set(['contextRef', 'maxBytes', 'presentation', ...({
       status: [],
+      observe: ['callerSessionId', 'maxFiles', 'limit'],
       search: ['groups', 'queries', 'query', 'exclude', 'layer', 'kind', 'status', 'tool', 'file', 'from', 'to', 'retrievalArtifacts', 'limit', 'cursor', 'order', 'session'],
       context: ['refs', 'view', 'limit', 'length', 'cursor'],
       read: ['source', 'refs', 'parts', 'offset', 'length', 'limit', 'cursor', 'textFormat', 'aroundHit'],
     }[operation])]);
-    for (const k of Object.keys(input)) if (!allowed.has(k)) fail('INVALID_ARGUMENT', `Unknown field: ${k}`);
+    for (const k of Object.keys(input)) if (!allowed.has(k)) fail('INVALID_ARGUMENT', operation === 'observe'
+      ? `observe does not accept ${k}. Use callerSessionId, maxFiles, limit, maxBytes, presentation or contextRef. Remove cursor: each observe is a new metadata-only check against the original baseline.`
+      : ['callerSessionId', 'maxFiles'].includes(k) ? `${k} is only accepted by observe. Remove it from ${operation}; run observe explicitly when needed.` : `Unknown field: ${k}`);
     if (input.contextRef !== undefined && input.contextRef !== contextRef) fail('CONTEXT_EXPIRED', 'Context expired; omit it to revalidate persistent evidence references');
     if (input.presentation !== undefined && !['full', 'compact'].includes(input.presentation)) fail('INVALID_ARGUMENT', 'presentation must be full or compact');
     if (input.textFormat !== undefined && !['structured', 'text'].includes(input.textFormat)) fail('INVALID_ARGUMENT', 'textFormat must be structured or text');
@@ -241,6 +249,34 @@ async function createHistoryService(options = {}) {
     }
     const limit = integer(input.limit, 8, 1, 100, 'limit');
     const maxBytes = integer(input.maxBytes, 24000, 4096, 1048576, 'maxBytes');
+    if (operation === 'observe') {
+      if (!sourceObservation) fail('UNSUPPORTED_SOURCE', 'observe currently supports Codex only. Answer within this fixed snapshot and state that source changes were not checked.');
+      const maxFiles = integer(input.maxFiles, 10000, 1, 100000, 'maxFiles');
+      if (input.callerSessionId !== undefined && (typeof input.callerSessionId !== 'string'
+          || !input.callerSessionId.trim() || input.callerSessionId.length > 4096)) {
+        fail('INVALID_ARGUMENT', 'callerSessionId must be a nonempty string of at most 4096 characters. Use the known caller identity or omit it; a caller absent from this index is reported as unresolved.');
+      }
+      const result = await sourceObservation.observe({ callerSessionId: input.callerSessionId, maxFiles, limit });
+      const response = { ...envelope(operation), ...result };
+      response.scan = { complete: !result.observation.partial, sampledFiles: result.observation.sampledFiles };
+      const finalize = () => {
+        const report = response.observation;
+        const callerReturned = response.items.filter((item) => item.callerAssociation === 'caller_associated').length;
+        report.itemsOmitted = report.detailCount - response.items.length;
+        report.caller.detailsOmitted = Object.entries(report.caller.counts)
+          .reduce((sum, [key, count]) => sum + (key === 'metadata_unchanged' ? 0 : count), 0) - callerReturned;
+        report.other.detailsOmitted = report.itemsOmitted - report.caller.detailsOmitted;
+        response.truncated = report.itemsOmitted > 0;
+        return project(response);
+      };
+      let output = finalize();
+      while (size(output) > maxBytes && response.items.length) {
+        response.items.pop();
+        output = finalize();
+      }
+      if (size(output) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', outputBudgetMessage(operation, input, 'metadata'));
+      return output;
+    }
     let aroundHit;
     if (operation === 'read' && input.aroundHit !== undefined) {
       const value = input.aroundHit;
@@ -281,7 +317,7 @@ async function createHistoryService(options = {}) {
       return requestSessions.get(session.id);
     }
     if (operation === 'status') {
-      response.capabilities = { operations: ['status', 'search', 'context', 'read', 'open'], layers: LAYERS, parts: PARTS,
+      response.capabilities = { operations: ['status', ...(sourceObservation ? ['observe'] : []), 'search', 'context', 'read', 'open'], layers: LAYERS, parts: PARTS,
         query: 'literal case-insensitive whitespace-normalized; queries OR, exclude NOT, filters AND on one event',
         order: 'diverse: interleave matching sessions (default); session: newest sessions first; preserve event order within each session',
         searchOrders: ['diverse', 'session'], sessionScope: 'known indexed sessionId',
@@ -294,6 +330,8 @@ async function createHistoryService(options = {}) {
       response.capabilities.shortHandles = 'context-bound; read returns durable evidenceRef; compact context uses shared events and eventIndexes';
       response.capabilities.queryGroups = { maxGroups: 8, independentQueries: true, independentCursors: true, batchByteBudget: true };
       response.capabilities.sourceLocators = { sources: ['codex'], storage: 'uncompressed JSONL', locator: 'jsonl-line', lineBase: 1, legacyVerification: 'unverified_legacy_locator' };
+      response.capabilities.sourceObservation = { supported: Boolean(sourceObservation), sources: ['codex'],
+        strength: 'metadata_only', explicit: true, automaticRefresh: false, callerIdentity: 'optional assertion; absent indexed identity remains unresolved' };
       response.capabilities.aroundHit = { representation: 'search_projection', unit: 'UTF-16 code units',
         maxLength: 100000, requiresStoredHitOffset: true, continuation: 'absolute projection read offset/length' };
       if (size(project(response)) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', outputBudgetMessage(operation, input, 'metadata'));
