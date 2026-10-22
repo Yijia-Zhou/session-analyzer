@@ -42,4 +42,4 @@ Appending beyond the accepted prefix does not mix new records into the existing 
 
 ## Acceptance evidence / 验收依据
 
-Synthetic contract, branch, HTTP and history tests live in `test/pi*.test.js`; shared adapter conformance, source switching and package checks cover integration. The [execution plan](../exec-plans/active/2026-10-22-pi-native-source.md) records actual validation outcomes and the distinction between sandbox writer/API evidence and human TUI interaction. / 合成契约、分支、HTTP 与 history 测试位于所列文件；共享适配器契约、来源切换及包检查覆盖集成。[执行计划](../exec-plans/active/2026-10-22-pi-native-source.md)记录真实验证结果，并区分 sandbox writer／API 依据与人工 TUI 操作。
+Synthetic contract, branch, HTTP and history tests live in `test/pi*.test.js`; shared adapter conformance, source switching and package checks cover integration. The [execution plan](../exec-plans/completed/2026-10-22-pi-native-source.md) records actual validation outcomes and the distinction between sandbox writer/API evidence and human TUI interaction. / 合成契约、分支、HTTP 与 history 测试位于所列文件；共享适配器契约、来源切换及包检查覆盖集成。[执行计划](../exec-plans/completed/2026-10-22-pi-native-source.md)记录真实验证结果，并区分 sandbox writer／API 依据与人工 TUI 操作。
