@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const os = require('node:os');
+const { fileURLToPath } = require('node:url');
 const fsp = require('node:fs/promises');
 const { isDeepStrictEqual } = require('node:util');
 const { isPathInsideOrSame, resolveFsPath } = require('./shared/fs-path');
@@ -14,6 +15,27 @@ const logical = require('./pi-logical');
 const { buildPiEventDetail } = require('./pi-detail');
 
 const SOURCE_KIND = 'pi';
+function defaultPiHome() {
+  let value = process.env.PI_CODING_AGENT_DIR;
+  if (!value) return path.join(os.homedir(), '.pi', 'agent');
+  // Match pi 1.4.0 config.getAgentDir()/utils/paths.normalizePath without
+  // importing its runtime or changing other sources' path semantics.
+  if (process.platform === 'win32' && value.startsWith('/') && !value.startsWith('//') && !value.includes('\\')) {
+    const drive = value.match(/^\/(?:mnt\/|cygdrive\/)?([a-z])(?:\/(.*))?$/i);
+    if (drive) value = `${drive[1].toUpperCase()}:\\${(drive[2] || '').replaceAll('/', '\\')}`;
+  }
+  if (value === '~') return os.homedir();
+  if (value.startsWith('~/') || (process.platform === 'win32' && value.startsWith('~\\'))) {
+    return path.join(os.homedir(), value.slice(2));
+  }
+  if (value.startsWith('file://')) {
+    try { return fileURLToPath(value); } catch {
+      // All sources' defaults are prepared at server startup. An invalid pi
+      // URL must not prevent opening another source; retain it for root diagnostics.
+    }
+  }
+  return value;
+}
 function rootFor(sourceHome) { return path.resolve(sourceHome, 'sessions'); }
 function report(error, filePath, callback, signal) {
   storage.abort(signal);
@@ -208,7 +230,7 @@ async function readPiRawRecord(index, session, raw, options = {}) {
 const piAdapter = {
   kind: SOURCE_KIND, label: 'pi', homeOption: 'piHome', homeLabel: 'pi agent directory',
   sessionLifecycle: 'indexed-materialized-v1',
-  defaultHome: () => process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), '.pi', 'agent'),
+  defaultHome: defaultPiHome,
   query: piQuery, discoverConfiguredProjects: async () => [], discoverProjects: discoverPiProjects,
   buildIndex: buildPiIndex, materializeSession: materializePiSession, buildEventDetail: buildPiEventDetail,
   readRawRecord: readPiRawRecord, validateMaterializationDescriptor: validatePiMaterializationDescriptor,
