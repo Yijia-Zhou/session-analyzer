@@ -99,7 +99,7 @@ The collaboration keyboard-navigation and mobile Timeline return tests record bo
 | --- | --- |
 | `server.js` | Local HTTP server and internal API routes / 本地 HTTP 服务与内部 API 路由 |
 | `src/source-adapters.js` | Source selection and source-neutral dispatch / 来源选择与来源中立派发 |
-| `src/codex*.js`, `src/claude*.js`, `src/deepseek-harness*.js` | Source discovery, parsing, indexing, mapping, and detail / 来源发现、解析、索引、映射与详情 |
+| `src/codex*.js`, `src/claude*.js`, `src/deepseek-harness*.js`, `src/pi.js` | Source discovery, parsing, indexing, mapping, and detail / 来源发现、解析、索引、映射与详情 |
 | `src/folding.js` | Built-in timeline folding profiles / 内置时间线折叠配置 |
 | `src/shared/` | Browser-and-Node shared logic / 浏览器与 Node 共享逻辑 |
 | `src/browser/` | Browser UI source, state, rendering, and navigation / 浏览器 UI 源码、状态、渲染与导航 |

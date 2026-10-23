@@ -39,6 +39,10 @@ function parseArgs(argv) {
       dshpath: '--dsh-home',
       deepseekhome: '--dsh-home',
       deepseekharnesshome: '--dsh-home',
+      pihome: '--pi-home',
+      pipath: '--pi-home',
+      pidir: '--pi-home',
+      pidirectory: '--pi-home',
       claudedir: '--claude-home',
       claudedirectory: '--claude-home',
       port: '--port',
@@ -108,6 +112,14 @@ function parseArgs(argv) {
       }
       opts.dshHome = next;
       i += 1;
+    } else if (option === '--pi-home') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --pi-home. Expected a pi agent directory.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
+      opts.piHome = next;
+      i += 1;
     } else if (option === '--port') {
       if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
         opts.errors.push('Missing value for --port. Expected an integer between 1 and 65535.');
@@ -150,14 +162,15 @@ function formatHelp() {
     'Session Analyzer',
     '',
     'Usage:',
-    '  session-analyzer [--repo <repo-path>] [--source <source>] [--codex-home <path>] [--claude-home <path>] [--dsh-home <path>] [--port <port>] [--host <host>] [--log-dir <path>]',
+    '  session-analyzer [--repo <repo-path>] [--source <source>] [--codex-home <path>] [--claude-home <path>] [--dsh-home <path>] [--pi-home <path>] [--port <port>] [--host <host>] [--log-dir <path>]',
     '',
     'Options:',
     '  --repo <repo-path>     Repository to analyze. If omitted, select a project in the browser.',
-    '  --source <source>       Transcript source: codex, claude-code, or deepseek-harness. Defaults to codex.',
+    '  --source <source>       Transcript source: codex, claude-code, deepseek-harness, or pi. Defaults to codex.',
     '  --codex-home <path>    Codex home directory. Defaults to ~/.codex.',
     '  --claude-home <path>   Claude home directory. Used only with --source claude-code. Defaults to ~/.claude.',
     '  --dsh-home <path>      DeepSeek Harness sessions persistence root. Used only with --source deepseek-harness. Defaults to ~/.dsh/sessions.',
+    '  --pi-home <path>       pi agent directory containing sessions/. Used only with --source pi. Defaults to PI_CODING_AGENT_DIR or ~/.pi/agent.',
     '  --port <port>          Local server port. Must be an integer from 1 to 65535. Defaults to 17890.',
     '  --host <host>          Advanced: bind host. Defaults to 127.0.0.1.',
     '  --log-dir <path>       Write throttled indexing diagnostics as bounded JSONL logs.',
@@ -168,6 +181,7 @@ function formatHelp() {
     '  session-analyzer --repo C:\\path\\to\\project --codex-home C:\\Users\\you\\.codex --port 17890',
     '  session-analyzer --source claude-code --repo C:\\path\\to\\project --claude-home C:\\Users\\you\\.claude',
     '  session-analyzer --source deepseek-harness --repo C:\\path\\to\\project --dsh-home C:\\Users\\you\\.dsh\\sessions',
+    '  session-analyzer --source pi --repo C:\\path\\to\\project --pi-home C:\\Users\\you\\.pi\\agent',
     '',
     'Privacy:',
     '  The default host is 127.0.0.1. Binding to another host can expose transcript content',

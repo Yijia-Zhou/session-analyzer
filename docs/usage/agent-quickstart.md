@@ -32,6 +32,12 @@ node server.js --source deepseek-harness --repo 'C:\projects\target-project' --d
 
 For Codex or Claude Code, use `--source codex` or `--source claude-code` and the corresponding root flag only if needed. Without `--repo`, open `http://127.0.0.1:17890/` and select the source and project in the chooser; source roots can also be edited there. Keep a foreground terminal open, or use your environment's persistent background-process facility. / Codex 或 Claude Code 使用 `--source codex` 或 `--source claude-code`，仅在需要时指定对应根参数。未传 `--repo` 时打开 `http://127.0.0.1:17890/`，在选择器中选择来源与项目；也可在那里修改来源根。保持前台终端运行，或使用环境支持的持久后台进程方式。
 
+### Native pi in this checkout / 此 checkout 的原生 pi
+
+The published `0.2.1` example does not include pi support. Use a source revision containing this adapter, build it, record its commit, and run `node server.js --source pi --repo /path/to/project --pi-home /path/to/pi/agent`. The root is the agent directory containing `sessions/`; its default is `PI_CODING_AGENT_DIR` or `~/.pi/agent`. / 已发布的 `0.2.1` 示例不包含 pi 支持。使用包含此适配器的源码修订，构建并记录 commit，然后运行所列命令。根目录为包含 `sessions/` 的 agent 目录；默认使用 `PI_CODING_AGENT_DIR` 或 `~/.pi/agent`。
+
+Check `sourceKind: pi`, the intended agent directory and repository, diagnostics, and actual branch reading. Session counts represent root-to-leaf branches, not unique transcript files; shared-prefix search hits may occur in several branches. Rebuilding after a branch append changes that branch's tip-based Session ID. Unsupported versions are skipped; an invalid tree is a Protocol/Raw-only fallback Session. Do not report either as fully interpreted successful reading. / 核验 `sourceKind: pi`、预期 agent 目录与仓库、诊断及实际分支阅读。Session 计数表示根到叶分支而非独立文件；共享前缀可能在多分支命中。追加分支后重建会改变以叶节点为基础的 Session ID。不支持版本会跳过，无效树仅产生 Protocol／Raw 回退 Session；不要将这些情况报告为完整解释成功。
+
 ## 2. Verify indexing with a deadline / 有界核验索引
 
 An HTTP root response proves only HTTP readiness. For the accompanying checkout, run this PowerShell example in another terminal after a project has been selected or started with `--repo`. It pins the first observed job ID so another project selection cannot silently replace the job being verified. / 根 HTTP 响应只证明 HTTP 就绪。对本文对应 checkout，选好项目或以 `--repo` 启动后，在另一终端运行以下 PowerShell 示例。它固定首次观察到的任务 ID，防止另一次项目选择静默替换正在核验的任务。
