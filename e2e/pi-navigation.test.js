@@ -64,6 +64,9 @@ test('pi shared-entry chooser pages all branches without changing the pending re
   const browser = await chromium.launch(); t.after(() => browser.close());
   const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } });
   const { chooser, sessionId, href } = await openSharedChooser(page, server.origin);
+  await page.locator('[data-pi-overview] .piOverviewBranches > li').first().waitFor({ state: 'attached' });
+  assert.equal(await page.locator('[data-pi-overview] .piOverviewBranches > li').count(), 100);
+  assert.match(await page.locator('[data-pi-overview] > details > summary').innerText(), /100 visible branches\./);
   const url = page.url();
   const detail = await page.locator('#detail').innerText();
   assert.equal(await chooser.locator('[data-pi-branch]').count(), 100);
@@ -94,6 +97,9 @@ for (const change of ['cancel', 'session', 'source', 'index']) test(`pi branch p
   const page = await browser.newPage({ locale: 'zh-CN', viewport: { width: 1440, height: 900 } });
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
   const { chooser, sessionId } = await openSharedChooser(page, server.origin);
+  await page.locator('[data-pi-overview] .piOverviewBranches > li').first().waitFor({ state: 'attached' });
+  assert.equal(await page.locator('[data-pi-overview] .piOverviewBranches > li').count(), 100);
+  assert.match(await page.locator('[data-pi-overview] > details > summary').innerText(), /100 条可见分支/);
   let release; const gate = new Promise((resolve) => { release = resolve; });
   let started; const pending = new Promise((resolve) => { started = resolve; });
   let delivered; const completed = new Promise((resolve) => { delivered = resolve; });

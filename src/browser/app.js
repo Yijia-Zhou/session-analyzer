@@ -5143,7 +5143,7 @@ async function loadPiOverview(sessionId) {
       ${branch ? `<p class="piSelectedTip"><strong>${escapeHtml(t('piBranchTip'))}:</strong> ${escapeHtml(piPreview(branch.tip) || branch.title || branch.leafId)}</p>` : ''}
       ${data.summaryTarget ? `<p><button type="button" class="smallBtn" data-pi-summary-target="${escapeHtml(JSON.stringify(data.summaryTarget))}" data-pi-scope="${escapeHtml(scope)}">${escapeHtml(t('piModelsUsage'))}</button></p>` : ''}
       <details${data.branchCount <= 4 && !window.matchMedia('(max-width: 760px)').matches ? ' open' : ''}>
-      <summary>${escapeHtml(t('piOverview'))} <span class="chip">${escapeHtml(t('piVisibleBranches', { count: data.branchCount }))}</span></summary>
+      <summary>${escapeHtml(t('piOverview'))} <span class="chip">${escapeHtml(t('piVisibleBranches', { count: data.branches.length }))}</span></summary>
       <ul class="piOverviewBranches">${branchItems}</ul>
       <div class="piLabelAnchors"><strong>${escapeHtml(t('piLabels'))}</strong> ${data.labels.length
         ? data.labels.map((label) => piReferenceButton(label.reference, label.label)).join(' ')

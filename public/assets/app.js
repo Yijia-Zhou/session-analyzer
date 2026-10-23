@@ -91,7 +91,7 @@ ${a}
       ${i?`<p class="piSelectedTip"><strong>${m(p("piBranchTip"))}:</strong> ${m(Ns(i.tip)||i.title||i.leafId)}</p>`:""}
       ${o.summaryTarget?`<p><button type="button" class="smallBtn" data-pi-summary-target="${m(JSON.stringify(o.summaryTarget))}" data-pi-scope="${m(t)}">${m(p("piModelsUsage"))}</button></p>`:""}
       <details${o.branchCount<=4&&!window.matchMedia("(max-width: 760px)").matches?" open":""}>
-      <summary>${m(p("piOverview"))} <span class="chip">${m(p("piVisibleBranches",{count:o.branchCount}))}</span></summary>
+      <summary>${m(p("piOverview"))} <span class="chip">${m(p("piVisibleBranches",{count:o.branches.length}))}</span></summary>
       <ul class="piOverviewBranches">${s}</ul>
       <div class="piLabelAnchors"><strong>${m(p("piLabels"))}</strong> ${o.labels.length?o.labels.map(c=>Vi(c.reference,c.label)).join(" "):`<span>${m(p("piNoLabels"))}</span>`}</div>
       ${o.truncated?`<p class="piSessionGroupNote">${m(p("piOverviewTruncated"))}</p>`:""}
