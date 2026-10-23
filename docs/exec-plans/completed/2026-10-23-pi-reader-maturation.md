@@ -1,6 +1,6 @@
 # pi reader maturation / pi 阅读体验完善
 
-Status: all six bounded work packages implemented and locally reviewed; acceptance and known baseline failures recorded below. The increment is now on `feat/pi-reader-maturation`, based on integration baseline `4550324`; hosted verification remains pending. Original implementation: `7b5dcc3` against `209a8d1` on `feat/pi-native-adapter`. Broader follow-ups remain in the debt tracker. / 状态：六个有界工作包已实现并完成本地审查，验收及已知基线失败记录如下。本增量现位于所列 reader-maturation 分支，基于集成基线 4550324；hosted 验证待完成。原实现在所列 native-adapter 分支上，以 209a8d1 为基线提交为 7b5dcc3；更广后续保留在技术债跟踪器。
+Status: completed and accepted into `feat/pi-integration` by [PR #90](https://github.com/Yijia-Zhou/session-analyzer/pull/90), merge `9ddc1ec`. Exact implementation head `ad18e93` passed all hosted CI checks. Original implementation: `7b5dcc3` against `209a8d1`, transplanted onto integration baseline `4550324`. Remaining work is tracked in the [native file-evidence plan](../active/2026-10-23-pi-native-file-evidence.md) and debt tracker. / 状态：已完成，经 PR #90 接纳到集成分支，合并提交为 9ddc1ec；精确实现 head ad18e93 的 hosted CI 全部通过。原实现以 209a8d1 为基线提交为 7b5dcc3，随后移植到集成基线 4550324。后续工作见原生文件依据计划及技术债跟踪器。
 
 ## Outcome and scope / 目标与范围
 
@@ -34,11 +34,16 @@ Each package must have user-visible behavior, evidence, regression checks and up
 
 The integration baseline consolidates the first six pi commits through `209a8d1` into `4550324`, based on dev `b28ac37`. It preserves dev's history observation options alongside pi source options. The original `feat/pi-native-adapter` branch and PR #88 remain available for provenance; published history is not rewritten. / 集成基线将截至 209a8d1 的首轮六个 pi 提交整合为 4550324，基于 dev 的 b28ac37；同时保留 dev 的 history observation 参数与 pi 来源参数。原 native-adapter 分支及 PR #88 保留供追溯，不改写已发布历史。
 
-Current and future feature PRs target `feat/pi-integration`; new feature branches start from its latest accepted head. Keep the integration PR to dev in draft until the agreed pi scope and validation are ready. This branch reorganization does not merge pi into dev. / 当前及后续功能 PR 以 pi-integration 为目标，新功能分支从其最新已接纳提交创建。约定的 pi 范围及验证就绪前，集成分支到 dev 的 PR 保持 draft；本次分支整理不将 pi 合入 dev。
+The initial baseline reached dev through [PR #89](https://github.com/Yijia-Zhou/session-analyzer/pull/89), merge `cdf422c`. This maturation increment reached the integration branch through PR #90; it has not yet been merged into dev. Subsequent feature branches start from the latest accepted integration head and target `feat/pi-integration`. / 首轮基线经 PR #89 合入 dev，合并提交为 cdf422c；本完善增量经 PR #90 合入集成分支，尚未合入 dev。后续功能从最新已接纳集成提交创建分支，并以集成分支为 PR 目标。
 
-The detailed validation below describes the original implementation before this transplant. Each reorganized commit records its exact independently reviewed base/diff and newly executed checks in its commit message; new PR CI must verify the combined dev/pi tree. / 下述详细验证对应移植前的原实现。整理后的每个提交在提交信息中记录独立审查的精确 base／diff 及新执行检查；新 PR 的 CI 须验证 dev 与 pi 合并后的代码树。
+The detailed validation below describes the original implementation before this transplant. Each reorganized commit records its exact independently reviewed base/diff and newly executed checks in its commit message; hosted CI has now verified the combined dev/pi tree as recorded below. / 下述详细验证对应移植前的原实现。整理后的每个提交在提交信息中记录独立审查的精确 base／diff 及新执行检查；hosted CI 现已完成 dev 与 pi 组合代码树验证，结果如下。
 
-## Validation and review record / 验证及审查记录
+## Hosted acceptance / Hosted 验收
+
+- [PR #90 CI run 39962469604](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/39962469604) passed all eight jobs on `ad18e9396cfafea11f37921f02d3fdcd1e5966bf`: Node 22/24 Ubuntu, Node 24 Windows, both package jobs, pinned-browser coverage, scope and aggregate gate. Fresh independent premerge review verified the exact head, base and merged tree. / PR #90 所列精确 head 的八项 CI job 全部通过，覆盖所列 Node 平台、双平台安装包、固定浏览器、scope 及总门槛；fresh 独立合并前审查核验精确 head、base 及合并代码树。
+- The transplanted tree also passed local Node **1936/1936**, pi browser **10/10**, build consistency and four-source package smoke before publication. The system-Chromium failures below are historical local limitations; they are not failures of this successful hosted run. / 移植后代码树发布前也通过本地 Node **1936/1936**、pi 浏览器 **10/10**、构建一致性及四来源安装包检查；下方系统 Chromium 失败属于历史本地环境限制，并非本次成功 hosted 运行的失败。
+
+## Original implementation validation / 原实现验证记录
 
 - PASS: `npm test`, **1881/1881** on Node 24.19.0/npm 12.0.2. Initial checks exposed the expected runtime-file allowlist and pi brand localization allowlist updates; both were corrected before this clean run. After adding result-owned patch text to Main search, the affected native tools/reading evidence/recorded state/pi integration tests passed **23/23**. / PASS：所列环境全量 Node **1881/1881**；初检发现 runtime 文件清单及 pi 品牌本地化允许项需同步，修正后完整通过。随后将结果所属 patch 文本加入 Main 搜索，受影响四组聚焦测试 **23/23** 通过。
 - PASS: `npm run build:check` and `npm run test:package`; packaged Timeline → Detail → Raw and history status/search/context/read/raw/open passed for Codex, Claude Code, DeepSeek Harness and pi. No dependency or lockfile update. / PASS：构建一致性及安装包检查；四来源的所列 UI／history 链路通过，无依赖或 lockfile 变更。

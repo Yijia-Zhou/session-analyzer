@@ -17,10 +17,12 @@ for (const locale of ['en-US', 'zh-CN']) for (const width of [1440, 390]) test(`
   const rows = [{ type: 'session', version: 3, id: 'native-tools', cwd: repo }];
   let parentId = null;
   const add = (id, message) => { rows.push({ type: 'message', id, parentId, message }); parentId = id; };
-  for (const [id, isError] of [['success', false], ['failure', true]]) {
+  for (const [id, isError] of [['success', false], ['failure', true], ['contradictory', false]]) {
     add(`call-${id}`, { role: 'assistant', content: [{ type: 'toolCall', id, name: 'edit', arguments: { path: 'src/a.js', edits: [{ oldText: 'OLD_NATIVE', newText: 'NEW_NATIVE' }] } }] });
-    add(`result-${id}`, { role: 'toolResult', toolName: 'edit', toolCallId: id, isError, content: [{ type: 'text', text: isError ? 'FAILED_NATIVE' : 'SUCCESS_NATIVE' }], details: { patch } });
+    add(`result-${id}`, { role: 'toolResult', toolName: 'edit', toolCallId: id, isError, content: [{ type: 'text', text: `${id} recorded receipt` }], details: { patch: id === 'contradictory' ? patch.replace('+1 @@', '+20 @@') : patch } });
   }
+  add('call-write', { role: 'assistant', content: [{ type: 'toolCall', id: 'write', name: 'write', arguments: { path: 'src/a.js', content: 'RECORDED_WRITE_CONTENT' } }] });
+  add('result-write', { role: 'toolResult', toolName: 'write', toolCallId: 'write', isError: false, content: [{ type: 'text', text: 'Write completed' }] });
   add('call-read', { role: 'assistant', content: [{ type: 'toolCall', id: 'read-other', name: 'read', arguments: { path: 'other.txt' } }] });
   add('result-read', { role: 'toolResult', toolName: 'read', toolCallId: 'read-other', isError: false, content: [{ type: 'text', text: 'OTHER_FILE' }] });
   await fs.writeFile(path.join(directory, 'tools.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
@@ -41,7 +43,7 @@ for (const locale of ['en-US', 'zh-CN']) for (const width of [1440, 390]) test(`
   const successId = await successCard.getAttribute('data-event-id');
   assert.match(await successCard.innerText(), /OLD_NATIVE/);
   assert.match(await successCard.innerText(), /NEW_NATIVE/);
-  assert.equal(await page.locator('#timeline .patchFile').count(), 1, 'failed edit does not fabricate a second patch');
+  assert.equal(await page.locator('#timeline .patchFile').count(), 1, 'failed/contradictory edits and successful writes do not fabricate patches');
   assert.match(await page.locator('[data-metric-value="changes"]').innerText(), /1/);
   assert.match(await page.locator('[data-metric-value="changes"]').innerText(), locale === 'zh-CN' ? /文件/ : /Files/);
   await successCard.locator('.eventHeader').click();
@@ -53,7 +55,9 @@ for (const locale of ['en-US', 'zh-CN']) for (const width of [1440, 390]) test(`
   const activity = await response.json();
   assert.equal(activity.events.filter((event) => event.kind === 'patch').length, 1);
   assert.ok(activity.events.some((event) => event.id === successId));
-  assert.equal(activity.total, 2, 'recorded file activity includes successful and failed edit requests');
+  assert.equal(activity.total, 4, 'recorded file activity includes all three edit requests and the write request');
+  assert.equal(activity.events.filter((event) => event.association === 'patch_record').length, 1);
+  assert.equal(activity.events.filter((event) => event.association === 'recorded_path').length, 3);
   await page.locator('[data-file-activity-close]').click();
   await page.locator('[data-main-presentation="trajectory"]').click();
   await page.locator(`[data-trajectory-event-id="${successId}"]`).first().click();
