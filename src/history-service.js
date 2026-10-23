@@ -497,10 +497,19 @@ async function createHistoryService(options = {}) {
         }
         const first = indexes[0];
         const last = indexes.at(-1);
+        const unavailableRelatedSessions = [];
         const relatedSessions = ['parentSessionId', 'forkedFromSessionId', 'supersededBySessionId'].flatMap((field) => {
-          const target = index.sessionsById.get(session[field]);
-          if (!target || !index.projectQueryStore.shardsBySessionId.get(target.id)?.main?.rowCount
-              || (field === 'parentSessionId' && session.parentSessionInferred)) return [];
+          const targetId = session[field];
+          if (!targetId || (field === 'parentSessionId' && session.parentSessionInferred)) return [];
+          const target = index.sessionsById.get(targetId);
+          if (!target || !index.projectQueryStore.shardsBySessionId.get(target.id)?.main?.rowCount) {
+            unavailableRelatedSessions.push({ relation: field, sessionId: targetId,
+              reason: target ? 'target_has_no_main_events' : 'target_not_indexed',
+              message: target
+                ? 'The related session is indexed but has no Main events in this snapshot. Search its sessionId on layer=raw or layer=protocol for recorded evidence; no Main range ref is available.'
+                : 'The recorded related session is not indexed in this snapshot; this does not establish that it does not exist. Check the configured project/source scope and coverage. If needed, explicitly build a new snapshot with the intended sources; repeating broader searches in this snapshot cannot reach this target.' });
+            return [];
+          }
           return [{ relation: field, sessionId: target.id, ref: rangeRef(target, 'main', 0, 0) }];
         });
         candidates.push({ ref: value, relation: 'adjacent_in_session', boundaries: boundary,
@@ -519,7 +528,7 @@ async function createHistoryService(options = {}) {
           gaps: omitted, previous: first > 0 ? rangeRef(session, r.l,
             !r.e && r.d === 'backward' && first > r.a ? r.a : Math.max(0, first - limit), first - 1, 'backward') : null,
           next: last + 1 < sequence.length ? rangeRef(session, r.l, last + 1, r.e ? Math.min(sequence.length - 1, last + limit) : r.b > last ? r.b : Math.min(sequence.length - 1, last + limit)) : null,
-          relatedSessions });
+          relatedSessions, unavailableRelatedSessions });
       }
       return budgetPage(response, candidates, limit, maxBytes, operation, key, offset, refs.length, undefined, project, input);
     }

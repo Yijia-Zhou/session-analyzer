@@ -90,6 +90,37 @@ test('explicit observation separates continuous caller growth without changing e
   assert.equal((await service.execute('search', { query: 'LATER_EVIDENCE' })).items.length, 0);
 });
 
+test('a task can retain an old decision cutoff or explicitly verify a later decision without chasing caller appends', async (t) => {
+  const f = await fixture(t);
+  const caller = await f.write('caller.jsonl', 'caller', f.repo, 'Investigating retry policy');
+  const decisions = await f.write('decisions.jsonl', 'decisions', f.repo, 'DECISION: retry policy permits automatic retry.');
+  const old = await f.service();
+  const query = { query: 'DECISION:', session: 'decisions' };
+  const initial = await old.execute('search', query);
+  await fs.appendFile(caller, f.message('Searching project history'));
+  await fs.appendFile(decisions, f.message('DECISION: replace automatic retry with explicit user retry after failed writes.'));
+  const changed = await old.execute('observe', { callerSessionId: 'caller' });
+  assert.equal(changed.observation.caller.counts.size_increased, 1);
+  assert.equal(changed.observation.other.counts.size_increased, 1);
+  assert.equal((await old.execute('search', query)).items.length, 1);
+  const oldRead = await old.execute('read', { refs: [initial.items[0].ref], parts: ['projection'] });
+  assert.match(oldRead.items[0].parts[0].text, /permits automatic retry/u);
+
+  const fresh = await f.service();
+  const freshStatus = await fresh.execute('status');
+  const later = await fresh.execute('search', { ...query, query: 'replace automatic retry' });
+  assert.equal(later.items.length, 1);
+  const latestRead = await fresh.execute('read', { refs: [later.items[0].ref], parts: ['projection'] });
+  assert.match(latestRead.items[0].parts[0].text, /explicit user retry after failed writes/u);
+  await fs.appendFile(caller, f.message('Read later policy and prepare evidence handoff'));
+  const observed = await fresh.execute('observe', { callerSessionId: 'caller' });
+  assert.equal(observed.observation.caller.counts.size_increased, 1);
+  assert.equal(observed.observation.other.counts.metadata_unchanged, 1);
+  assert.deepEqual((await fresh.execute('status')).coverage, freshStatus.coverage);
+  assert.equal((await old.execute('search', query)).items.length, 1);
+  assert.equal((await fresh.execute('search', query)).items.length, 2);
+});
+
 test('a later snapshot filters recorded observe output while retaining ordinary discussion', async (t) => {
   const f = await fixture(t);
   const file = await f.write('one.jsonl', 'one');
