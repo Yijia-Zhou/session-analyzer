@@ -169,4 +169,12 @@ function mayContainRetrievalArtifact(row) {
     || (row?.recordType === 'user' || row?.recordType === 'assistant');
 }
 
-module.exports = { classifyRetrievalArtifact, mayContainRetrievalArtifact };
+// Necessary source-call structure, not sufficient evidence of an artifact.
+// Keep this separate from the text hint: encoded command arguments may spell
+// the marker with JSON escapes while a different raw row contains it literally.
+function mayContainCodexRetrievalCall(row) {
+  return row?.recordType === 'response_item' && row?.payloadType === 'function_call'
+    && COMMAND_TOOLS.has(row?.toolName);
+}
+
+module.exports = { classifyRetrievalArtifact, mayContainRetrievalArtifact, mayContainCodexRetrievalCall };

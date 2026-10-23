@@ -7,7 +7,7 @@ const { requireSourceAdapter, materializeSessionForIndex, buildEventDetailForSes
   readIndexedRawRecord } = require('./source-adapters');
 const { scanProjectQueryShard, disposeProjectQueryStore } = require('./project-query-store');
 const { createSourceDiagnostics } = require('./source-diagnostics');
-const { classifyRetrievalArtifact, mayContainRetrievalArtifact } = require('./history-artifacts');
+const { classifyRetrievalArtifact, mayContainRetrievalArtifact, mayContainCodexRetrievalCall } = require('./history-artifacts');
 const { createHistoryPresentation, detailText } = require('./history-presentation');
 const { groupedSearch, validateGroups } = require('./history-search-groups');
 const { createHistorySourceLocator } = require('./history-source-locator');
@@ -372,11 +372,13 @@ async function createHistoryService(options = {}) {
         let hydrated = null;
         if (hasArtifactCandidate) {
           let suspect = false;
+          let hasSupportedCall = adapter.kind !== 'codex';
           await scanProjectQueryShard(index.projectQueryStore, session.id, 'raw', { includeText: true }, (row) => {
             // Only a hint: classification requires real associated request records.
             if (!suspect && containsText(row.searchText, 'session-analyzer')) suspect = true;
+            if (!hasSupportedCall && mayContainCodexRetrievalCall({ ...row, ...row.labelFact })) hasSupportedCall = true;
           });
-          if (suspect) hydrated = await materialize(session);
+          if (suspect && hasSupportedCall) hydrated = await materialize(session);
         }
         const byId = hydrated ? new Map(events(hydrated, layer).map((event) => [eventId(event), event])) : null;
         await scanProjectQueryShard(index.projectQueryStore, session.id, layer, { includeText: true }, (row) => {
