@@ -3,6 +3,8 @@
 const MarkdownIt = require('markdown-it');
 const { nativePatchSections } = require('./pi-native-tools');
 const { recordedConfiguration, recordedStateSections } = require('./pi-recorded-state');
+const { readableRecordedStateSections, nativeToolReadingSections } = require('./pi-reading-presentation');
+const { piImagePreviewSection, sanitizePiImageRecord } = require('./pi-images');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 const { sanitizeLogicalDetailValue } = require('./shared/logical-detail-sanitizer');
 const { nestedCallSections } = require('./pi-nested-calls');
@@ -69,7 +71,7 @@ async function buildPiEventDetail(index, session, eventId, layer = 'main', optio
       subtype: raw.role || '', layer: 'raw', title: raw.payloadType, sourceLocator: raw.sourceLocator,
       sourceRecordType: raw.recordType, sourceEventType: raw.payloadType, meta: { source: raw.source }, rawRefs: [piRawRef(raw)],
       timelineSections: parsed === null ? [{ type: 'code', purpose: 'content', code: safe(text), language: 'text' }]
-        : [{ type: 'raw_json', purpose: 'fallback', title: 'Physical pi JSONL record', value: safe(parsed), expanded: true }],
+        : [{ type: 'raw_json', purpose: 'fallback', title: 'Physical pi JSONL record', value: safe(sanitizePiImageRecord(parsed)), expanded: true }],
       inspectorSections: [] });
   }
   const event = session.logicalEvents.find((item) => item.id === eventId && item.layer === layer);
@@ -80,6 +82,13 @@ async function buildPiEventDetail(index, session, eventId, layer = 'main', optio
     subtype: event.subtype, layer: event.layer, title: event.label || event.toolName || event.kind,
     sourceLocator: event.sourceLocator, meta: { source: event.source }, rawRefs: event.rawRefs,
     timelineSections: [], inspectorSections: [] };
+  // Readable summaries lead; the full typed evidence stays available in a
+  // collapsed disclosure instead of pushing useful model/usage tables away.
+  const recordedEvidence = [];
+  const addRecordedReading = (entry, stateContext = {}) => {
+    detail.inspectorSections.push(...readableRecordedStateSections(entry, stateContext));
+    recordedEvidence.push(...recordedStateSections(entry, stateContext));
+  };
   const context = [['Entry id', raws[0]?.entryId], ['Parent entry id', raws[0]?.parentId ?? '(root)'],
     ['Branch tip', session.sourceDerivedId], ['Provider', facts.provider || raws[0]?.parsed?.message?.provider],
     ['Model', facts.model || raws[0]?.parsed?.message?.model],
@@ -87,10 +96,13 @@ async function buildPiEventDetail(index, session, eventId, layer = 'main', optio
     ['Status', event.status], ['Stop reason', raws[0]?.role === 'assistant' ? raws[0]?.parsed?.message?.stopReason : undefined],
     ['Tool call id', facts.callId], ['Pairing evidence', facts.pairing]];
   if (['command', 'other_tool_call', 'patch'].includes(event.kind)) {
+    const native = nativeToolReadingSections(facts, facts.pairing === 'exact_id_ancestor'
+      ? raws.filter((raw) => raw.role === 'toolResult').map((raw) => raw.parsed.message) : []);
     if (facts.command) detail.timelineSections.push({ type: 'code', purpose: 'request', language: facts.commandLanguage || 'bash', code: facts.command });
-    else detail.timelineSections.push({ type: 'json', purpose: 'request', value: facts.arguments ?? {} });
+    else if (!native.timelineSections.length) detail.timelineSections.push({ type: 'json', purpose: 'request', value: facts.arguments ?? {} });
+    detail.timelineSections.push(...native.timelineSections);
+    detail.inspectorSections.push(...native.inspectorSections);
     if (facts.patch) detail.timelineSections.push(...nativePatchSections(facts.patch));
-    if (facts.nativeActivity === 'write') detail.inspectorSections.push(notice('The recorded write requests this content. Previous content and whether the file was created or overwritten are not recorded.'));
     if (facts.nativeActivity === 'edit' && !facts.patch) detail.inspectorSections.push(notice('Requested replacements are recorded; no successful valid unified patch confirms the file changes.'));
     if (facts.output) detail.timelineSections.push({ type: 'terminal', purpose: 'result', text: facts.output.slice(0, 100_000) });
     else detail.timelineSections.push(notice(event.status === 'incomplete' ? 'No unique completed result is recorded for this call.' : 'No textual output was recorded.', 'result'));
@@ -136,13 +148,13 @@ async function buildPiEventDetail(index, session, eventId, layer = 'main', optio
     const entry = raw.parsed;
     // Assistant usage has its own receipt event; paired tools carry nested work on their result record.
     if (entry?.message?.role === 'assistant' && event.subtype !== 'pi_usage') continue;
-    detail.inspectorSections.push(...recordedStateSections(entry));
+    addRecordedReading(entry, { selectedRows: branchRows });
   }
   if (configuration && event.subtype !== 'pi_branch' && event.subtype !== 'pi_invalid_tree') {
-    detail.inspectorSections.push(...recordedStateSections(null, { configuration }));
+    addRecordedReading(null, { configuration });
   }
   if (event.subtype === 'pi_branch' && !facts.invalidTree) {
-    detail.inspectorSections.push(...recordedStateSections(null, { branchRows }));
+    addRecordedReading(null, { branchRows });
   }
   if (event.kind === 'compaction') {
     const boundary = raws[0]?.parsed?.firstKeptEntryId;
@@ -161,9 +173,12 @@ async function buildPiEventDetail(index, session, eventId, layer = 'main', optio
     if (target) detail.inspectorSections.push({ type: 'event_refs', purpose: 'traceability', title: 'Referenced pi entry',
       items: [{ id: target.rawId, label: `Entry ${target.entryId}`, kind: target.payloadType, status: '', layer: 'raw' }] });
     if (entry?.type === 'label') {
-      context.push(['Label target entry id', entry.targetId], ['Recorded label', entry.label ?? '(label cleared)']);
+      context.push(['Label target entry id', entry.targetId], ['Recorded label', entry.label === '' || entry.label === undefined ? '(label cleared)' : entry.label]);
     }
   }
+  const imagePreview = piImagePreviewSection(session, event, snapshot);
+  if (imagePreview) detail.timelineSections.push(imagePreview);
+  detail.inspectorSections.push(...recordedEvidence);
   // Fallback is only residual evidence after modeled fields are subtracted.
   // Complete original records are available through their validated Raw refs.
   for (const raw of raws) {

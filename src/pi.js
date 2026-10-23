@@ -13,6 +13,7 @@ const { createSourceDiagnostics } = require('./source-diagnostics');
 const storage = require('./pi-storage');
 const logical = require('./pi-logical');
 const { buildPiEventDetail } = require('./pi-detail');
+const { readPiImagePreview, sanitizePiImageRecord } = require('./pi-images');
 
 const SOURCE_KIND = 'pi';
 function defaultPiHome() {
@@ -228,7 +229,7 @@ async function readPiRawRecord(index, session, raw, options = {}) {
   let parsed = null; try { parsed = JSON.parse(text); } catch { /* Preserve malformed bytes verbatim. */ }
   // The raw string is exact evidence. Bound its parsed companion as well so
   // HTTP JSON encoding cannot overflow on a record deeper than the JS stack.
-  return { raw: text, parsed: logical.sanitizePiValue(parsed), rawId: raw.rawId, sourceKind: SOURCE_KIND, sourceLocator: raw.sourceLocator };
+  return { raw: text, parsed: logical.sanitizePiValue(sanitizePiImageRecord(parsed)), rawId: raw.rawId, sourceKind: SOURCE_KIND, sourceLocator: raw.sourceLocator };
 }
 
 const piAdapter = {
@@ -237,7 +238,7 @@ const piAdapter = {
   defaultHome: defaultPiHome,
   query: piQuery, discoverConfiguredProjects: async () => [], discoverProjects: discoverPiProjects,
   buildIndex: buildPiIndex, materializeSession: materializePiSession, buildEventDetail: buildPiEventDetail,
-  readRawRecord: readPiRawRecord, validateMaterializationDescriptor: validatePiMaterializationDescriptor,
+  readRawRecord: readPiRawRecord, readImagePreview: readPiImagePreview, validateMaterializationDescriptor: validatePiMaterializationDescriptor,
   validateLegacyRawOwnerIndex: validatePiLegacyRawOwnerIndex, validateMaterializedPrivateState() {},
   materializationContextFields: ['sessionsRoot'], materializedPrivateFields: [],
 };

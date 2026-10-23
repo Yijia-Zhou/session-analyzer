@@ -38,7 +38,7 @@ for (const width of [1440, 390]) test(`native pi sidebar branch switching (${wid
   const single = page.locator('[data-pi-native-session="single-native"]');
   assert.equal(await single.locator('[data-session-id]').count(), 1);
   assert.equal(await single.locator('.sessionChildrenToggle').count(), 0);
-  assert.match(await group.innerText(), /Shared prefixes/);
+  assert.match(await group.innerText(), /Shared history/);
   for (const [leaf, content, excluded] of [['leaf-a', 'ONLY_ALPHA', 'ONLY_BETA'], ['leaf-b', 'ONLY_BETA', 'ONLY_ALPHA']]) {
     if (width < 760) await page.locator('button[data-mobile-view="sessions"]').click();
     const button = group.locator('[data-session-id]').filter({ hasText: `Branch · leaf ${leaf}` });

@@ -6,6 +6,7 @@ const { sanitizeLogicalDetailValue, redactEmbeddedDataUrls } = require('./shared
 const { projectSearchJson } = require('./search-json');
 
 const { nativeTool } = require('./pi-native-tools');
+const { sanitizePiImageRecord } = require('./pi-images');
 const SOURCE_KIND = 'pi';
 const searchPolicy = {
   opaqueTypes: new Set(['image', 'audio', 'image_url', 'input_image', 'output_image']),
@@ -54,7 +55,7 @@ function makeRaw(row, session) {
     payloadType: row.parseError ? 'malformed_json' : string(message.role) || string(record.type) || 'unknown',
     role: string(message.role), turnId: '', callId: string(message.toolCallId), toolName: string(message.toolName),
     preview: preview(contentText(message.content) || string(record.summary) || text),
-    messageText: safe(contentText(message.content)), searchText: text, parsed: safe(row.parsed),
+    messageText: safe(contentText(message.content)), searchText: text, parsed: safe(sanitizePiImageRecord(row.parsed)),
     parseError: row.parseError, entryId: string(record.id),
     // Invalid parent values remain in parsed/physical Raw, never in a scalar
     // context field that Detail will coerce to a string.
@@ -183,6 +184,14 @@ function makeSession(document, sourceFile, leafId, selectedRows, invalidTree) {
           session.logicalEvents.push(eventFor(session, raw, suffix, { kind: block.type === 'thinking' ? 'reasoning' : `${message.role}_message`,
             role: message.role, preview: text, searchText: text, hasReadableReasoning: block.type === 'thinking',
             pi: { text, blockIndex, model: string(message.model), provider: string(message.provider) } }));
+        } else if (block?.type === 'image') {
+          projected = true;
+          // Keep the previous image-event identity while making saved message
+          // media discoverable in Main at its original content-block position.
+          const subtype = `pi_content_image_${blockIndex}`;
+          session.logicalEvents.push(eventFor(session, raw, subtype, { kind: `${message.role}_message`, subtype,
+            role: message.role, preview: 'Saved image', searchText: '',
+            pi: { blockIndex, model: string(message.model), provider: string(message.provider) } }));
         } else if (block?.type === 'toolCall' && message.role === 'assistant') {
           projected = true;
           const matchingCalls = calls.get(block.id) || []; const matchingResults = results.get(block.id) || [];
@@ -230,7 +239,7 @@ function makeSession(document, sourceFile, leafId, selectedRows, invalidTree) {
     } else if (entry.type === 'message' && message?.role === 'toolResult') {
       if (!consumedResults.has(row.line)) session.logicalEvents.push(protocol(session, raw, 'pi_unpaired_tool_result', 'Tool result without a unique ancestor call'));
     } else if (entry.type === 'message' && message?.role === 'bashExecution') {
-      const status = message.cancelled ? 'failed' : Number.isInteger(message.exitCode) ? (message.exitCode === 0 ? 'success' : 'failed') : 'incomplete';
+      const status = message.cancelled === true ? 'cancelled' : Number.isInteger(message.exitCode) ? (message.exitCode === 0 ? 'success' : 'failed') : 'incomplete';
       session.logicalEvents.push(eventFor(session, raw, 'bash', { kind: 'command', subtype: 'pi_bash_execution', toolName: 'bash',
         status, severity: status === 'failed' ? 'error' : 'normal', preview: string(message.command), searchText: search(message),
         outputStats: { exitCode: Number.isInteger(message.exitCode) ? message.exitCode : null },

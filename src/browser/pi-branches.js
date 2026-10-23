@@ -21,4 +21,13 @@ function groupPiBranches(sessions) {
   return groups;
 }
 
-module.exports = { groupPiBranches };
+function piSessionTitle(session) {
+  return String(session?.title || '').replace(/^\[branch [^\]]*\]\s*/u, '') || session?.sourceSessionId || '';
+}
+
+function piPreview(value) {
+  if (typeof value === 'string') return value;
+  return value?.preview || value?.text || value?.title || '';
+}
+
+module.exports = { groupPiBranches, piSessionTitle, piPreview };
