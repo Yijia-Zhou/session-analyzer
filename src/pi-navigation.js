@@ -157,6 +157,10 @@ async function createPiEntryReference(index, session, eventId, layer, options = 
 }
 
 async function resolvePiEntryReference(index, reference, options = {}) {
+  const branchOffset = options.branchOffset === undefined ? 0 : options.branchOffset;
+  if (!Number.isSafeInteger(branchOffset) || branchOffset < 0) {
+    throw Object.assign(new Error('Invalid branch offset'), { statusCode: 400 });
+  }
   const unavailable = () => ({ status: 'unavailable', reference: typeof reference === 'string' && reference.length <= MAX_REFERENCE ? reference : '', branches: [] });
   const value = decode(reference);
   if (!value || index.sourceKind !== 'pi' || value.scope !== scope(index)) return unavailable();
@@ -174,11 +178,13 @@ async function resolvePiEntryReference(index, reference, options = {}) {
   const chosen = options.branchId ? candidates.find((session) => session.id === options.branchId)
     : candidates.length === 1 ? candidates[0] : null;
   if (!candidates.length || (options.branchId && !chosen)) return unavailable();
-  const visible = (chosen ? [chosen, ...candidates.filter((session) => session.id !== chosen.id)] : candidates).slice(0, MAX_BRANCHES);
+  const visible = chosen ? [chosen, ...candidates.filter((session) => session.id !== chosen.id)].slice(0, MAX_BRANCHES)
+    : candidates.slice(branchOffset, branchOffset + MAX_BRANCHES);
   const branches = visible.map((session) => ({ ...branchInfo(document, session),
     target: { sessionId: session.id, eventId: `${session.id}:raw:${row.line}`, layer: 'raw' } }));
   const result = { status: chosen ? 'resolved' : 'choose_branch', reference, entryId: value.entry,
-    branchCount: candidates.length, branches, truncated: candidates.length > MAX_BRANCHES };
+    branchCount: candidates.length, branches, truncated: candidates.length > MAX_BRANCHES,
+    nextOffset: !chosen && branchOffset + visible.length < candidates.length ? branchOffset + visible.length : null };
   if (chosen) {
     let event;
     if (value.layer !== 'raw') {

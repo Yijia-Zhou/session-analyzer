@@ -59,6 +59,7 @@ const requestOwners = {
   rawReferences: transitionSafety.createRequestOwner(),
   piOverview: transitionSafety.createRequestOwner(),
   piEntryActions: transitionSafety.createRequestOwner(),
+  piBranchPages: transitionSafety.createRequestOwner(),
 };
 const paginationIntents = transitionSafety.createPaginationIntentState();
 const detailRequestControllers = new Map();
@@ -5105,6 +5106,7 @@ function piEntryUrl(reference) {
 
 function cancelPiEntryNavigation() {
   piEntryNavigation.cancel();
+  requestOwners.piBranchPages.abort();
   if (piBranchChooser) {
     piBranchChooser.close();
     piBranchChooser.remove();
@@ -5191,17 +5193,50 @@ async function loadPiEntryActions(event) {
 
 function showPiBranchChooser(data, reference, scope) {
   const dialog = document.createElement('dialog');
+  const sessionId = state.selectedSessionId;
+  const intent = state.eventSelectionIntentId;
+  const current = () => piBranchChooser === dialog && scope === readingScopeKey()
+    && sessionId === state.selectedSessionId && intent === state.eventSelectionIntentId;
+  const branchItems = (branches) => branches.map((branch) => `<li>${piReferenceButton(reference, piPreview(branch.tip) || branch.title || branch.leafId, branch.sessionId)}<small>${escapeHtml(branch.leafId)}</small></li>`).join('');
+  let nextOffset = data.nextOffset;
+  let loaded = data.branches.length;
   dialog.className = 'piBranchChooser';
   dialog.setAttribute('aria-label', t('piChooseBranch'));
   dialog.innerHTML = `<header><h2>${escapeHtml(t('piChooseBranch'))}</h2><button type="button" class="smallBtn" data-pi-chooser-close>${escapeHtml(t('close'))}</button></header>
     <p>${escapeHtml(t('piChooseBranchNotice'))}</p>
-    <ul>${data.branches.map((branch) => `<li>${piReferenceButton(reference, piPreview(branch.tip) || branch.title || branch.leafId, branch.sessionId)}<small>${escapeHtml(branch.leafId)}</small></li>`).join('')}</ul>
-    ${data.truncated ? `<p>${escapeHtml(t('piOverviewTruncated'))}</p><p>${piReferenceButton(reference, t('piReadSelectedBranch'), state.selectedSessionId)}</p>` : ''}`;
+    <ul>${branchItems(data.branches)}</ul>
+    <button type="button" class="smallBtn" data-pi-branches-more${nextOffset == null ? ' hidden' : ''}>${escapeHtml(t('loadMoreCount', { loaded, total: data.branchCount }))}</button>`;
+  const more = dialog.querySelector('[data-pi-branches-more]');
   piBranchChooser = dialog;
   document.body.append(dialog);
   dialog.addEventListener('cancel', () => cancelPiEntryNavigation());
   dialog.addEventListener('click', (event) => {
-    if (event.target.closest('[data-pi-chooser-close]') || scope !== readingScopeKey()) cancelPiEntryNavigation();
+    if (event.target.closest('[data-pi-chooser-close]') || !current()) cancelPiEntryNavigation();
+  });
+  more.addEventListener('click', async () => {
+    if (!current() || more.disabled || nextOffset == null) return;
+    const offset = nextOffset;
+    const owner = requestOwners.piBranchPages.start(JSON.stringify([scope, reference, offset]));
+    more.disabled = true;
+    more.textContent = t('loading');
+    try {
+      const page = await api(`/api/pi/entry?${piApiParams({ reference, branchOffset: String(offset) })}`, { signal: owner.controller.signal });
+      if (!current() || !requestOwners.piBranchPages.isCurrent(owner)) return;
+      if (page.indexRevision !== state.indexRevision || page.status !== 'choose_branch'
+          || page.reference !== reference || page.branchCount !== data.branchCount) throw new Error(t('piEntryUnavailable'));
+      dialog.querySelector('ul').insertAdjacentHTML('beforeend', branchItems(page.branches));
+      loaded += page.branches.length;
+      nextOffset = page.nextOffset;
+      more.hidden = nextOffset == null;
+    } catch (error) {
+      if (current() && requestOwners.piBranchPages.isCurrent(owner) && !isIntentionalAbort(error)) showError(error);
+    } finally {
+      if (current() && requestOwners.piBranchPages.isCurrent(owner)) {
+        more.disabled = false;
+        more.textContent = t('loadMoreCount', { loaded, total: data.branchCount });
+      }
+      requestOwners.piBranchPages.finish(owner);
+    }
   });
   dialog.showModal();
 }

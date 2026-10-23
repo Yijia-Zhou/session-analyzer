@@ -6,8 +6,9 @@ const path = require('node:path');
 const os = require('node:os');
 const { chromium } = require('playwright');
 const { createHistoryService } = require('../src/history-service');
+const { createServer } = require('../server');
 
-async function fixture(t) {
+async function fixture(t, extraBranches = 0) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-navigation-'));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const repo = path.join(home, 'project');
@@ -25,17 +26,115 @@ async function fixture(t) {
     { type: 'message', id: 'answer-b', parentId: 'summary-b', message: { role: 'assistant', content: [{ type: 'text', text: 'B_SUCCEEDED_EVIDENCE' }] } },
     { type: 'label', id: 'label-b', parentId: 'answer-b', targetId: 'answer-b', label: 'Successful attempt' },
   ];
+  for (let i = 0; i < extraBranches; i += 1) rows.push({ type: 'message', id: `extra-${i}`, parentId: 'question',
+    message: { role: 'assistant', content: `EXTRA_BRANCH_${i}` } });
   await fs.writeFile(file, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
-  const start = async () => {
-    const service = await createHistoryService({ repo, source: 'pi', piHome: home });
-    const server = service.createViewerServer();
+  const start = async (interactive = false) => {
+    const service = interactive ? null : await createHistoryService({ repo, source: 'pi', piHome: home });
+    const server = interactive ? createServer(null, 0, { repo, source: 'pi', piHome: home, codexHome: path.join(home, 'empty-codex') }) : service.createViewerServer();
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const close = async () => { await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }); await service.close(); };
+    const close = async () => { await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }); await service?.close(); };
     t.after(close);
     return { origin: `http://127.0.0.1:${server.address().port}`, close };
   };
   return { home, repo, file, start };
 }
+
+async function openSharedChooser(page, origin) {
+  await page.goto(origin);
+  const first = page.locator('.sessionItem[data-session-id]').first();
+  const sessionId = await first.getAttribute('data-session-id');
+  await first.click();
+  await page.locator('#layerSelect').selectOption('main');
+  const response = await page.request.get(`${origin}/api/sessions/${encodeURIComponent(sessionId)}/timeline?layer=main&limit=150`);
+  const shared = (await response.json()).events.find((event) => event.kind === 'user_message');
+  await page.locator(`#timeline .event[data-event-id="${shared.id}"] .eventHeader`).click();
+  const link = page.locator('#detail [data-pi-entry-actions] a');
+  await link.waitFor();
+  const href = await link.getAttribute('href');
+  await link.click();
+  const chooser = page.locator('dialog.piBranchChooser');
+  await chooser.waitFor({ state: 'visible' });
+  return { chooser, sessionId, href };
+}
+
+test('pi shared-entry chooser pages all branches without changing the pending reference or selected history', { timeout: 60000 }, async (t) => {
+  const data = await fixture(t, 203);
+  const server = await data.start();
+  const browser = await chromium.launch(); t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } });
+  const { chooser, sessionId, href } = await openSharedChooser(page, server.origin);
+  const url = page.url();
+  const detail = await page.locator('#detail').innerText();
+  assert.equal(await chooser.locator('[data-pi-branch]').count(), 100);
+  const firstIds = await chooser.locator('[data-pi-branch]').evaluateAll((nodes) => nodes.map((node) => node.dataset.piBranch));
+  for (const total of [200, 205]) {
+    await chooser.getByRole('button', { name: /^Load more/ }).click();
+    await page.waitForFunction((count) => document.querySelectorAll('dialog.piBranchChooser [data-pi-branch]').length === count, total);
+    assert.equal(await page.locator('.sessionItem.active').getAttribute('data-session-id'), sessionId);
+    assert.equal(await page.locator('#detail').innerText(), detail);
+    assert.equal(page.url(), url);
+  }
+  const allIds = await chooser.locator('[data-pi-branch]').evaluateAll((nodes) => nodes.map((node) => node.dataset.piBranch));
+  assert.equal(new Set(allIds).size, 205);
+  assert.equal(await chooser.locator('[data-pi-branches-more]').isVisible(), false);
+  const last = allIds.at(-1);
+  assert.equal(firstIds.includes(last), false);
+  await chooser.locator(`[data-pi-branch="${last}"]`).click();
+  await page.waitForFunction((id) => document.querySelector('[data-pi-overview] [aria-current="true"] [data-pi-session]')?.dataset.piSession === id
+    && document.querySelector('#timeline .event.selected')?.dataset.eventId?.startsWith(`${id}:event:2:`), last);
+  await page.waitForURL(href);
+  assert.equal(await page.locator('dialog.piBranchChooser').count(), 0);
+});
+
+for (const change of ['cancel', 'session', 'source', 'index']) test(`pi branch paging discards a late response after ${change}`, { timeout: 60000 }, async (t) => {
+  const data = await fixture(t, 101);
+  const server = await data.start(['source', 'index'].includes(change));
+  const browser = await chromium.launch(); t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'zh-CN', viewport: { width: 1440, height: 900 } });
+  const errors = []; page.on('pageerror', (error) => errors.push(error.message));
+  const { chooser, sessionId } = await openSharedChooser(page, server.origin);
+  let release; const gate = new Promise((resolve) => { release = resolve; });
+  let started; const pending = new Promise((resolve) => { started = resolve; });
+  let delivered; const completed = new Promise((resolve) => { delivered = resolve; });
+  t.after(() => release());
+  await page.route('**/api/pi/entry?**', async (route) => {
+    if (!new URL(route.request().url()).searchParams.has('branchOffset')) { await route.continue(); return; }
+    const response = await route.fetch(); started(); await gate;
+    try { await route.fulfill({ response }); } catch { /* The retired page request is intentionally aborted. */ }
+    delivered();
+  });
+  const more = chooser.locator('[data-pi-branches-more]');
+  assert.match(await more.innerText(), /^加载更多/);
+  await more.click(); await pending;
+  assert.equal(await more.isDisabled(), true);
+  // Deliver real application transitions directly while the modal makes the
+  // background inert; each transition must retire paging without an Escape first.
+  if (change === 'cancel') await page.keyboard.press('Escape');
+  else if (change === 'session') {
+    await page.locator(`.sessionItem[data-session-id]:not([data-session-id="${sessionId}"])`).first().evaluate((node) => node.click());
+    await page.waitForFunction((old) => document.querySelector('.sessionItem.active')?.dataset.sessionId !== old, sessionId);
+  } else if (change === 'source') {
+    await page.locator('#projectSwitchControl').evaluate((node) => node.click());
+    await page.locator('[data-source-choice="codex"]').click();
+    if (await page.locator('#projectSourceAction').isVisible()) await page.locator('#projectSourceAction').click();
+    await page.waitForFunction(() => document.querySelector('#projectSourceSwitch')?.dataset.source === 'codex');
+  } else if (change === 'index') {
+    await fs.appendFile(data.file, JSON.stringify({ type: 'message', id: 'after-page', parentId: 'extra-0', message: { role: 'assistant', content: 'NEW_INDEX_EVIDENCE' } }) + '\n');
+    await page.locator('#projectRefreshBtn').evaluate((node) => node.click());
+    await page.waitForFunction(() => document.querySelector('#projectRefreshBtn')?.dataset.refreshing === 'false'
+      && document.querySelector('#projectRefreshStatus')?.classList.contains('success'));
+  }
+  const active = await page.locator('.sessionItem.active').evaluateAll((nodes) => nodes[0]?.dataset.sessionId || null);
+  const url = page.url();
+  release(); await completed;
+  // A fresh UI request fences the released handler before checking for stale publication.
+  await page.request.get(server.origin + '/api/state');
+  assert.equal(await page.locator('dialog.piBranchChooser').count(), 0);
+  assert.equal(await page.locator('.sessionItem.active').evaluateAll((nodes) => nodes[0]?.dataset.sessionId || null), active);
+  assert.equal(page.url(), url);
+  assert.deepEqual(errors, []);
+});
 
 for (const width of [1440, 390]) test(`pi branch overview, referenced history and stable entry links (${width})`, { timeout: 60000 }, async (t) => {
   const data = await fixture(t);

@@ -91,6 +91,45 @@ test('normal branch summaries and labels navigate to abandoned siblings without 
   assert.equal(await createPiEntryReference(f.index, session, target.target.eventId, 'raw'), null, 'caller cannot select a sibling through an owned event endpoint');
 });
 
+test('shared-entry branch choice pages every containing branch in bounded stable snapshot order', async (t) => {
+  const f = await fixture(t, [user('root', null, 'Shared entry'),
+    ...Array.from({ length: 205 }, (_, i) => assistant(`leaf-${i}`, 'root', `Branch ${i}`)),
+    user('unrelated', null, 'Outside this entry')]);
+  const ref = (await eventReference(f, f.index, 'root', 'leaf-0', 'raw')).reference;
+  const seen = [];
+  let offset = 0;
+  for (const count of [100, 100, 5]) {
+    const page = await resolvePiEntryReference(f.index, ref, { branchOffset: offset });
+    assert.equal(page.status, 'choose_branch');
+    assert.equal(page.branchCount, 205);
+    assert.equal(page.branches.length, count);
+    assert.equal(page.target, undefined);
+    assert.equal(page.truncated, true);
+    seen.push(...page.branches.map((branch) => branch.sessionId));
+    offset += count;
+    assert.equal(page.nextOffset, offset < 205 ? offset : null);
+    if (offset === 100) await fs.appendFile(f.file, serialize([assistant('new-leaf', 'root', 'Appended later')]));
+  }
+  const expected = f.index.sessions.filter((session) => session.sourceDerivedId !== 'unrelated').map((session) => session.id);
+  assert.deepEqual(seen, expected);
+  assert.equal(new Set(seen).size, 205);
+  const last = await resolvePiEntryReference(f.index, ref, { branchId: seen.at(-1) });
+  assert.equal(last.status, 'resolved');
+  assert.equal(last.target.sessionId, seen.at(-1));
+  assert.equal(last.branches[0].sessionId, seen.at(-1), 'explicit branch retains selected-first response semantics');
+  assert.equal(last.branches.length, 100);
+  assert.equal(last.nextOffset, null);
+  assert.equal((await resolvePiEntryReference(f.index, ref, { branchId: 'pi:native:unrelated' })).status, 'unavailable');
+  const exhausted = await resolvePiEntryReference(f.index, ref, { branchOffset: 999 });
+  assert.deepEqual(exhausted.branches, []);
+  assert.equal(exhausted.nextOffset, null);
+  for (const branchOffset of [-1, 0.5, NaN, Infinity, '100', null, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(resolvePiEntryReference(f.index, ref, { branchOffset }), { statusCode: 400 });
+  }
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(resolvePiEntryReference(f.index, ref, { branchOffset: 100, signal: controller.signal }), { name: 'AbortError' });
+});
+
 test('native overview resolves whole-artifact names and labels, including clears, separately from historical titles', async (t) => {
   const f = await fixture(t, [user('root', null, 'Original question'), assistant('left', 'root', 'Left answer'),
     { type: 'session_info', id: 'name', parentId: 'left', name: 'Useful project name' },
@@ -189,6 +228,13 @@ test('pi navigation HTTP requires source/project/revision ownership and serves s
   params.set('reference', ref);
   const selection = await (await fetch(base + '/api/pi/entry?' + params)).json();
   assert.equal(selection.status, 'resolved');
+  for (const invalid of ['', '-1', '1.5', '1e2', 'Infinity', ' 1', '01', '9007199254740992']) {
+    params.set('branchOffset', invalid);
+    assert.equal((await fetch(base + '/api/pi/entry?' + params)).status, 400, `reject branchOffset=${JSON.stringify(invalid)}`);
+  }
+  params.set('branchOffset', '100');
+  assert.equal((await fetch(base + '/api/pi/entry?' + params)).status, 200);
+  params.delete('branchOffset');
   params.set('repoRoot', f.home + '-wrong');
   assert.equal((await fetch(base + '/api/pi/entry?' + params)).status, 404);
   params.set('repoRoot', f.home);

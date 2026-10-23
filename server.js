@@ -962,12 +962,17 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         if (!searchParams.has('indexRevision') || searchParams.get('source') !== 'pi' || !searchParams.get('repoRoot')) {
           sendError(res, 400, 'Source, project and index revision are required'); return;
         }
+        const branchOffset = searchParams.get('branchOffset');
+        if (pathname === '/api/pi/entry' && branchOffset !== null
+            && (!/^(0|[1-9]\d*)$/.test(branchOffset) || !Number.isSafeInteger(Number(branchOffset)))) {
+          sendError(res, 400, 'Invalid branch offset'); return;
+        }
         const { value: result, lease } = await withIndexRevisionLease(state, requestAbort.signal, async (capture) => {
           requireQueryRevision(searchParams.get('indexRevision'), capture.indexRevision);
           const { index, signal } = capture;
           if (index.sourceKind !== 'pi' || index.repoRoot !== searchParams.get('repoRoot')) return null;
           if (pathname === '/api/pi/entry') return resolvePiEntryReference(index, searchParams.get('reference'), {
-            signal, branchId: searchParams.get('branchId') || '',
+            signal, branchId: searchParams.get('branchId') || '', branchOffset: branchOffset === null ? 0 : Number(branchOffset),
           });
           const session = index.sessionsById.get(searchParams.get('sessionId'));
           if (!session) return null;

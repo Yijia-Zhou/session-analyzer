@@ -66,6 +66,8 @@ Pi Detail distinguishes recorded selections from response-model evidence, explai
 
 Pi native-session groups can be collapsed; an overview distinguishes branch tips, common history and current native labels/name from historical branch titles. Project search labels visible native-session and matching-branch counts without claiming deduplicated hits. A copied entry link can reopen an unchanged entry after branch continuation and reindex, asks which branch to read when shared, and refuses changed evidence or another source/project. Existing snapshot-bound history links retain their contract. / pi 原生会话组可折叠，概览区分分支内容、共同历史、当前原生名称／标签与历史分支标题。项目搜索标注当前显示的原生会话及匹配分支数，不声称去重命中。复制的 entry 链接在分支继续和重建后可重开未改变记录，共享时询问所读分支，拒绝改变依据或其他来源／项目。原有绑定快照历史链接保持契约。
 
+When a shared entry belongs to more than 100 branches, Load more in the branch chooser makes every containing branch selectable without changing the current branch or losing the pending entry. / 当共享 entry 属于超过 100 个分支时，分支选择器内的“加载更多”让每个所属分支均可选择，无需切换当前分支或丢失待选 entry。
+
 ## Collaboration reading round trips / 协作阅读往返
 
 Confirmed targets show the indexed child title as their primary display name and retain the exact identifier as secondary identity. First selection also exposes a compact target directory in Inspector while the timeline card stays folded; unavailable targets keep their reason. Display names never establish a relation. / 已确认目标以索引中的子会话标题为主要显示名，保留精确标识作次级身份。首次选中时，即使时间线卡片折叠，Inspector 也提供精简目标目录；不可用目标保留原因。显示名从不建立关系。
