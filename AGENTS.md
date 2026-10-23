@@ -70,6 +70,7 @@ Choose by the affected concern: behavior changes need the relevant product-spec 
 - Code Mode structured display catalog: `docs/design-docs/code-mode-structured-display-catalog.md`
 - Schema update runbook: `docs/design-docs/schema-update-runbook.md`
 - Codex protocol coverage: `docs/design-docs/codex-protocol-event-coverage.md`
+- pi protocol coverage and native-reader boundaries: `docs/design-docs/pi-protocol-event-coverage.md`, `docs/design-docs/pi-native-sessions.md`
 - npm release runbook: `docs/design-docs/npm-release-runbook.md`
 - Documentation system guide: `docs/design-docs/documentation-system.md`
 - Optional Codex hook guardrails: `docs/design-docs/codex-hooks-guardrails.md`

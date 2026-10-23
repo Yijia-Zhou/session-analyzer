@@ -1,0 +1,90 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
+const { chromium } = require('playwright');
+const { createHistoryService } = require('../src/history-service');
+const { buildPiIndex } = require('../src/pi');
+const { materializeSessionForIndex } = require('../src/source-adapters');
+const { disposeProjectQueryStore } = require('../src/project-query-store');
+
+for (const width of [1440, 390]) test(`native pi recorded evidence reading (${width})`, { timeout: 45000 }, async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-branches-'));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const repo = path.join(home, 'project');
+  const directory = path.join(home, 'sessions', 'synthetic');
+  await fs.mkdir(repo); await fs.mkdir(directory, { recursive: true });
+  const rows = [{ type: 'session', version: 3, id: 'native-evidence', cwd: repo }];
+  let parentId = null;
+  const add = (id, type, fields) => { rows.push({ type, id, parentId, ...fields }); parentId = id; };
+  add('model', 'model_change', { provider: 'synthetic-provider', modelId: 'selected-model' });
+  add('thinking', 'thinking_level_change', { thinkingLevel: 'high' });
+  add('original', 'message', { message: { role: 'user', content: 'ORIGINAL_USER_EVIDENCE' } });
+  add('edit', 'context_edit', { targetId: 'original', replacement: null });
+  add('compact', 'compaction', { firstKeptEntryId: 'compact', summary: 'SELF_COMPACTION_EVIDENCE', tokensBefore: 42, usage: { input: 2 } });
+  add('answer', 'message', { message: { role: 'assistant', provider: 'synthetic-provider', model: 'physical-model', content: [{ type: 'text', text: 'ANSWER_EVIDENCE' }], usage: { input: 5, output: 0 } } });
+  add('call', 'message', { message: { role: 'assistant', content: [{ type: 'toolCall', id: 'outer-code', name: 'code', arguments: { code: 'recorded synthetic code' } }] } });
+  add('result', 'message', { message: { role: 'toolResult', toolCallId: 'outer-code', toolName: 'code', isError: false, content: [{ type: 'text', text: 'OUTER_CODE_RESULT' }], nestedCalls: { complete: false, calls: [
+    { id: 'nested-failed', name: 'edit', status: 'error', error: 'NESTED_RECORDED_FAILURE' },
+    { id: 'nested-unfinished', name: 'bash', status: 'unfinished', arguments: { command: 'synthetic command' } },
+    { id: 'nested-no-args', name: 'read', status: 'ok' },
+  ] } } });
+  rows.push({ type: 'message', id: 'sibling', parentId: 'original', message: { role: 'assistant', content: [{ type: 'text', text: 'SIBLING_ONLY' }] } });
+  await fs.writeFile(path.join(directory, 'evidence.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+  const index = await buildPiIndex({ repoRoot: repo, sourceHome: home });
+  t.after(() => disposeProjectQueryStore(index.projectQueryStore));
+  const session = await materializeSessionForIndex(index, index.sessions.find((item) => item.sourceDerivedId === 'result'));
+  assert.equal(session.counts.toolCalls, 1, 'nested receipt does not create extra operations');
+  assert.equal(session.logicalEvents.filter((item) => item.toolName === 'code').length, 1);
+  const service = await createHistoryService({ repo, source: 'pi', piHome: home });
+  t.after(() => service.close());
+  const server = service.createViewerServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
+  const browser = await chromium.launch(); t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'en-US', viewport: { width, height: 900 } });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+  await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await page.locator(`[data-session-id="${session.id}"]`).click();
+  const open = async (event, expected) => {
+    if (width < 760) await page.locator('button[data-mobile-view="events"]').click();
+    await page.locator('#layerSelect').selectOption(event.layer);
+    await page.locator(`#timeline .event[data-event-id="${event.id}"]`).waitFor({ state: 'attached' });
+    if (width < 760) await page.locator('button[data-mobile-view="events"]').click();
+    await page.locator(`#timeline .event[data-event-id="${event.id}"] .eventHeader`).click();
+    await page.waitForFunction((text) => document.querySelector('#detail')?.textContent.includes(text), expected);
+  };
+  const edit = session.logicalEvents.find((event) => event.subtype === 'pi_context_edit');
+  await open(edit, 'omits the target from model context');
+  assert.match(await page.locator('#detail').innerText(), /omits the target from model context/);
+  const target = page.locator('#detail [data-target-layer="raw"]').first();
+  await target.click();
+  await page.waitForFunction(() => document.querySelector('#layerSelect').value === 'raw');
+  if (width < 760) await page.locator('button[data-mobile-view="detail"]').click();
+  await page.waitForFunction(() => document.querySelector('#detail')?.textContent.includes('ORIGINAL_USER_EVIDENCE'));
+  assert.match(await page.locator('#detail').innerText(), /synthetic\/evidence\.jsonl:4/);
+  await open(session.logicalEvents.find((event) => event.kind === 'compaction'), 'no earlier conversation entries are retained');
+  assert.match(await page.locator('#detail').innerText(), /no earlier conversation entries are retained/);
+  await open(session.logicalEvents.find((event) => event.kind === 'assistant_message'), 'physical-model');
+  const answer = await page.locator('#detail').innerText();
+  assert.match(answer, /selected-model/); assert.match(answer, /physical-model/); assert.match(answer, /high/);
+  const usage = session.logicalEvents.find((event) => event.subtype === 'pi_usage' && event.preview?.includes('assistant'))
+    || session.logicalEvents.find((event) => event.subtype === 'pi_usage');
+  assert.ok(usage, 'assistant usage has a Protocol receipt');
+  await open(usage, 'Recorded usage attribution');
+  assert.match(await page.locator('#detail').innerText(), /Recorded usage/i);
+  await open(session.logicalEvents.find((event) => event.toolName === 'code'), 'NESTED_RECORDED_FAILURE');
+  const code = await page.locator('#detail').innerText();
+  assert.match(code, /NESTED_RECORDED_FAILURE/);
+  assert.match(code, /unfinished/);
+  assert.match(code, /arguments were not recorded/);
+  assert.match(code, /Nested result payloads are not recorded/);
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('nested-failed'));
+  assert.match(await page.locator('#detail .rawRefsView').innerText(), /nested-unfinished/);
+  assert.deepEqual(errors, []);
+});
