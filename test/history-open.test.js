@@ -6,7 +6,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { startHistoryServer, createHistoryServer } = require('../src/history-server');
-const { requestHistory } = require('../src/history-cli');
+const { requestHistory, runHistoryCli } = require('../src/history-cli');
 
 async function fixture(t) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'history-open-'));
@@ -113,6 +113,28 @@ test('open admits only one event and context-bound handles; borrowed viewer shut
   await new Promise((resolve) => borrowed.close(resolve));
   assert.equal((await requestHistory(running.endpoint, 'search', { query: 'THE_EXACT_EVIDENCE_HIT' })).items.length, 1);
   assert.equal((await requestHistory(running.endpoint, 'read', { refs: [running.ref] })).items.length, 1);
+});
+
+test('open budget errors keep the one-event contract and recover through CLI and HTTP', async (t) => {
+  const running = await fixture(t);
+  const rejected = await requestHistory(running.endpoint, 'open', { refs: [running.ref], maxBytes: 8000 });
+  assert.equal(rejected.error.code, 'INVALID_ARGUMENT');
+  assert.equal(rejected.targetVerified, false);
+  assert.match(rejected.error.message, /Remove paging, content and budget options.*one event/u);
+  let stdout = '';
+  assert.equal(await runHistoryCli(['open', '--endpoint', running.endpoint, '--ref', running.ref, '--max-bytes', '8000'], {
+    stdout: { write(value) { stdout += value; } },
+  }), 1);
+  assert.equal(JSON.parse(stdout).error.code, 'INVALID_ARGUMENT');
+  assert.match(JSON.parse(stdout).error.message, /Remove paging, content and budget options.*contextRef/u);
+  const opened = await requestHistory(running.endpoint, 'open', { refs: [running.ref] });
+  assert.equal(opened.targetVerified, true);
+  assert.equal(opened.viewerReady, true);
+  stdout = '';
+  assert.equal(await runHistoryCli(['open', '--endpoint', running.endpoint, '--ref', running.ref, '--no-browser'], {
+    stdout: { write(value) { stdout += value; } },
+  }), 0);
+  assert.equal(JSON.parse(stdout).url, opened.url);
 });
 
 test('viewer startup failure retains target verification and can retry', async (t) => {

@@ -31,7 +31,8 @@ async function groupedSearch({ input, response, maxBytes, search }) {
     .digest('base64url').slice(0, 22));
   response.groups = groups.map((group, i) => ({ id: group.id, queryIdentity: identities[i], state: 'not_executed',
     scan: { complete: false }, items: [], hasMore: null, nextCursor: null, truncated: false }));
-  if (bytes(response) > maxBytes) throw Object.assign(new Error('Group metadata exceeds maxBytes'), { code: 'OUTPUT_BUDGET_TOO_SMALL' });
+  const metadataError = () => Object.assign(new Error('Group metadata exceeds top-level maxBytes (UTF-8 JSON bytes). Increase top-level maxBytes (up to 1048576), request fewer groups, or use presentation=compact with the current contextRef.'), { code: 'OUTPUT_BUDGET_TOO_SMALL' });
+  if (bytes(response) > maxBytes) throw metadataError();
   for (let i = 0; i < groups.length; i += 1) {
     if (maxBytes - bytes(response) < 1024) {
       response.groups[i].reason = 'batch_output_budget';
@@ -53,7 +54,7 @@ async function groupedSearch({ input, response, maxBytes, search }) {
   response.scan = { complete: response.groups.every((group) => group.scan.complete), executedGroups: response.groups.filter((group) => group.state !== 'not_executed').length };
   response.hasMore = response.groups.some((group) => group.state !== 'complete' || group.hasMore);
   response.truncated = response.groups.some((group) => group.state !== 'complete' || group.truncated);
-  if (bytes(response) > maxBytes) throw Object.assign(new Error('Group metadata exceeds maxBytes'), { code: 'OUTPUT_BUDGET_TOO_SMALL' });
+  if (bytes(response) > maxBytes) throw metadataError();
   return response;
 }
 

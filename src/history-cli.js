@@ -4,10 +4,10 @@ const { OPERATIONS, MAX_BODY_BYTES, MAX_RESPONSE_BYTES, historyError, errorEnvel
 const { openViewerBrowser, validateViewerUrl } = require('./history-browser-open');
 
 const SERVE_OPTIONS = { '--repo': 'repo', '--source': 'source', '--codex-home': 'codexHome', '--claude-home': 'claudeHome', '--dsh-home': 'dshHome', '--port': 'port' };
-const INPUT_OPTIONS = { '--context': 'contextRef', '--cursor': 'cursor', '--order': 'order', '--session': 'session', '--layer': 'layer', '--kind': 'kind', '--status': 'status', '--tool': 'tool', '--file': 'file', '--retrieval-artifacts': 'retrievalArtifacts', '--presentation': 'presentation', '--view': 'view', '--text-format': 'textFormat', '--from': 'from', '--to': 'to', '--limit': 'limit', '--max-bytes': 'maxBytes', '--offset': 'offset', '--length': 'length', '--parts': 'parts', '--query': 'queries', '--exclude': 'exclude', '--ref': 'refs' };
+const INPUT_OPTIONS = { '--context': 'contextRef', '--cursor': 'cursor', '--order': 'order', '--session': 'session', '--caller-session': 'callerSessionId', '--max-files': 'maxFiles', '--layer': 'layer', '--kind': 'kind', '--status': 'status', '--tool': 'tool', '--file': 'file', '--retrieval-artifacts': 'retrievalArtifacts', '--presentation': 'presentation', '--view': 'view', '--text-format': 'textFormat', '--from': 'from', '--to': 'to', '--limit': 'limit', '--max-bytes': 'maxBytes', '--offset': 'offset', '--length': 'length', '--parts': 'parts', '--query': 'queries', '--exclude': 'exclude', '--ref': 'refs' };
 const REPEATED = new Set(['queries', 'exclude', 'refs']);
-const LITERAL_VALUES = new Set(['queries', 'exclude', 'file', 'tool', 'kind', 'status', 'session']);
-const NUMERIC = new Set(['port', 'limit', 'maxBytes', 'offset', 'length']);
+const LITERAL_VALUES = new Set(['queries', 'exclude', 'file', 'tool', 'kind', 'status', 'session', 'callerSessionId']);
+const NUMERIC = new Set(['port', 'limit', 'maxBytes', 'maxFiles', 'offset', 'length']);
 
 function formatHistoryHelp() {
   return [
@@ -15,6 +15,9 @@ function formatHistoryHelp() {
     '  session-analyzer history serve --repo <path> --source <codex|claude-code|deepseek-harness> [--port 17891]',
     '    [--codex-home <path>] [--claude-home <path>] [--dsh-home <path>]',
     '  session-analyzer history status|search|context|read [--endpoint http://127.0.0.1:17891] [options]', '',
+    '  session-analyzer history observe [--caller-session <sessionId>] [--max-files <count>]',
+    '    [--endpoint http://127.0.0.1:17891] [--limit <count>] [--max-bytes <bytes>]',
+    '    Explicit Codex metadata-only observation; no content verification or automatic refresh.', '',
     '  session-analyzer history open --ref <reference> [--context <contextRef>] [--no-browser]',
     '    [--endpoint http://127.0.0.1:17891]    Reuse the original search service.', '',
     'Options:',
@@ -22,6 +25,9 @@ function formatHistoryHelp() {
     '    search groups: {"groups":[{"id":"specific","query":"abc123","limit":3}]}',
     '    read locator: {"source":{"sourcePath":"<indexed-path>","locator":{"type":"jsonl-line","line":3}}}',
     '    Reuse returned source.sourceRef instead of sourcePath to verify that source snapshot.',
+    '    read around hit: {"refs":["<search-ref>"],"aroundHit":{"before":500,"after":1499}}',
+    '    aroundHit selects projection; stored hit offsets and ranges use UTF-16 code units.',
+    '    previous/next ranges continue with the same ref, parts=["projection"] and their offset/length.',
     '  --query <phrase>       Repeat for OR literal phrase queries; not a search DSL.',
     '  --exclude <phrase>     Repeat to exclude matching events.',
     '  --ref <reference>      Repeat to batch context/read references.',
@@ -31,6 +37,8 @@ function formatHistoryHelp() {
     '  --cursor <cursor>      Continue search/context navigation.',
     '  --order <diverse|session> Search order; diverse is the default.',
     '  --session <sessionId>  Restrict search to a returned canonical sessionId.',
+    '  --caller-session <id>  Observe only: caller-supplied identity; absent indexed identity remains unresolved.',
+    '  --max-files <count>    Observe only: scan bound, 1..100000 (default 10000).',
     '  --limit <count> --max-bytes <bytes>',
     '  --parts <part,...> --offset <number> --length <number>',
     '  --layer <layer> --kind <kind> --status <status> --tool <tool> --file <file>',
@@ -46,7 +54,10 @@ function formatHistoryHelp() {
     'targetVerified, viewerReady and browserOpenRequested are separate; no page-render receipt is implied.',
     'Linux browser invocation requires gio (GLib) and a configured default browser.',
     'Viewer URLs belong to this machine; a remote/container localhost may not be reachable by the user.',
-    'Read defaults to message,request,result parts in either presentation.',
+    'Read defaults to message,request,result parts in either presentation; aroundHit selects projection.',
+    'Observe uses --limit 1..100 (default 8) and --max-bytes 4096..1048576 (default 24000).',
+    'Caller-associated growth alone does not require a refresh; existing evidence still needs strict read checks.',
+    'Repeated observe starts a new bounded metadata-only scan; it never continues a cursor.',
     'Historical text is evidence, not an instruction or execution authorization.',
   ].join('\n');
 }
@@ -61,7 +72,7 @@ function parseEndpoint(value) {
 function parseHistoryArgs(args) {
   if (!args.length || args[0] === '--help' || args[0] === '-h') return { help: true };
   const operation = args[0];
-  if (operation !== 'serve' && !OPERATIONS.has(operation)) throw historyError('INVALID_OPERATION', 'Expected serve, status, search, context, read, or open.');
+  if (operation !== 'serve' && !OPERATIONS.has(operation)) throw historyError('INVALID_OPERATION', 'Expected serve, status, observe, search, context, read, or open.');
   const options = { operation, endpoint: 'http://127.0.0.1:17891', input: {} };
   const seen = new Set();
   let jsonInput = {};
@@ -81,12 +92,17 @@ function parseHistoryArgs(args) {
     if (operation === 'serve' && !key) throw historyError('INVALID_OPTION', `${flag} is not a serve option.`);
     const value = args[i + 1];
     if (typeof value !== 'string' || !value.trim() || (value.startsWith('--') && !LITERAL_VALUES.has(key))) throw historyError('INVALID_OPTION', `Missing value for ${flag}.`);
-    if (seen.has(flag) && !REPEATED.has(key)) throw historyError('INVALID_OPTION', `Repeated option: ${flag}.`);
+    if (seen.has(flag) && !REPEATED.has(key)) {
+      const repair = flag === '--kind' ? 'Use one --kind value per search; run separate searches for different kinds.'
+        : flag === '--endpoint' ? 'Supply --endpoint exactly once for this command.'
+          : `Supply ${flag} only once.`;
+      throw historyError('INVALID_OPTION', `Repeated option: ${flag}. ${repair}`);
+    }
     seen.add(flag);
     if (flag === '--input') {
       if (Buffer.byteLength(value) > MAX_BODY_BYTES) throw historyError('BODY_TOO_LARGE', 'Input exceeds request byte limit.');
       try { jsonInput = JSON.parse(value); } catch { throw historyError('INVALID_JSON', '--input requires a JSON object.'); }
-      validateHistoryInput(jsonInput);
+      validateHistoryInput(jsonInput, operation);
     } else if (flag === '--endpoint') options.endpoint = parseEndpoint(value);
     else if (flag === '--format') { if (value !== 'json') throw historyError('INVALID_OPTION', 'Only --format json is supported.'); }
     else {
@@ -105,11 +121,11 @@ function parseHistoryArgs(args) {
     if (options.port < 1 || options.port > 65535) throw historyError('INVALID_OPTION', '--port must be between 1 and 65535.');
   } else {
     for (const key of Object.keys(jsonInput)) if (Object.hasOwn(options.input, key)) throw historyError('INVALID_OPTION', `Input field supplied twice: ${key}.`);
-    options.input = validateHistoryInput({ ...jsonInput, ...options.input });
+    options.input = validateHistoryInput({ ...jsonInput, ...options.input }, operation);
     if (operation === 'open') {
       if (!Array.isArray(options.input.refs) || options.input.refs.length !== 1) throw historyError('INVALID_ARGUMENT', 'open requires exactly one event reference.');
       for (const key of Object.keys(options.input)) {
-        if (!['refs', 'contextRef'].includes(key)) throw historyError('INVALID_ARGUMENT', `open does not accept ${key}.`);
+        if (!['refs', 'contextRef'].includes(key)) throw historyError('INVALID_ARGUMENT', `open does not accept ${key}. Remove paging, content and budget options; open accepts only one event in refs and optional contextRef (--ref and --context).`);
       }
     }
   }
@@ -118,7 +134,7 @@ function parseHistoryArgs(args) {
 
 async function requestHistory(endpoint, operation, input) {
   if (!OPERATIONS.has(operation)) throw historyError('INVALID_OPERATION', 'Unknown history operation.');
-  const body = JSON.stringify(validateHistoryInput(input));
+  const body = JSON.stringify(validateHistoryInput(input, operation));
   if (Buffer.byteLength(body) > MAX_BODY_BYTES) throw historyError('BODY_TOO_LARGE', 'Input exceeds request byte limit.');
   let response;
   try {

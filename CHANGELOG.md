@@ -4,6 +4,14 @@
 
 ### English
 
+- Add explicit Codex history source observation with bounded physical metadata checks, caller-associated change counts, partial-coverage reporting and fixed snapshot preservation; keep content verification and deliberate refresh separate.
+
+- Enforce the uncompressed Codex primary-source contract for history path/line locators using indexed source identity, including compressed artifacts with canonical `.jsonl` paths; preserve search and Raw evidence access to admitted compressed and historical records.
+
+- Clarify history filter, context-view and output-budget guidance, and include operation-specific recovery steps in related argument and budget errors.
+
+- Add opt-in history reads around each reference's recorded search hit, with exact projection ranges and forward/backward continuation; split the packaged retrieval skill into core strategy and operation-specific references.
+
 - Read Codex revert histories across physical rollout files as one logical session, using explicit prefix boundaries and read-only current-path evidence; preserve physical Raw references and report unresolved histories.
 
 - Clarify Codex 0.162 combined output and recorded truncation evidence, distinguish requested sub-agent settings from recorded startup settings, and summarize additional tool declarations without counting them as executions.
@@ -11,6 +19,14 @@
 - Skip browser CI for narrowly classified documentation-only pull requests while retaining Node and package checks; execute publish-workflow release checks once through the guarded directory dry-run.
 
 ### 中文
+
+- 新增显式 Codex 历史来源观察，提供有界物理 metadata 检查、调用方关联变化计数及部分覆盖报告，保留固定快照；内容核验与主动刷新仍分别处理。
+
+- 历史路径／行号定位按索引来源身份落实仅准入未压缩 Codex 主来源的契约，覆盖规范路径为 `.jsonl` 的压缩工件；保留已准入压缩及历史记录的搜索与 Raw 证据读取。
+
+- 明确历史检索筛选、上下文视图及输出预算指南，并在相关参数与预算错误中提供适用于当前操作的恢复步骤。
+
+- 新增围绕各引用已记录搜索命中的可选历史读取，返回准确投影区间及前后续读；将随包检索技能拆分为核心策略和按操作查阅的参考。
 
 - 将跨物理 rollout 文件的 Codex 回退历史按一个逻辑会话读取，使用显式前缀边界与只读当前路径依据，保留物理 Raw 引用并报告无法解析的历史。
 

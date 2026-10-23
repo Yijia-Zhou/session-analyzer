@@ -30,10 +30,12 @@ function codexSession(command, toolName = 'exec_command') {
 }
 
 test('direct retrieval invocation and explicitly paired raw output are artifacts', () => {
-  for (const operation of ['status', 'search', 'context', 'read', 'open']) {
+  for (const operation of ['status', 'observe', 'search', 'context', 'read', 'open']) {
     for (const prefix of ['session-analyzer', 'session-analyzer.cmd', 'npx --yes session-analyzer', 'npx -y session-analyzer@0.2.0']) {
       const session = codexSession(`${prefix} history ${operation} --query "old decision"`);
       assert.equal(classifyRetrievalArtifact(session, session.logicalEvents[0]).recognized, true);
+      assert.equal(classifyRetrievalArtifact(session, session.logicalEvents[0]).reason, `direct_history_invocation:${operation}`);
+      assert.equal(classifyRetrievalArtifact(session, session.rawEvents[0], 'raw').recognized, true);
       assert.equal(classifyRetrievalArtifact(session, session.rawEvents[1], 'raw').recognized, true);
     }
   }
@@ -45,6 +47,7 @@ test('quoted shell punctuation is literal while ambiguous or mixed invocations r
   for (const command of [
     'cd /repo && session-analyzer history search --query example',
     'session-analyzer history search --query example; npm test',
+    'session-analyzer history observe; npm test',
     'session-analyzer history search --query example | cat',
     'session-analyzer history search --query example > out.json',
     'session-analyzer history search --query $(danger)',

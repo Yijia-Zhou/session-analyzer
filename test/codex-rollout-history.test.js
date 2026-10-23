@@ -116,6 +116,40 @@ async function historyFixture(t) {
   return { repoRoot, codexHome, sessionsRoot, firstRows, secondRows, options: { repoRoot, codexHome, currentRolloutPathsForTests: new Map([[ROOT, path.join(sessionsRoot, file(ONE))]]) } };
 }
 
+test('history observation samples full physical ancestors including compressed and admitted archived dependencies', async (t) => {
+  for (const archived of [false, true]) for (const compressed of [false, true]) {
+    await t.test(`${archived ? 'archived' : 'live'} ${compressed ? 'Zstd' : 'plain'}`, async (t) => {
+      const f = await historyFixture(t);
+      let ancestor = path.join(f.sessionsRoot, file(ROOT));
+      if (archived) {
+        const target = path.join(f.codexHome, 'archived_sessions', file(ROOT));
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.rename(ancestor, target);
+        ancestor = target;
+      }
+      if (compressed) {
+        await fs.writeFile(ancestor + '.zst', zstdCompressSync(await fs.readFile(ancestor)));
+        await fs.unlink(ancestor);
+        ancestor += '.zst';
+      }
+      const service = await createHistoryService({ repo: f.repoRoot, source: 'codex', codexHome: f.codexHome });
+      t.after(() => service.close());
+      const hit = (await service.execute('search', { query: 'kept-ancestor' })).items[0];
+      assert.ok(hit);
+      assert.match((await service.execute('read', { refs: [hit.ref], parts: ['projection'] })).items[0].parts[0].text, /kept-ancestor/u);
+      const before = await service.execute('observe', { callerSessionId: hit.sessionId });
+      assert.equal(before.observation.counts.metadata_unchanged, 2);
+      assert.equal(before.observation.baseline.dependencies.sampledFiles, archived ? 1 : 0);
+      await fs.appendFile(ancestor, 'suffix');
+      const after = await service.execute('observe', { callerSessionId: hit.sessionId });
+      assert.equal(after.observation.caller.counts.size_increased, 1);
+      assert.equal(after.items[0].physicalPath, ancestor);
+      assert.equal(after.items[0].baseline.basis, archived ? 'post_index_dependency_observation' : 'pre_index_inventory');
+      assert.equal(after.items[0].projectMembership, 'indexed_dependency');
+    });
+  }
+});
+
 test('resident history combines only explicit ancestor prefixes, preserving physical Raw', async (t) => {
   const f = await historyFixture(t);
   const index = await codex.__testOnly.buildUncompactedIndexForDetailTests(f.options);
@@ -299,11 +333,24 @@ test('command calls and results correlate across accepted physical segments with
 });
 
 test('cross-thread history bases preserve inherited Raw without attributing parent actions to child Main', async (t) => {
+  for (const variant of ['plain', 'zstd', 'archive', 'archive-zstd']) await t.test(variant, async (t) => {
   const f = await historyFixture(t);
   const childRows = [{ ordinal: 2, timestamp: '2026-10-14T12:00:00Z', type: 'session_meta', payload: { id: OTHER, cwd: f.repoRoot,
     history_mode: 'paginated', forked_from_id: ROOT, history_base: f.secondRows[0].payload.history_base } },
     { ordinal: 3, timestamp: '2026-10-14T12:00:01Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'child-owned-message' }] } }];
   await fs.writeFile(path.join(f.sessionsRoot, file(OTHER, OTHER)), childRows.map(JSON.stringify).join('\n') + '\n');
+  let ancestor = path.join(f.sessionsRoot, file(ROOT));
+  if (variant.startsWith('archive')) {
+    const archived = path.join(f.codexHome, 'archived_sessions', file(ROOT));
+    await fs.mkdir(path.dirname(archived), { recursive: true });
+    await fs.rename(ancestor, archived);
+    ancestor = archived;
+  }
+  if (variant.includes('zstd')) {
+    await fs.writeFile(`${ancestor}.zst`, zstdCompressSync(await fs.readFile(ancestor)));
+    await fs.unlink(ancestor);
+  }
+  const sourcePath = path.relative(f.sessionsRoot, ancestor);
   const index = await codex.buildSourceBackedIndex(f.options);
   await validateIndexOwnershipForCommit(index, 'codex');
   assert.equal(index.sessions.length, 2);
@@ -315,7 +362,41 @@ test('cross-thread history bases preserve inherited Raw without attributing pare
   assert.equal(codex.query.getTimeline(index, child, { layer: 'raw', q: 'kept-ancestor' }).searchEventCount, 1);
   const inherited = child.rawEvents.find((raw) => raw.subagentInherited && raw.source.line === 2);
   assert.deepEqual((await codex.readIndexedCodexRawRecord(index, child, inherited)).parsed, f.firstRows[1]);
+  assert.equal(child.logicalEvents.some((event) => event.rawRefs.some((ref) => ref.rawId === inherited.rawId)), false);
   assert.equal(codex.resolveIndexedCodexLegacyRaw(index, inherited.source.file, inherited.source.line), null, 'shared physical line has ambiguous legacy owner');
+  const parent = await materializeSessionForIndex(index, index.sessionsById.get(ROOT));
+  const retainedRaw = parent.rawEvents.find((raw) => raw.source.file === sourcePath && raw.source.line === 2);
+  const retainedOwner = parent.logicalEvents.find((event) => event.rawRefs.some((ref) => ref.rawId === retainedRaw.rawId));
+  assert.equal(retainedOwner.layer, 'main');
+
+  const service = await createHistoryService({ repo: f.repoRoot, source: 'codex', codexHome: f.codexHome });
+  t.after(() => service.close());
+  assert.equal((await service.execute('status')).coverage.sessionCount, 2);
+  for (const rejectedPath of [sourcePath, ancestor]) {
+    await assert.rejects(service.execute('read', { source: { sourcePath: rejectedPath,
+      locator: { type: 'jsonl-line', line: 2 } } }),
+    { code: 'UNKNOWN_SOURCE', message: /Search the current snapshot.*read the returned event refs/u });
+  }
+  const retained = (await service.execute('search', { query: 'kept-ancestor', session: ROOT })).items;
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0].eventId, retainedOwner.id);
+  const read = await service.execute('read', { refs: [retained[0].ref], parts: ['message'] });
+  assert.match(read.items[0].parts[0].text, /kept-ancestor/u);
+  const raw = await service.execute('read', { refs: read.items[0].rawRefs, parts: ['raw'] });
+  assert.deepEqual(JSON.parse(raw.items[0].parts[0].text).parsed, f.firstRows[1]);
+  assert.equal((await service.execute('search', { query: 'kept-ancestor', session: OTHER })).items.length, 0);
+  const inheritedHits = (await service.execute('search', { query: 'kept-ancestor', session: OTHER, layer: 'raw' })).items;
+  assert.equal(inheritedHits.length, 1);
+  const inheritedRead = await service.execute('read', { refs: [inheritedHits[0].ref], parts: ['raw'] });
+  assert.deepEqual(JSON.parse(inheritedRead.items[0].parts[0].text).parsed, f.firstRows[1]);
+  assert.equal((await service.execute('search', { query: 'superseded-root-tail', layer: 'raw' })).items.length, 0);
+  const head = await service.execute('read', { source: { sourcePath: path.join(f.sessionsRoot, file(ONE)),
+    locator: { type: 'jsonl-line', line: 2 } } });
+  const headOwner = head.items[0].logicalRefs.find((link) => link.layer === 'main');
+  assert.ok(headOwner);
+  assert.match((await service.execute('read', { refs: [headOwner.ref], parts: ['message'] })).items[0].parts[0].text,
+    /current-head-message/u);
+  });
 });
 
 test('Code Mode observation and nested ownership cross a verified history-chain interval', async (t) => {

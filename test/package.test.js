@@ -10,6 +10,7 @@ const {
   isPackageStatePayload,
   normalizePackManifest,
   packageRegistry,
+  verifyPackagedHistorySkill,
   waitForPackageState,
 } = require('../scripts/package-smoke');
 
@@ -348,12 +349,18 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'public/vendor/highlightjs/highlight.min.js',
     'server.js',
     'skills/history-retrieval/SKILL.md',
+    'skills/history-retrieval/references/browser-handoff.md',
+    'skills/history-retrieval/references/reading.md',
+    'skills/history-retrieval/references/search.md',
+    'skills/history-retrieval/references/source-locators.md',
+    'skills/history-retrieval/references/source-observation.md',
     'src/history-cli.js',
     'src/history-browser-open.js',
     'src/history-server.js',
     'src/history-service.js',
     'src/history-search-text.js',
     'src/history-presentation.js', 'src/history-search-groups.js', 'src/history-source-locator.js',
+    'src/history-source-observation.js',
     'src/history-artifacts.js',
     'src/cache-observation.js',
     'src/cache-observation-presentation.js',
@@ -438,6 +445,10 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'src/source-adapter-contract.js',
   ].sort();
   assert.deepEqual(files, approvedFiles);
+
+  const reachableSkillFiles = verifyPackagedHistorySkill(repoRoot);
+  assert.deepEqual(reachableSkillFiles, files.filter((file) => file.startsWith('skills/history-retrieval/')),
+    'Every packaged skill reference must resolve, and every shipped skill file must be reachable');
 
   const forbiddenPrefixes = [
     'e2e/',

@@ -77,6 +77,24 @@ test('CLI JSON and HTTP preserve independent query groups and indexed source loc
   }
 });
 
+test('around-hit JSON options pass unchanged through CLI and HTTP with strict count shapes', async (t) => {
+  const { endpoint, calls } = await fixture(t);
+  const input = { refs: ['er2.example'], aroundHit: { before: 500, after: 1499 } };
+  assert.deepEqual(parseHistoryArgs(['read', '--input', JSON.stringify(input)]).input, input);
+  assert.deepEqual((await requestHistory(endpoint, 'read', input)).received, input);
+  assert.deepEqual(calls.at(-1), { operation: 'read', input });
+  for (const aroundHit of [null, [], 'hit', {}, { before: 0 }, { before: 0, after: -1 },
+    { before: 0, after: 0.1 }, { before: 0, after: Number.MAX_SAFE_INTEGER },
+    { before: 50000, after: 50000 }, { before: 0, after: 0, extra: 0 }]) {
+    assert.throws(() => parseHistoryArgs(['read', '--input', JSON.stringify({ ...input, aroundHit })]), { code: 'INVALID_INPUT' });
+    const response = await fetch(endpoint + '/api/history/read', { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...input, aroundHit }) });
+    assert.equal(response.status, 400);
+  }
+  assert.equal(calls.length, 1);
+  assert.match(formatHistoryHelp(), /aroundHit/);
+});
+
 test('history payload options preserve strings and reject duplicate or malformed input', () => {
   for (const operation of ['status', 'search', 'context', 'read']) {
     assert.deepEqual(parseHistoryArgs([operation, '--presentation', 'compact']).input, { presentation: 'compact' });
@@ -105,6 +123,31 @@ test('history payload options preserve strings and reject duplicate or malformed
   assert.match(help, /--text-format <structured\|text>/);
   assert.match(help, /required when using compact handles/);
   assert.match(help, /evidenceRef/);
+});
+
+test('duplicate kind and endpoint errors explain a legal CLI retry', async (t) => {
+  const { endpoint, calls } = await fixture(t);
+  const run = async (args) => {
+    let stdout = '';
+    const code = await runHistoryCli(args, { stdout: { write(value) { stdout += value; } } });
+    return { code, result: JSON.parse(stdout) };
+  };
+  const duplicatedKind = await run(['search', '--endpoint', endpoint, '--kind', 'user_message', '--kind', 'assistant_message']);
+  assert.equal(duplicatedKind.code, 1);
+  assert.equal(duplicatedKind.result.error.code, 'INVALID_OPTION');
+  assert.match(duplicatedKind.result.error.message, /one --kind.*separate searches/u);
+  assert.equal(calls.length, 0);
+  for (const kind of ['user_message', 'assistant_message']) {
+    const retry = await run(['search', '--endpoint', endpoint, '--kind', kind]);
+    assert.equal(retry.code, 0);
+    assert.equal(retry.result.received.kind, kind);
+  }
+  const duplicatedEndpoint = await run(['status', '--endpoint', endpoint, '--endpoint', endpoint]);
+  assert.equal(duplicatedEndpoint.code, 1);
+  assert.equal(duplicatedEndpoint.result.error.code, 'INVALID_OPTION');
+  assert.match(duplicatedEndpoint.result.error.message, /--endpoint exactly once/u);
+  assert.equal(calls.length, 2);
+  assert.equal((await run(['status', '--endpoint', endpoint])).code, 0);
 });
 
 test('HTTP and CLI forward presentation options to the service without selecting content defaults', async (t) => {
