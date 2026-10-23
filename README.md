@@ -111,6 +111,18 @@ Report the local URL, actual version, session count, and any diagnostics.
 
 The [online startup and verification guide](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/usage/agent-quickstart.md) covers version selection, configuration, and actual reading checks. Usage guides are online documentation and are not promised inside the npm package.
 
+## Native pi sessions in this checkout
+
+Native pi support is new source-checkout functionality; the published `session-analyzer@0.2.1` command above does **not** include it. After [source setup and build](docs/development.md), run:
+
+```sh
+node server.js --source pi --repo /path/to/project --pi-home /path/to/pi/agent
+```
+
+`--pi-home` is the agent directory containing `sessions/`, not the sessions directory itself. Its default is `PI_CODING_AGENT_DIR` when set, otherwise `~/.pi/agent`. Choose **pi** in the project chooser to switch sources.
+
+The adapter reads native session version **3**, verified against pi **1.4.0**, without opening or migrating sessions through pi. Each root-to-leaf branch is a separate selectable Session with its tip ID in the title. Shared history appears in each containing branch, so counts and search hits are per branch, not per file. Extending a branch changes its identity when you rebuild the index. Unsupported versions are skipped with diagnostics; invalid trees retain Protocol/Raw fallback. See [pi support and limitations](docs/design-docs/pi-native-sessions.md).
+
 ## Development and contribution
 
 The source checkout also provides a read-only `history` interface for agents: bounded event search, context windows and verifiable evidence reads in a dedicated project/source instance. `history open --ref <returned-reference>` hands a selected event to a viewer bound to the same snapshot; add `--no-browser` to return a link for inspection. This is new development functionality, not a claim about the published `0.2.1` command. See the [history guide](docs/usage/history-retrieval.md) and [packaged retrieval skill](skills/history-retrieval/SKILL.md).

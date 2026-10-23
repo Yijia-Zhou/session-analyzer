@@ -25,6 +25,19 @@ For DeepSeek, valid sessions can remain readable while problematic artifacts pro
 | `DEEPSEEK_STORAGE_INVALID` | Inspect the message and obtain a valid original/export; report corruption without modifying the transcript. / 查看消息并获取有效原件／导出；报告损坏，不修改转录。 |
 | `DEEPSEEK_SOURCE_BUSY` | Let the writer finish or use a consistent copied snapshot, then retry. / 等待写入完成或使用一致的复制快照，再重试。 |
 
+## Native pi diagnostics in this checkout / 此 checkout 的原生 pi 诊断
+
+Use `--source pi` with `--pi-home` pointing to the agent directory containing `sessions/` (`PI_CODING_AGENT_DIR` or `~/.pi/agent` by default). Project membership uses recorded header `cwd`. The published 0.2.1 CLI does not include this adapter. Counts represent branches, so one JSONL can produce several Sessions and duplicate shared-prefix search hits. / 使用 pi 来源，pi-home 指向包含 sessions/ 的 agent 目录（默认环境变量或所列用户目录）；项目归属按 header 记录的 cwd。已发布 0.2.1 CLI 不含此适配器。计数代表分支，因此一个 JSONL 可产生多个 Session 及重复的共享前缀命中。
+
+| Diagnostic / 诊断 | Action / 操作 |
+| --- | --- |
+| `PI_SESSION_VERSION_UNSUPPORTED` | Only v3 is interpreted. Preserve the file; do not edit the header or migrate it merely to satisfy this reader. / 仅解释 v3；保留文件，不要仅为此阅读器改写 header 或迁移。 |
+| `PI_SESSION_ID_AMBIGUOUS` | Two files claim the same native session ID; neither is indexed. Keep one authoritative artifact in the configured scope. / 两个文件声明相同原生会话 ID，均不索引；在配置范围内保留一份权威工件。 |
+| `PI_HEADER_INVALID` | Check that the input is native pi JSONL with a session header, ID and cwd. / 核验输入是包含 session header、ID 和 cwd 的原生 pi JSONL。 |
+| `PI_TORN_TAIL`, `PI_SOURCE_BUSY` | An incomplete final line is excluded, or the source changed during indexing. Wait for the writer and rebuild. / 未完成的末行会排除，或来源在索引时变化；等待 writer 后重建。 |
+| `PI_TREE_INVALID` | Inspect Protocol/Raw fallback; missing or conflicting ancestry is not interpreted as a conversation. / 检查 Protocol／Raw 回退；缺失或冲突的祖先关系不会被解释为对话。 |
+| `INDEXED_SOURCE_STALE` / `STALE_REFERENCE` | Accepted evidence changed or disappeared. Rebuild/restart and search again; a later append alone is outside the old snapshot. / 已接纳依据变化或消失；重建／重启并重新搜索，之后的追加本身不属于旧快照。 |
+
 ## Codex legacy Raw lookup capacity / Codex 旧式 Raw 定位容量
 
 If Codex reports `LEGACY_RAW_LOOKUP_CAPACITY_EXCEEDED`, indexing succeeded but the old `/api/raw?file=...&line=...` locator is unavailable for that Index. The browser keeps Session lists and ordinary reading available; Raw References with Session and Raw IDs still use the explicit route. The old route returns 409 `LEGACY_RAW_LOOKUP_UNAVAILABLE` with `retryable: false`, so repeating the same request against the same revision will not help. This is a component budget, separate from V8 heap exhaustion; increasing `NODE_OPTIONS` does not change it. A later reindex may restore the capability if the accepted history changes. / 如果 Codex 报告 `LEGACY_RAW_LOOKUP_CAPACITY_EXCEEDED`，表示索引已成功，但该 Index 的旧式 `/api/raw?file=...&line=...` 定位不可用。浏览器仍可显示会话列表并正常阅读；带会话和 Raw ID 的原始引用继续使用显式路由。旧路由返回 409 `LEGACY_RAW_LOOKUP_UNAVAILABLE` 和 `retryable: false`，对同一 revision 重复请求无益。这是组件预算，与 V8 heap 耗尽分开；增大 `NODE_OPTIONS` 不会改变它。已接受历史变化后重新索引，能力可能恢复。

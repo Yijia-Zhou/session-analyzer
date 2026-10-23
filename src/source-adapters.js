@@ -10,6 +10,7 @@ const { PROFILE: LEGACY_RAW_PROFILE, createBudget: createLegacyRawBudget } = req
 const codex = require('./codex');
 const claude = require('./claude');
 const deepseekHarness = require('./deepseek-harness');
+const pi = require('./pi');
 const { buildClaudeEventDetail } = require('./claude-detail');
 const { collaborationNavigation } = require('./shared/collaboration-navigation');
 const { detailNavigation } = require('./shared/detail-navigation');
@@ -50,6 +51,7 @@ const SOURCE_KIND = Object.freeze({
   CODEX: 'codex',
   CLAUDE_CODE: 'claude-code',
   DEEPSEEK_HARNESS: 'deepseek-harness',
+  PI: 'pi',
 });
 
 function graphFingerprint(value, identityState = {
@@ -885,6 +887,7 @@ const adapters = createSourceAdapterRegistry([
   codexAdapter,
   claudeAdapter,
   deepseekHarness.deepSeekAdapter,
+  pi.piAdapter,
 ]);
 
 function getSourceAdapter(value) {
