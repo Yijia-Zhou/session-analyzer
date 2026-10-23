@@ -6148,3 +6148,23 @@ body[data-history-reading='isolated'] #resultSummary { display: none; }
   .historyEvidenceActions .smallBtn { min-height: 40px; }
   .historyExcerpt { max-height: 120px; }
 }
+
+.piSessionGroup {
+  min-width: 0;
+  margin-bottom: 12px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.piSessionGroupTitle {
+  margin: 0 0 6px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.piSessionGroupNote {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.piBranchLabel { white-space: normal; overflow-wrap: anywhere; }

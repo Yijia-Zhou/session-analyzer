@@ -4,6 +4,7 @@ const { backgroundTerminalLabel } = require('../shared/background-terminal-prese
 
 const { referenceFromHash, createEvidenceNavigation } = require('./history-evidence');
 const searchExcerpt = require('./search-excerpt');
+const { groupPiBranches } = require('./pi-branches');
 const evidenceNavigation = createEvidenceNavigation();
 
 const rendererApi = window.sessionRenderers;
@@ -5709,6 +5710,7 @@ function renderProjectResultCard(session, relationships = sessionRelationshipInd
   const relationship = sessionRelationshipLabel(session, relationships);
   return `<button class="sessionItem projectResultCard" type="button" data-project-result-session-id="${escapeHtml(session.id)}">
     <span class="sessionTitle">${escapeHtml(session.title)}</span>
+    ${session.sourceKind === 'pi' ? `<span class="chip piBranchLabel">${escapeHtml(t('piBranchLeaf', { leaf: session.sourceDerivedId || session.id }))}</span>` : ''}
     <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
     ${relationship ? `<span class="chip relationshipChip">${escapeHtml(relationship)}</span>` : ''}
     <span class="projectResultCount">${escapeHtml(t('projectResultCount', { count: session.searchMatch?.eventCount || 0 }))}</span>
@@ -5736,6 +5738,9 @@ function renderSessions() {
     return;
   }
   const hierarchy = sessionHierarchy();
+  const renderPiBranchLabel = (session) => session.sourceKind === 'pi'
+    ? `<span class="chip piBranchLabel">${escapeHtml(t('piBranchLeaf', { leaf: session.sourceDerivedId || session.id }))}</span>`
+    : '';
   const renderSessionBranch = (session) => {
     const active = session.id === state.selectedSessionId;
     const relationship = sessionRelationshipLabel(session, relationships);
@@ -5773,10 +5778,11 @@ function renderSessions() {
       : '';
     return `<div class="sessionBranch" data-session-branch-id="${escapeHtml(session.id)}">
       <div class="sessionRow${children.length ? ' hasSessionChildren' : ''}">
-        <button class="${sessionItemClasses(session, active)}" type="button" data-session-id="${escapeHtml(session.id)}">
+        <button class="${sessionItemClasses(session, active)}" type="button" data-session-id="${escapeHtml(session.id)}"${active ? ' aria-current="true"' : ''}>
           <span class="sessionTitle">${escapeHtml(session.title)}</span>
           <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
           <span class="chips">
+            ${renderPiBranchLabel(session)}
             ${relationship ? `<span class="chip relationshipChip" title="${escapeHtml(relationshipTitle)}">${escapeHtml(relationship)}</span>` : ''}
             ${session.forkContinuationState === 'waiting_for_prompt' ? `<span class="chip forkStateChip">${escapeHtml(t('forkWaitingForPrompt'))}</span>` : ''}
             <span class="chip">${escapeHtml(t('messageCountShort', { count: session.counts.messages }))}</span>
@@ -5790,7 +5796,14 @@ function renderSessions() {
       ${children.length ? `<div class="sessionChildren" id="${escapeHtml(childrenId)}"${expanded ? '' : ' hidden'}>${children.map(renderSessionBranch).join('')}</div>` : ''}
     </div>`;
   };
-  el.sessionList.innerHTML = hierarchy.roots.map(renderSessionBranch).join('');
+  el.sessionList.innerHTML = groupPiBranches(hierarchy.roots).map((group) => {
+    if (group.session) return renderSessionBranch(group.session);
+    return `<section class="piSessionGroup" aria-label="${escapeHtml(t('piNativeSession', { id: group.sourceSessionId }))}" data-pi-native-session="${escapeHtml(group.sourceSessionId)}">
+      <h3 class="piSessionGroupTitle">${escapeHtml(t('piNativeSession', { id: group.sourceSessionId }))}</h3>
+      <p class="piSessionGroupNote">${escapeHtml(t(group.branches.length === 1 ? 'piVisibleBranchOne' : 'piVisibleBranches', { count: group.branches.length }))} ${escapeHtml(t('piBranchCountsNotice'))}</p>
+      ${group.branches.map(renderSessionBranch).join('')}
+    </section>`;
+  }).join('');
   state.searchSurfaceContexts.sessions = state.sessionsDataContext === sessionsDataContextKey()
     ? sessionsDataContextKey()
     : '';

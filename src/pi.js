@@ -142,7 +142,9 @@ async function buildPiIndex({ sourceHome, repoRoot, signal, onProgress, onDiagno
       document = storage.parsePiDocument(await storage.readPiSnapshot(path.resolve(sessionsRoot, sourceFile),
         { sessionsRoot, acceptedSnapshot, signal }));
     } catch (error) { report(error, sourceFile, diagnostics.add, signal); skippedFileCount++; continue; }
-    const branchSessions = logical.sessionsFromPiDocument(document, sourceFile);
+    // Project one branch at a time. Keeping every full branch Session alive here
+    // multiplies shared-prefix payloads before the bounded query shards own them.
+    const branchSessions = logical.iteratePiSessions(document, sourceFile);
     const entries = [{ role: 'primary_transcript', pathIdentity: sourceFile, existence: 'present', kind: 'file',
       policy: 'accepted_prefix', acceptedBytes: document.acceptedBytes, lineCount: document.lines.length,
       digest: document.digest, directoryEntries: [], evidence: { fileIdentity: document.fileIdentity } }];
