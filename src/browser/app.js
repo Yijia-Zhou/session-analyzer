@@ -5388,6 +5388,9 @@ function leaveHistoryEvidence() {
 
 async function openHistoryEvidence(reference, options = {}) {
   cancelHistoryNavigation();
+  // Retire the prior Inspector before its excerpt disappears. A pending detail
+  // settlement must not close that stale view and cancel this new reference.
+  resetDetailPane();
   const operation = evidenceNavigation.start();
   const originalRef = options.originalRef || reference;
   state.historyEvidence = { ref: reference, originalRef, active: true, messageKey: 'historyResolving' };

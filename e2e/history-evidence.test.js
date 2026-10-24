@@ -8,6 +8,7 @@ const os = require('node:os');
 const { chromium } = require('playwright');
 const esbuild = require('esbuild');
 const { createHistoryService } = require('../src/history-service');
+const { withNavigationDiagnostics } = require('./browser-diagnostics');
 
 async function fixture(t, options = {}) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'history-browser-'));
@@ -64,6 +65,7 @@ async function fixture(t, options = {}) {
   t.after(() => browser.close());
   const page = await browser.newPage({ locale: 'en-US', viewport: options.viewport || { width: 1440, height: 1000 } });
   page.setDefaultTimeout(10000);
+  await options.diagnostics?.attach(page);
   page.on('pageerror', (error) => t.diagnostic(error.stack));
   page.on('requestfailed', (request) => t.diagnostic(`${request.url()}: ${request.failure()?.errorText}`));
   t.after(async () => { if (t.error && !page.isClosed()) t.diagnostic((await page.locator('body').innerText()).slice(0, 10000)); });
@@ -236,8 +238,8 @@ test('history reference cold landing is bounded, expanded, repeatable, and conti
   assert.equal(requests.filter((p) => p === '/api/history/resolve').length, 3);
 });
 
-test('nearby cards and raw references keep their exact identities; stale reference reports its code', async (t) => {
-  const { page, url, hit, search } = await fixture(t);
+test('nearby cards and raw references keep their exact identities; stale reference reports its code', withNavigationDiagnostics(async (t, diagnostics) => {
+  const { page, url, hit, search } = await fixture(t, { diagnostics });
   await page.goto(`${url}/#ref=${encodeURIComponent(hit.ref)}`, { waitUntil: 'domcontentloaded' });
   await selected(page, hit.eventId);
   await page.locator('#timeline article.summary').filter({ hasText: 'NEARBY_REQUEST' }).locator('.eventKind').click();
@@ -247,9 +249,11 @@ test('nearby cards and raw references keep their exact identities; stale referen
   assert.equal(new URLSearchParams(new URL(page.url()).hash.slice(1)).get('ref'), hit.ref);
   await page.reload();
   await selected(page, hit.eventId);
+  await diagnostics.checkpoint('original reference selected after reload', { eventId: hit.eventId, url: page.url() });
   const protocol = await search('', 'protocol');
   assert.ok(protocol);
   await page.goto(`${url}/#ref=${encodeURIComponent(protocol.ref)}`, { waitUntil: 'domcontentloaded' });
+  await diagnostics.checkpoint('Protocol reference navigation requested', { eventId: protocol.eventId, url: page.url() });
   await selected(page, protocol.eventId);
   assert.equal(await page.locator('#layerSelect').inputValue(), 'protocol');
   const raw = await search('DEEP_OUTPUT_HIT', 'raw');
@@ -265,7 +269,85 @@ test('nearby cards and raw references keep their exact identities; stale referen
   await page.goto(`${url}/#evidenceRef=er2.invalid`, { waitUntil: 'domcontentloaded' });
   await page.locator('#historyEvidence [role="alert"]').waitFor();
   assert.match(await page.locator('#historyEvidence [role="alert"]').innerText(), /INVALID_REFERENCE/);
-});
+}));
+
+for (const destination of ['same-session Main', 'other-session Protocol']) {
+  test(`a prior excerpt detail settlement cannot cancel a newer ${destination} reference`, { timeout: 30000 }, withNavigationDiagnostics(async (t, diagnostics) => {
+    const { page, url, hit, search } = await fixture(t, { diagnostics });
+    await page.goto(`${url}/#ref=${encodeURIComponent(hit.ref)}`, { waitUntil: 'domcontentloaded' });
+    await selected(page, hit.eventId);
+    const target = destination === 'same-session Main' ? await search('NEARBY_REQUEST') : await search('', 'protocol');
+    assert.ok(target?.eventId);
+    assert.equal(target.sessionId === hit.sessionId, destination === 'same-session Main');
+    const detail = Promise.withResolvers();
+    const detailRelease = Promise.withResolvers();
+    const detailCompleted = Promise.withResolvers();
+    const resolve = Promise.withResolvers();
+    const resolveRelease = Promise.withResolvers();
+    const resolveCompleted = Promise.withResolvers();
+    t.after(() => { detailRelease.resolve(); resolveRelease.resolve(); });
+    const bounded = async (promise) => {
+      let timer;
+      try {
+        return await Promise.race([promise, new Promise((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('History response gate was not reached')), 10000);
+        })]);
+      } finally { clearTimeout(timer); }
+    };
+    await page.addInitScript(() => {
+      window.__historyReferenceDetailRequests = [];
+      window.__sessionAnalyzerTimelineLifecycleObserver = {
+        recordDetailRequest(row) { window.__historyReferenceDetailRequests.push(row); },
+      };
+    });
+    await page.route(`**/events/${encodeURIComponent(hit.eventId)}/detail?**`, async (route) => {
+      try {
+        const response = await route.fetch({ timeout: 10000 });
+        detail.resolve({ response });
+        await detailRelease.promise;
+        await route.fulfill({ response }).catch(() => {});
+      } catch (error) { detail.resolve({ error }); }
+      finally { detailCompleted.resolve(); }
+    });
+    await page.reload();
+    await selected(page, hit.eventId);
+    const oldDetail = await bounded(detail.promise);
+    if (oldDetail.error) throw oldDetail.error;
+    assert.equal(oldDetail.response.status(), 200);
+    const created = await page.evaluate(() => window.__historyReferenceDetailRequests.filter((row) => row.requestCreated));
+    assert.equal(created.length, 1, 'the only expanded excerpt owns the held detail transaction');
+    const requestSerial = created[0].requestSerial;
+    await page.route('**/api/history/resolve?**', async (route) => {
+      try {
+        const response = await route.fetch({ timeout: 10000 });
+        resolve.resolve({ response });
+        await resolveRelease.promise;
+        await route.fulfill({ response }).catch(() => {});
+      } catch (error) { resolve.resolve({ error }); }
+      finally { resolveCompleted.resolve(); }
+    });
+    await page.goto(`${url}/#ref=${encodeURIComponent(target.ref)}`, { waitUntil: 'domcontentloaded' });
+    const resolved = await bounded(resolve.promise);
+    if (resolved.error) throw resolved.error;
+    assert.equal(resolved.response.status(), 200);
+    assert.equal((await resolved.response.json()).target.eventId, target.eventId);
+    await diagnostics.checkpoint('new reference resolve held', { eventId: target.eventId, url: page.url() });
+    detailRelease.resolve();
+    await bounded(detailCompleted.promise);
+    // Observe the exact client transaction settling, whether navigation aborts
+    // it or the older implementation accepts it and performs a full render.
+    await page.waitForFunction((serial) => window.__historyReferenceDetailRequests.some((row) => (
+      row.requestSerial === serial && (row.phase === 'requestSettled' || row.presentationSettlement)
+    )), requestSerial);
+    await diagnostics.checkpoint('prior detail released while new resolve held', { eventId: target.eventId, url: page.url() });
+    resolveRelease.resolve();
+    await bounded(resolveCompleted.promise);
+    await selected(page, target.eventId);
+    assert.equal(await page.locator('#layerSelect').inputValue(), target.layer);
+    assert.equal(new URLSearchParams(new URL(page.url()).hash.slice(1)).get('ref'), target.ref);
+    assert.equal(await page.locator('#historyEvidence [role="alert"]').count(), 0);
+  }));
+}
 
 test('user cancellation retires a held reference response and retry remains exact', async (t) => {
   const { page, url, hit } = await fixture(t);
