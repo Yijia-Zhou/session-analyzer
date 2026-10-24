@@ -8,7 +8,7 @@ const { chromium } = require('playwright');
 const { createHistoryService } = require('../src/history-service');
 const { createServer } = require('../server');
 
-async function fixture(t, extraBranches = 0) {
+async function fixture(t, extraBranches = 0, statistics = false) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-navigation-'));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const repo = path.join(home, 'project');
@@ -26,9 +26,26 @@ async function fixture(t, extraBranches = 0) {
     { type: 'message', id: 'answer-b', parentId: 'summary-b', message: { role: 'assistant', content: [{ type: 'text', text: 'B_SUCCEEDED_EVIDENCE' }] } },
     { type: 'label', id: 'label-b', parentId: 'answer-b', targetId: 'answer-b', label: 'Successful attempt' },
   ];
+  if (statistics) {
+    rows.find((row) => row.id === 'call-a').parentId = 'shared-result-a';
+    rows.find((row) => row.id === 'summary-b').parentId = 'shared-result-b';
+    rows.find((row) => row.id === 'call-a').message.usage = { input: 0, output: null, cacheRead: 123456789012345680 };
+    rows.find((row) => row.id === 'answer-b').message.usage = null;
+    rows.splice(3, 0,
+      { type: 'message', id: 'shared-call', parentId: 'name', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'shared-tool', name: 'bash', arguments: { command: 'shared request' } }] } },
+      { type: 'message', id: 'shared-result-a', parentId: 'shared-call', message: { role: 'toolResult', toolCallId: 'shared-tool', toolName: 'bash', isError: false, content: 'SHARED_TOOL_A_SUCCESS', usage: { input: 5 } } },
+      { type: 'message', id: 'shared-result-b', parentId: 'shared-call', message: { role: 'toolResult', toolCallId: 'shared-tool', toolName: 'bash', isError: true, content: 'SHARED_TOOL_B_FAILURE' } },
+    );
+    rows.push(
+      { type: 'usage', id: 'usage-one', parentId: 'label-b', usage: { input: Number.MAX_VALUE } },
+      { type: 'usage', id: 'usage-two', parentId: 'usage-one', usage: { input: Number.MAX_VALUE } },
+      { type: 'message', id: 'shell', parentId: 'usage-two', message: { role: 'bashExecution', command: 'pwd', output: 'synthetic project', exitCode: 0 } },
+      { type: 'message', message: { role: 'assistant', content: 'EXCLUDED_IDLESS', usage: { input: 999 } } },
+    );
+  }
   for (let i = 0; i < extraBranches; i += 1) rows.push({ type: 'message', id: `extra-${i}`, parentId: 'question',
     message: { role: 'assistant', content: `EXTRA_BRANCH_${i}` } });
-  await fs.writeFile(file, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+  await fs.writeFile(file, rows.map((row) => JSON.stringify(row)).join('\n') + (statistics ? '\n{malformed\n\n' : '\n'));
   const start = async (interactive = false) => {
     const service = interactive ? null : await createHistoryService({ repo, source: 'pi', piHome: home });
     const server = interactive ? createServer(null, 0, { repo, source: 'pi', piHome: home, codexHome: path.join(home, 'empty-codex') }) : service.createViewerServer();
@@ -66,7 +83,14 @@ test('pi shared-entry chooser pages all branches without changing the pending re
   const { chooser, sessionId, href } = await openSharedChooser(page, server.origin);
   await page.locator('[data-pi-overview] .piOverviewBranches > li').first().waitFor({ state: 'attached' });
   assert.equal(await page.locator('[data-pi-overview] .piOverviewBranches > li').count(), 100);
-  assert.match(await page.locator('[data-pi-overview] > details > summary').innerText(), /100 visible branches\./);
+  assert.match(await page.locator('[data-pi-overview] > [data-pi-branches] > summary').innerText(), /100 visible branches\./);
+  const statistics = page.locator('[data-pi-native-statistics]');
+  assert.equal(await statistics.evaluate((node) => node.open), false);
+  // The shared-entry chooser is modal; inspect the background disclosure without input.
+  await statistics.evaluate((node) => { node.open = true; });
+  assert.equal(await statistics.locator('[data-pi-native-count="rawRecords"]').innerText(), '212');
+  assert.equal(await statistics.locator('[data-pi-native-count="assistantMessages"]').innerText(), '205');
+  assert.equal(await statistics.locator('[data-pi-native-count="userMessages"]').innerText(), '1');
   const url = page.url();
   const detail = await page.locator('#detail').innerText();
   assert.equal(await chooser.locator('[data-pi-branch]').count(), 100);
@@ -99,7 +123,7 @@ for (const change of ['cancel', 'session', 'source', 'index']) test(`pi branch p
   const { chooser, sessionId } = await openSharedChooser(page, server.origin);
   await page.locator('[data-pi-overview] .piOverviewBranches > li').first().waitFor({ state: 'attached' });
   assert.equal(await page.locator('[data-pi-overview] .piOverviewBranches > li').count(), 100);
-  assert.match(await page.locator('[data-pi-overview] > details > summary').innerText(), /100 条可见分支/);
+  assert.match(await page.locator('[data-pi-overview] > [data-pi-branches] > summary').innerText(), /100 条可见分支/);
   let release; const gate = new Promise((resolve) => { release = resolve; });
   let started; const pending = new Promise((resolve) => { started = resolve; });
   let delivered; const completed = new Promise((resolve) => { delivered = resolve; });
@@ -170,7 +194,7 @@ for (const width of [1440, 390]) test(`pi branch overview, referenced history an
   };
   await page.goto(server.origin);
   await select('label-a');
-  await page.getByRole('button', { name: 'Models & usage', exact: true }).click();
+  await page.getByRole('button', { name: 'Selected branch models and usage', exact: true }).click();
   await mobile('detail');
   const recorded = page.locator('#detail .piRecordedDetails');
   await recorded.waitFor();
@@ -181,13 +205,13 @@ for (const width of [1440, 390]) test(`pi branch overview, referenced history an
   await select('label-a');
   await mobile('events');
   await page.locator('#layerSelect').selectOption('main');
-  if (width < 760) await page.locator('[data-pi-overview] > details > summary').click();
+  if (width < 760) await page.locator('[data-pi-overview] > [data-pi-branches] > summary').click();
   assert.match(await page.locator('[data-pi-overview]').innerText(), /Recovery plan/);
   assert.match(await page.locator('[data-pi-overview]').innerText(), /A_FAILED_EVIDENCE/);
   assert.match(await page.locator('[data-pi-overview]').innerText(), /B_SUCCEEDED_EVIDENCE/);
   assert.match(await page.locator('[data-pi-overview]').innerText(), /Failed attempt/);
   assert.match(await page.locator('[data-pi-overview]').innerText(), /Branches share history through/);
-  if (width < 760) await page.locator('[data-pi-overview] > details > summary').click();
+  if (width < 760) await page.locator('[data-pi-overview] > [data-pi-branches] > summary').click();
   await mobile('sessions');
   const toggle = page.locator('[data-pi-group-toggle="recovery"]');
   await toggle.click(); assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
@@ -331,4 +355,94 @@ test('pi entry browser back and forward resolve without growing browser history'
     && document.querySelector('#detail [data-pi-entry-actions] a')?.href === location.href);
   assert.equal(page.url(), second);
   assert.equal(await page.evaluate(() => history.length), length);
+});
+
+for (const [locale, width] of [['en-US', 1440], ['zh-CN', 390]]) test(`pi whole-native statistics preserve physical scope and usage coverage (${locale}, ${width})`, { timeout: 60000 }, async (t) => {
+  const data = await fixture(t, 0, true);
+  const server = await data.start();
+  const browser = await chromium.launch(); t.after(() => browser.close());
+  const page = await browser.newPage({ locale, viewport: { width, height: 900 } });
+  const errors = []; page.on('pageerror', (error) => errors.push(error.message));
+  const mobile = async (view) => { if (width < 760) await page.locator(`button[data-mobile-view="${view}"]`).click(); };
+  const select = async (leaf) => {
+    await mobile('sessions');
+    await page.locator(`[data-session-id="pi:recovery:${leaf}"]`).click();
+    await mobile('events');
+    await page.waitForFunction((id) => document.querySelector('[data-pi-overview] [aria-current="true"] [data-pi-session]')?.dataset.piSession === id, `pi:recovery:${leaf}`);
+  };
+  await page.goto(server.origin);
+  await select('label-a');
+  const statistics = page.locator('[data-pi-native-statistics]');
+  assert.equal(await statistics.evaluate((node) => node.open), false);
+  assert.equal(await statistics.locator(':scope > summary').innerText(), locale === 'en-US' ? 'Whole native session statistics' : '整个原生会话统计');
+  assert.equal(await page.getByRole('button', { name: locale === 'en-US' ? 'Selected branch models and usage' : '所选分支模型与用量', exact: true }).count(), 1);
+  await statistics.locator(':scope > summary').click();
+  const counts = await statistics.locator('[data-pi-native-count]').evaluateAll((nodes) => Object.fromEntries(nodes.map((node) => [node.dataset.piNativeCount, node.textContent])));
+  assert.deepEqual(counts, { rawRecords: '17', entryRecords: '16', unlinkedRecords: '2', malformedRecords: '1', userMessages: '1', assistantMessages: '3', systemMessages: '0', toolResultMessages: '3', otherMessages: '0', assistantToolRequests: '2', directShellExecutions: '1' });
+  for (const category of ['assistant', 'tool_nested_model_work', 'usage', 'branch_summary']) await statistics.locator(`[data-pi-usage-category="${category}"] > summary`).click();
+  const assistant = statistics.locator('[data-pi-usage-category="assistant"]');
+  const input = assistant.locator('[data-pi-usage-field="input"]');
+  assert.match(await input.innerText(), locale === 'en-US' ? /0 recorded partial sum/ : /0 已记录部分和/);
+  assert.match(await input.innerText(), locale === 'en-US' ? /1 recorded · 1 missing · 0 invalid/ : /1 已记录 · 1 缺失 · 0 无效/);
+  assert.match(await assistant.locator('[data-pi-usage-field="output"]').innerText(), locale === 'en-US' ? /Unknown[\s\S]*0 recorded · 1 missing · 1 invalid/ : /未知[\s\S]*0 已记录 · 1 缺失 · 1 无效/);
+  assert.match(await statistics.locator('[data-pi-usage-category="usage"] [data-pi-usage-field="input"]').innerText(), locale === 'en-US' ? /Unknown \(sum overflow\)/ : /未知（求和溢出）/);
+  assert.match(await statistics.locator('[data-pi-usage-category="branch_summary"]').innerText(), locale === 'en-US' ? /Records eligible for usage: 1 · Usage receipts: 0 · Without saved usage: 1/ : /可记录用量的记录：1 · 用量回执：0 · 未保存用量：1/);
+  assert.match(await statistics.innerText(), locale === 'en-US' ? /A shared request can have different results on sibling branches/ : /共享请求可在兄弟分支有不同结果/);
+  assert.match(await statistics.innerText(), locale === 'en-US' ? /not combined into a grand total or reconstructed bill/ : /不将类别部分和合并成总计，也不重建账单/);
+  assert.equal(await statistics.evaluate((node) => node.scrollWidth <= node.clientWidth + 1), true);
+  const lastField = statistics.locator('[data-pi-usage-category="branch_summary"] [data-pi-usage-field="totalTokens"]');
+  await lastField.scrollIntoViewIfNeeded();
+  const lastFieldBox = await lastField.boundingBox();
+  assert.ok(lastFieldBox.y >= 0 && lastFieldBox.y + lastFieldBox.height <= 900, 'expanded coverage stays vertically reachable');
+  const before = await statistics.innerText();
+  const sharedResult = async (expected) => {
+    const card = page.locator('#timeline .event').filter({ hasText: 'shared request' });
+    if (!await card.evaluate((node) => node.classList.contains('expanded'))) await card.locator('.eventToggle').click();
+    await page.waitForFunction((text) => document.querySelector('#timeline')?.textContent.includes(text), expected);
+    assert.match(await card.innerText(), new RegExp(expected));
+  };
+  await sharedResult('SHARED_TOOL_A_SUCCESS');
+  await select('shell');
+  assert.equal(await statistics.evaluate((node) => node.open), false);
+  await statistics.locator(':scope > summary').click();
+  for (const category of ['assistant', 'tool_nested_model_work', 'usage', 'branch_summary']) await statistics.locator(`[data-pi-usage-category="${category}"] > summary`).click();
+  assert.equal(await statistics.innerText(), before);
+  await sharedResult('SHARED_TOOL_B_FAILURE');
+  assert.deepEqual(errors, []);
+});
+
+for (const change of ['branch', 'source']) test(`pi native statistics discard a late overview after changing ${change}`, { timeout: 45000 }, async (t) => {
+  const data = await fixture(t, 0, true);
+  const server = await data.start(change === 'source');
+  const browser = await chromium.launch(); t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } });
+  await page.goto(server.origin);
+  let release; const gate = new Promise((resolve) => { release = resolve; });
+  let started; const pending = new Promise((resolve) => { started = resolve; });
+  let delivered; const completed = new Promise((resolve) => { delivered = resolve; });
+  t.after(() => release());
+  await page.route('**/api/pi/navigation?**', async (route) => {
+    if (new URL(route.request().url()).searchParams.get('sessionId') !== 'pi:recovery:label-a') { await route.continue(); return; }
+    const response = await route.fetch(); const body = await response.json();
+    body.nativeStatistics.counts.rawRecords = 987654;
+    started(); await gate;
+    try { await route.fulfill({ response, body: JSON.stringify(body) }); } catch { /* Retired overview requests are intentionally aborted. */ }
+    delivered();
+  });
+  await page.locator('[data-session-id="pi:recovery:label-a"]').click(); await pending;
+  if (change === 'branch') {
+    await page.locator('[data-session-id="pi:recovery:shell"]').click();
+    await page.waitForFunction(() => document.querySelector('[data-pi-overview] [aria-current="true"] [data-pi-session]')?.dataset.piSession === 'pi:recovery:shell');
+  } else {
+    await page.locator('#projectSwitchControl').click();
+    await page.locator('[data-source-choice="codex"]').click();
+    if (await page.locator('#projectSourceAction').isVisible()) await page.locator('#projectSourceAction').click();
+    await page.waitForFunction(() => document.querySelector('#projectSourceSwitch')?.dataset.source === 'codex');
+  }
+  release(); await completed;
+  await page.request.get(server.origin + '/api/state');
+  if (change === 'branch') {
+    assert.equal(await page.locator('[data-pi-overview] [aria-current="true"] [data-pi-session]').getAttribute('data-pi-session'), 'pi:recovery:shell');
+    assert.equal(await page.locator('[data-pi-native-count="rawRecords"]').textContent(), '17');
+  } else assert.equal(await page.locator('[data-pi-overview]').count(), 0);
 });

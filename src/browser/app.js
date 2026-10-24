@@ -5119,6 +5119,40 @@ function piReferenceButton(reference, label, branchId = '') {
   return `<button type="button" class="smallBtn" data-pi-entry="${escapeHtml(reference)}"${branchId ? ` data-pi-branch="${escapeHtml(branchId)}"` : ''}>${escapeHtml(label)}</button>`;
 }
 
+function renderPiNativeStatistics(statistics) {
+  if (statistics?.schemaVersion !== 1 || statistics.scope !== 'native_session') return '';
+  const countGroups = [
+    ['piNativeRecords', ['rawRecords', 'entryRecords', 'unlinkedRecords', 'malformedRecords']],
+    ['piNativeMessages', ['userMessages', 'assistantMessages', 'systemMessages', 'otherMessages']],
+    ['piNativeTools', ['assistantToolRequests', 'toolResultMessages', 'directShellExecutions']],
+  ];
+  const fields = ['input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h', 'reasoning', 'totalTokens'];
+  const categories = ['assistant', 'tool_nested_model_work', 'usage', 'compaction', 'branch_summary'];
+  const usage = categories.filter((category) => statistics.usageByCategory?.[category]).map((category) => {
+    const group = statistics.usageByCategory[category];
+    const rows = fields.map((field) => {
+      const coverage = group.fields?.[field];
+      const sum = coverage?.overflow ? t('piNativeOverflow') : coverage?.recordedSum == null
+        ? t('piNativeUnknown') : t('piNativePartialSum', { count: coverage.recordedSum });
+      return `<div class="piNativeUsageField" data-pi-usage-field="${field}"><dt>${escapeHtml(t(`piNativeField_${field}`))}</dt><dd><strong>${escapeHtml(sum)}</strong><span>${escapeHtml(coverage
+        ? t('piNativeFieldCoverage', { recorded: coverage.recordedCount, missing: coverage.missingCount, invalid: coverage.invalidCount })
+        : t('piNativeNoReceipts'))}</span></dd></div>`;
+    }).join('');
+    return `<details class="piNativeUsageCategory" data-pi-usage-category="${category}"><summary>${escapeHtml(t(`piNativeCategory_${category}`))}</summary><p class="piNativeNote">${escapeHtml(t('piNativeReceiptCoverage', { eligible: group.eligibleRecords, receipts: group.receipts, missing: group.missingUsageRecords }))}</p><dl class="piNativeUsageFields">${rows}</dl></details>`;
+  }).join('');
+  return `<details class="piNativeStatistics" data-pi-native-statistics><summary>${escapeHtml(t('piNativeStatistics'))}</summary>
+    <p class="piNativeNote">${escapeHtml(t('piNativeScope'))}</p>
+    <p class="piNativeSource">${escapeHtml(statistics.sourceSessionId)}<br>${escapeHtml(statistics.sourceFile)}</p>
+    <div class="piNativeCountGroups">${countGroups.map(([title, keys]) => `<section><h4>${escapeHtml(t(title))}</h4><dl class="piNativeCounts">${keys.map((key) => `<div><dt>${escapeHtml(t(`piNativeCount_${key}`))}</dt><dd data-pi-native-count="${key}">${escapeHtml(statistics.counts[key])}</dd></div>`).join('')}</dl></section>`).join('')}</div>
+    <p class="piNativeNote">${escapeHtml(t('piNativeCountBasis'))}</p>
+    <p class="piNativeNote">${escapeHtml(t('piNativeToolBasis'))}</p>
+    <h4>${escapeHtml(t('piNativeUsage'))}</h4>
+    <p class="piNativeNote">${escapeHtml(t('piNativeUsageBasis'))}</p>
+    ${usage || `<p class="piNativeNote">${escapeHtml(t('piNativeNoUsage'))}</p>`}
+    <p class="piNativeNote">${escapeHtml(t('piNativeUsageSubsets'))}</p>
+  </details>`;
+}
+
 async function loadPiOverview(sessionId) {
   requestOwners.piOverview.abort();
   if (state.sourceKind !== 'pi' || state.searchScope !== 'session') return;
@@ -5142,14 +5176,14 @@ async function loadPiOverview(sessionId) {
       <h3 class="piOverviewTitle">${escapeHtml(title)}</h3>
       ${branch ? `<p class="piSelectedTip"><strong>${escapeHtml(t('piBranchTip'))}:</strong> ${escapeHtml(piPreview(branch.tip) || branch.title || branch.leafId)}</p>` : ''}
       ${data.summaryTarget ? `<p><button type="button" class="smallBtn" data-pi-summary-target="${escapeHtml(JSON.stringify(data.summaryTarget))}" data-pi-scope="${escapeHtml(scope)}">${escapeHtml(t('piModelsUsage'))}</button></p>` : ''}
-      <details${data.branchCount <= 4 && !window.matchMedia('(max-width: 760px)').matches ? ' open' : ''}>
+      <details data-pi-branches${data.branchCount <= 4 && !window.matchMedia('(max-width: 760px)').matches ? ' open' : ''}>
       <summary>${escapeHtml(t('piOverview'))} <span class="chip">${escapeHtml(t('piVisibleBranches', { count: data.branches.length }))}</span></summary>
       <ul class="piOverviewBranches">${branchItems}</ul>
       <div class="piLabelAnchors"><strong>${escapeHtml(t('piLabels'))}</strong> ${data.labels.length
         ? data.labels.map((label) => piReferenceButton(label.reference, label.label)).join(' ')
         : `<span>${escapeHtml(t('piNoLabels'))}</span>`}</div>
       ${data.truncated ? `<p class="piSessionGroupNote">${escapeHtml(t('piOverviewTruncated'))}</p>` : ''}
-    </details></section>`);
+    </details>${renderPiNativeStatistics(data.nativeStatistics)}</section>`);
   } catch (error) {
     if (!isIntentionalAbort(error) && requestOwners.piOverview.isCurrent(owner) && scope === readingScopeKey()) throw error;
   } finally { requestOwners.piOverview.finish(owner); }
@@ -5354,6 +5388,9 @@ function leaveHistoryEvidence() {
 
 async function openHistoryEvidence(reference, options = {}) {
   cancelHistoryNavigation();
+  // Retire the prior Inspector before its excerpt disappears. A pending detail
+  // settlement must not close that stale view and cancel this new reference.
+  resetDetailPane();
   const operation = evidenceNavigation.start();
   const originalRef = options.originalRef || reference;
   state.historyEvidence = { ref: reference, originalRef, active: true, messageKey: 'historyResolving' };

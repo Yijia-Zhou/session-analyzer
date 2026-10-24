@@ -76,32 +76,36 @@ function recordedConfiguration(rows) {
   return snapshots;
 }
 
-function branchUsageSummary(rows) {
-  const categories = {};
-  for (const row of rows) {
-    const entry = row.parsed || row;
-    const attribution = usageSource(entry);
-    if (!attribution) continue;
-    const receipt = recordedUsage(entry);
-    // Arbitrary standalone kinds are retained as data, never interpreted as accounting rules.
-    const key = attribution.category;
-    const group = categories[key] ||= { eligibleRecords: 0, missingUsageRecords: 0, receipts: 0, fields: {} };
-    group.eligibleRecords++;
-    if (!receipt) { group.missingUsageRecords++; continue; }
-    group.receipts++;
-    for (const field of fields) {
-      const coverage = group.fields[field] ||= { recordedSum: null, recordedCount: 0, missingCount: 0, invalidCount: 0 };
-      if (Object.hasOwn(receipt.values, field)) {
-        const sum = (coverage.recordedSum ?? 0) + receipt.values[field];
-        if (!coverage.overflow && Number.isFinite(sum)) coverage.recordedSum = sum;
-        else { coverage.overflow = true; coverage.recordedSum = null; }
-        coverage.recordedCount++;
-      } else if (receipt.invalid.includes(field)) coverage.invalidCount++;
-      else coverage.missingCount++;
-    }
+// Scope comes from the caller's admitted entries, never from leaf analyses.
+function addRecordedUsage(categories, entry) {
+  const attribution = usageSource(entry);
+  if (!attribution) return;
+  const receipt = recordedUsage(entry);
+  // Arbitrary standalone kinds are retained as data, never interpreted as accounting rules.
+  const key = attribution.category;
+  const group = categories[key] ||= { eligibleRecords: 0, missingUsageRecords: 0, receipts: 0, fields: {} };
+  group.eligibleRecords++;
+  if (!receipt) { group.missingUsageRecords++; return; }
+  group.receipts++;
+  for (const field of fields) {
+    const coverage = group.fields[field] ||= { recordedSum: null, recordedCount: 0, missingCount: 0, invalidCount: 0 };
+    if (Object.hasOwn(receipt.values, field)) {
+      const sum = (coverage.recordedSum ?? 0) + receipt.values[field];
+      if (!coverage.overflow && Number.isFinite(sum)) coverage.recordedSum = sum;
+      else { coverage.overflow = true; coverage.recordedSum = null; }
+      coverage.recordedCount++;
+    } else if (receipt.invalid.includes(field)) coverage.invalidCount++;
+    else coverage.missingCount++;
   }
+}
+
+function recordedUsageSummary(rows) {
+  const categories = {};
+  for (const row of rows) addRecordedUsage(categories, row.parsed || row);
   return categories;
 }
+
+function branchUsageSummary(rows) { return recordedUsageSummary(rows); }
 
 function recordedStateSections(entry, context = {}) {
   const sections = usageSections(entry);
@@ -125,4 +129,4 @@ function recordedStateSections(entry, context = {}) {
   return sections;
 }
 
-module.exports = { recordedUsage, usageSections, recordedConfiguration, branchUsageSummary, recordedStateSections };
+module.exports = { recordedUsage, usageSections, recordedConfiguration, addRecordedUsage, recordedUsageSummary, branchUsageSummary, recordedStateSections };

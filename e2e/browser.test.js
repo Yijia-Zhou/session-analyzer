@@ -11261,18 +11261,55 @@ test('browser Wave 1C M1 production lifecycle reconciles Main renders and retire
   });
 });
 
-test('browser Wave 1C M1 canonical-context changes reject colliding-ID owner reuse across repeated Session switches', async (t) => {
+test('browser Wave 1C M1 canonical-context changes reject colliding-ID owner reuse across repeated Session switches', { timeout: 60000 }, async (t) => {
   const { fixture, index } = await makeTransitionProfileIndex(t, { eventCount: 320, secondaryEventCount: 40 });
   const { page } = await openWave1cM1App(t, index, { locale: 'en' });
   await page.waitForSelector(`[data-session-id="${fixture.longSessionId}"].active`);
   const collisionId = await page.locator('#timeline .event[data-event-id]').first().getAttribute('data-event-id');
   assert.ok(collisionId);
+  const detailGate = deferred();
+  const detailStarted = deferred();
+  t.after(() => detailGate.resolve());
+  await page.route(`**/api/sessions/${fixture.secondarySessionId}/events/*/detail*`, async (route) => {
+    let response;
+    try { response = await route.fetch({ timeout: 30000 }); }
+    catch (error) {
+      detailStarted.resolve({ error });
+      await route.abort();
+      return;
+    }
+    detailStarted.resolve({});
+    await detailGate.promise;
+    await route.fulfill({ response });
+  });
   await page.route(`**/api/sessions/${fixture.secondarySessionId}/timeline*`, async (route) => {
     const response = await route.fetch();
     const body = await response.json();
     if (body.events?.length) body.events[0] = { ...body.events[0], id: collisionId };
     await route.fulfill({ response, json: body });
   });
+
+  const waitForReplacement = async (sessionId, lifecycleStart, previousContextSerial) => {
+    const replacement = await page.waitForFunction(({ sessionId, lifecycleStart, previousContextSerial, collisionId }) => {
+      const rows = window.__wave1cM1.evidence.lifecycle;
+      // Detail settlement can publish an adopt after the replacement. Capture
+      // the first new-context Main replacement, rather than the latest operation.
+      const snapshot = rows.slice(lifecycleStart).find((row) => row.operation === 'replace'
+        && row.mode === 'main' && row.ownerCount > 0
+        && row.mountedCanonicalContextSerial !== previousContextSerial);
+      const mounted = rows.at(-1);
+      const cards = document.querySelectorAll('#timeline .event[data-event-id]');
+      const retired = window.__wave1cM1RetiredArticles.at(-1);
+      if (document.querySelector('.sessionItem.active')?.dataset.sessionId !== sessionId
+          || !snapshot || mounted.mountedCanonicalContextSerial !== snapshot.mountedCanonicalContextSerial
+          || cards.length !== snapshot.ownerCount || cards[0]?.dataset.eventId !== collisionId
+          || !retired || retired.isConnected
+          || !snapshot.ownerSerials.every((serial, index) => mounted.ownerSerials[index] === serial)) return null;
+      return structuredClone(snapshot);
+    }, { sessionId, lifecycleStart, previousContextSerial, collisionId });
+    try { return await replacement.jsonValue(); }
+    finally { await replacement.dispose(); }
+  };
 
   const initial = await latestWave1cM1Lifecycle(page);
   const initialOwnerSerial = initial.ownerSerials[0];
@@ -11282,24 +11319,41 @@ test('browser Wave 1C M1 canonical-context changes reject colliding-ID owner reu
   });
   await page.locator(`[data-session-id="${fixture.secondarySessionId}"]`).click();
   await page.waitForSelector(`[data-session-id="${fixture.secondarySessionId}"].active`);
-  await page.waitForFunction((eventId) => (
-    document.querySelector('#timeline .event[data-event-id]')?.dataset.eventId === eventId
-  ), collisionId);
-  const secondary = await latestWave1cM1Lifecycle(page);
+  await new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => reject(new Error('No secondary Session detail response became ready within 30 seconds')), 30000);
+    detailStarted.promise.then(({ error }) => {
+      clearTimeout(deadline);
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+  const secondaryMount = await waitForReplacement(fixture.secondarySessionId, 0, initial.mountedCanonicalContextSerial);
+  const adoptionStart = await page.evaluate(() => window.__wave1cM1.evidence.lifecycle.length);
+  detailGate.resolve();
+  // Exercise the legal late-detail ordering before selecting replacement evidence.
+  await page.waitForFunction(({ start, serial }) => window.__wave1cM1.evidence.lifecycle.slice(start)
+    .some((row) => row.operation === 'adopt' && row.mountedCanonicalContextSerial === serial),
+  { start: adoptionStart, serial: secondaryMount.mountedCanonicalContextSerial });
+  const secondary = await waitForReplacement(fixture.secondarySessionId, 0, initial.mountedCanonicalContextSerial);
   assert.equal(secondary.sameCanonicalContext, false);
   assert.notEqual(secondary.ownerSerials[0], initialOwnerSerial);
   assert.equal(await page.evaluate(() => window.__wave1cM1RetiredArticles[0].isConnected), false);
 
+  let previous = secondary;
   for (const sessionId of [fixture.longSessionId, fixture.secondarySessionId, fixture.longSessionId]) {
-    await page.evaluate(() => {
+    const lifecycleStart = await page.evaluate(() => {
       window.__wave1cM1RetiredArticles.push(document.querySelector('#timeline .event[data-event-id]'));
+      return window.__wave1cM1.evidence.lifecycle.length;
     });
     await page.locator(`[data-session-id="${sessionId}"]`).click();
     await page.waitForSelector(`[data-session-id="${sessionId}"].active`);
-    await page.waitForFunction(() => window.__wave1cM1.evidence.lifecycle.at(-1)?.mode === 'main');
-    const snapshot = await latestWave1cM1Lifecycle(page);
+    const snapshot = await waitForReplacement(sessionId, lifecycleStart, previous.mountedCanonicalContextSerial);
+    assert.equal(snapshot.sameCanonicalContext, false);
+    assert.equal(snapshot.reusedOwnerCount, 0);
+    assert.equal(snapshot.ownerSerials.some((serial) => previous.ownerSerials.includes(serial)), false);
     assert.equal(snapshot.ownerCount, await page.locator('#timeline .event[data-event-id]').count());
     assert.ok(snapshot.ownerCount <= 150, 'owner count must describe only the current Session mount');
+    previous = snapshot;
   }
   assert.equal(await page.evaluate(() => window.__wave1cM1RetiredArticles.every((node) => !node.isConnected)), true);
 });
