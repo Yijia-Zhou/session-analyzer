@@ -87,6 +87,11 @@ test('recorded state survives index/materialization and branch detail without si
   const branch = session.logicalEvents.find((event) => event.subtype === 'pi_branch');
   const detail = await buildEventDetailForSession(index, session, branch.id, branch.layer);
   const summary = detail.inspectorSections.find((section) => section.title?.includes('partial sums')).value;
+  const evidenceIndex = detail.inspectorSections.findIndex((section) => section.title?.includes('partial sums'));
+  assert.ok(detail.inspectorSections.slice(0, evidenceIndex).some((section) => section.type === 'kv'
+    && section.entries.some((entry) => entry.key === 'Selected model')));
+  assert.equal(detail.inspectorSections[evidenceIndex].type, 'json');
+  assert.equal(detail.inspectorSections[evidenceIndex].purpose, 'context');
   assert.equal(summary.usage.fields.input.recordedSum, 7);
   assert.equal(summary.assistant.fields.input.recordedSum, 5);
   assert.equal(summary.compaction.fields.input.recordedSum, 2);

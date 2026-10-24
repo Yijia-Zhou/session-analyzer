@@ -6168,3 +6168,26 @@ body[data-history-reading='isolated'] #resultSummary { display: none; }
   line-height: 1.5;
 }
 .piBranchLabel { white-space: normal; overflow-wrap: anywhere; }
+
+.piGroupToggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 4px 0; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; overflow-wrap: anywhere; }
+.piOverview { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
+.piOverview summary { cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+.piOverviewBranches, .piBranchChooser ul { display: grid; gap: 8px; padding: 0; list-style: none; }
+.piOverviewBranches li { border-left: 3px solid var(--line); padding-left: 8px; }
+.piOverviewBranches li[aria-current] { border-left-color: var(--accent, #2e6bd1); }
+.piOverviewBranches .smallBtn, .piLabelAnchors .smallBtn, .piBranchChooser .smallBtn { white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.piOverviewBranches small, .piBranchChooser small { display: block; color: var(--muted); overflow-wrap: anywhere; margin: 3px 0; }
+.piSelectedTip, .piDivergence { margin: 7px 0; overflow-wrap: anywhere; }
+.piDivergence { color: var(--muted); }
+.piLabelAnchors { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.piEntryActions { display: contents; }
+.piEntryActions a { text-decoration: none; }
+.piBranchChooser { width: min(560px, calc(100vw - 32px)); max-height: 80vh; overflow: auto; border: 1px solid var(--line); border-radius: 12px; padding: 18px; background: var(--panel, #fff); color: var(--text, #222); }
+.piBranchChooser::backdrop { background: #0006; }
+.piBranchChooser header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.piBranchChooser h2 { font-size: 18px; margin: 0; }
+@media (max-width: 760px) { .piGroupToggle, .piOverview .smallBtn, .piBranchChooser .smallBtn { min-height: 40px; } }
+
+.piOverviewTitle { margin: 0 0 6px; font-size: 13px; overflow-wrap: anywhere; }
+.piOverviewBranches { max-height: 260px; overflow: auto; overscroll-behavior: contain; }
+.piRecordedDetails > summary { cursor: pointer; padding: 8px 0; font-weight: 600; }

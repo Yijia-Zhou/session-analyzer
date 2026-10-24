@@ -1,6 +1,6 @@
 # pi reader maturation / pi 阅读体验完善
 
-Status: completed and accepted into `feat/pi-integration` by [PR #90](https://github.com/Yijia-Zhou/session-analyzer/pull/90), merge `9ddc1ec`. Exact implementation head `ad18e93` passed all hosted CI checks. Original implementation: `7b5dcc3` against `209a8d1`, transplanted onto integration baseline `4550324`. Remaining work is tracked in the [native file-evidence plan](../active/2026-10-23-pi-native-file-evidence.md) and debt tracker. / 状态：已完成，经 PR #90 接纳到集成分支，合并提交为 9ddc1ec；精确实现 head ad18e93 的 hosted CI 全部通过。原实现以 209a8d1 为基线提交为 7b5dcc3，随后移植到集成基线 4550324。后续工作见原生文件依据计划及技术债跟踪器。
+Status: completed and accepted into `feat/pi-integration` by [PR #90](https://github.com/Yijia-Zhou/session-analyzer/pull/90), merge `9ddc1ec`. Exact implementation head `ad18e93` passed all hosted CI checks. Original implementation: `7b5dcc3` against `209a8d1`, transplanted onto integration baseline `4550324`. Remaining work is tracked in the [native file-evidence plan](../completed/2026-10-23-pi-native-file-evidence.md) and debt tracker. / 状态：已完成，经 PR #90 接纳到集成分支，合并提交为 9ddc1ec；精确实现 head ad18e93 的 hosted CI 全部通过。原实现以 209a8d1 为基线提交为 7b5dcc3，随后移植到集成基线 4550324。后续工作见原生文件依据计划及技术债跟踪器。
 
 ## Outcome and scope / 目标与范围
 
