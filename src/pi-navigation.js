@@ -5,6 +5,7 @@
 const path = require('node:path');
 const storage = require('./pi-storage');
 const logical = require('./pi-logical');
+const { nativeStatistics } = require('./pi-native-statistics');
 const { redactEmbeddedDataUrls } = require('./shared/logical-detail-sanitizer');
 
 const PREFIX = 'pi-entry-v1.';
@@ -119,6 +120,7 @@ async function readPiNavigation(index, session, options = {}) {
     } else if (entry.label === undefined || entry.label === '') labels.delete(entry.targetId);
   }
   return { nativeSessionId: session.sourceSessionId, name, sourceFile: session.sourceFile,
+    nativeStatistics: nativeStatistics(document, session.sourceFile, options),
     branchCount: candidates.length, branches, labels: [...labels.values()].slice(0, MAX_LABELS), totalLabels: labels.size,
     truncated: candidates.length > MAX_BRANCHES || labels.size > MAX_LABELS, selectedSessionId: session.id,
     summaryTarget: { sessionId: session.id, eventId: `${session.id}:event:${document.rows[0].line}:pi_branch`, layer: 'protocol' } };

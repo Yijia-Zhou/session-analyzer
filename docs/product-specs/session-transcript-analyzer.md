@@ -68,6 +68,10 @@ Pi native-session groups can be collapsed; an overview distinguishes branch tips
 
 When a shared entry belongs to more than 100 branches, Load more in the branch chooser makes every containing branch selectable without changing the current branch or losing the pending entry. / 当共享 entry 属于超过 100 个分支时，分支选择器内的“加载更多”让每个所属分支均可选择，无需切换当前分支或丢失待选 entry。
 
+The pi overview separately offers initially collapsed whole-native statistics and an explicitly labelled selected-branch models/usage action. Native counts include each accepted physical record once across all branches, regardless of overview truncation. Empty/image-only/multiple-block messages count as one physical message; assistant request blocks, result messages and direct shell records remain separate. Shared requests with sibling outcomes do not receive a fabricated single success status. / pi 概览分别提供默认折叠的完整原生统计与明确标为所选分支的模型／用量入口。原生计数跨所有分支对每条已接纳物理记录计一次，不受概览截断影响；空／仅图片／多块消息按一条物理消息计，助手请求块、结果消息与直接 shell 分列。具有兄弟结果的共享请求不获得伪造的单一成功状态。
+
+Whole-native recorded usage keeps category-separated partial sums and missing/invalid/overflow coverage; unknown is not zero and subset token fields are not added again. Unlinked or malformed entries retain physical coverage without semantic contributions. Existing branch timelines, search hits, file statistics and canonical usage fields remain unchanged; native accounting does not claim shared storage or a deduplicated project bill. See [native statistics](../design-docs/pi-native-statistics.md). / 完整原生已记录用量按类别保留部分和及缺失／无效／溢出覆盖；未知不是零，子集 token 字段不重复相加。未关联或无效 entry 保留物理覆盖，不产生语义贡献。已有分支时间线、搜索命中、文件统计及 canonical 用量字段保持不变；原生核算不声称共享存储或项目去重账单，详见所列设计。
+
 ## Collaboration reading round trips / 协作阅读往返
 
 Confirmed targets show the indexed child title as their primary display name and retain the exact identifier as secondary identity. First selection also exposes a compact target directory in Inspector while the timeline card stays folded; unavailable targets keep their reason. Display names never establish a relation. / 已确认目标以索引中的子会话标题为主要显示名，保留精确标识作次级身份。首次选中时，即使时间线卡片折叠，Inspector 也提供精简目标目录；不可用目标保留原因。显示名从不建立关系。
