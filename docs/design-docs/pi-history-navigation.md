@@ -18,7 +18,7 @@ The sidebar groups branches into collapsible native sessions. The selected-sessi
 
 `branch_summary.fromId` can link to the abandoned sibling branch; labels can target other existing branches. Context edits and compaction boundaries retain their earlier-ancestor rules. Navigation establishes an entry relationship, not copied message ownership, child-agent identity or execution. / 分支摘要可链接离开的兄弟分支，标签可指向其他已有分支；context edit 和 compaction 边界仍要求较早祖先。导航仅建立记录关系，不建立复制消息归属、子 agent 身份或执行事实。
 
-Project search groups matching branches and separately labels visible native-session and matching-branch counts. Shared-prefix event hits remain repeated per containing branch. This is presentation grouping, not physical-hit or usage/file-statistics deduplication. A shared call may have different physical results in different descendants; whole-native totals require a separate contributor model. / 项目搜索对匹配分支分组，分别标注当前显示的原生会话数和匹配分支数；共同前缀命中仍在各所属分支重复。这是展示分组，不是物理命中或用量／文件统计去重。共享调用可在不同后代有不同物理结果，完整原生总量需另行设计贡献项模型。
+Project search groups matching branches and separately labels visible native-session and matching-branch counts. Shared-prefix event hits remain repeated per containing branch. The separate [whole-native statistics](pi-native-statistics.md) disclosure counts physical messages, requests, results and recorded usage once per accepted artifact; it does not deduplicate search hits or file statistics. A shared call may have different physical results in different descendants, so native request and result counts remain independent. / 项目搜索对匹配分支分组，分别标注当前显示的原生会话数和匹配分支数；共同前缀命中仍在各所属分支重复。独立的完整原生统计折叠区对每个已接纳工件的物理消息、请求、结果及已记录用量计一次，不对搜索命中或文件统计去重。共享调用可在不同后代有不同物理结果，因此原生请求与结果数保持独立。
 
 ## Reading saved evidence / 阅读保存的依据
 
