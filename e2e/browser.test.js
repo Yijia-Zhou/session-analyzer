@@ -1998,7 +1998,7 @@ test('collaboration failed paginated return retries the complete saved position'
   assert.equal(await page.locator('[data-reading-back]').count(), 0);
 });
 
-test('collaboration combines hidden search, pagination, sorting and failed return on desktop and mobile', async (t) => {
+test('collaboration combines hidden search, pagination, sorting and failed return on desktop and mobile', { timeout: 30000 }, async (t) => {
   const { index, parentId, childId, eventId } = await makeCollaborationNavigationFixture(t, { precedingCount: 170 });
   const profile = { id: 'custom:hidden-collaboration', name: 'Hidden collaboration',
     rules: { kindStates: { agent_coordination: 'hidden' }, fallback: 'expanded', conditions: [] } };
@@ -2013,6 +2013,12 @@ test('collaboration combines hidden search, pagination, sorting and failed retur
     if (mobile) await page.locator('button[data-mobile-view="events"]').click();
     await origin.waitFor();
     await page.waitForLoadState('networkidle');
+    // This preceding card first enters the mobile viewport after return positioning.
+    const lateDetailEventId = mobile ? await page.locator('#timeline .event[data-event-id]').evaluateAll(
+      (cards, id) => cards[cards.findIndex((card) => card.dataset.eventId === id) - 3]?.dataset.eventId,
+      eventId,
+    ) : null;
+    if (mobile) assert.ok(lateDetailEventId);
     await origin.evaluate((node, mobile) => node.addEventListener('click', () => {
       window.__collaborationDepartureTop = node.getBoundingClientRect().top
         - (mobile ? 0 : node.closest('.timelinePane').getBoundingClientRect().top);
@@ -2025,6 +2031,16 @@ test('collaboration combines hidden search, pagination, sorting and failed retur
     await page.locator('#sortSelect').selectOption('started-asc');
     await page.waitForLoadState('networkidle');
     if (mobile) await page.locator('button[data-mobile-view="events"]').click();
+    const lateDetailGate = deferred();
+    t.after(() => lateDetailGate.resolve());
+    let lateDetailRequests = 0;
+    if (mobile) await page.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+      if (decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-2)) === lateDetailEventId) {
+        lateDetailRequests += 1;
+        await lateDetailGate.promise;
+      }
+      await route.continue().catch(() => {});
+    });
     let failures = 0;
     await page.route(`**/api/sessions/${parentId}/timeline*`, async (route) => {
       const url = new URL(route.request().url());
@@ -2036,9 +2052,24 @@ test('collaboration combines hidden search, pagination, sorting and failed retur
     await page.locator('#sessionHeader [data-reading-back]').click();
     await page.waitForFunction(() => document.querySelector('#loadMoreBtn')?.textContent.includes('Retry'));
     assert.equal(failures, 1);
+    const lateDetailRequest = mobile ? page.waitForRequest((request) => {
+      const pathname = new URL(request.url()).pathname;
+      return pathname.endsWith('/detail') && decodeURIComponent(pathname.split('/').at(-2)) === lateDetailEventId;
+    }, { timeout: 10000 }) : null;
     await page.locator('#loadMoreBtn').click();
     await page.waitForFunction((id) => document.activeElement?.dataset.openCollaborationSession === id, childId);
     assert.equal(await origin.isVisible(), true);
+    if (mobile) {
+      await lateDetailRequest;
+      assert.match(await page.locator(`#timeline .event[data-event-id="${lateDetailEventId}"] > .eventBody`).innerText(), /Loading structured detail/);
+      lateDetailGate.resolve();
+      await page.waitForFunction((id) => {
+        const body = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(id)}"] > .eventBody`);
+        return body && !body.textContent.includes('Loading structured detail');
+      }, lateDetailEventId);
+      assert.equal(lateDetailRequests, 1);
+      assert.equal(await origin.evaluate((node) => node === document.activeElement), true);
+    }
     const restoredTop = await origin.evaluate((node, mobile) => node.getBoundingClientRect().top
       - (mobile ? 0 : node.closest('.timelinePane').getBoundingClientRect().top), mobile);
     assert.ok(Math.abs(restoredTop - anchorTop) < 3, `${mobile ? 'mobile' : 'desktop'}: ${anchorTop} -> ${restoredTop}`);
@@ -13741,6 +13772,100 @@ test('browser Wave 1D-A M1 visible-detail scheduling keeps candidate-first geome
   assert.ok(appendScan);
   assert.equal(appendScan.candidateArticleCount, 1);
   assert.equal(appendScan.articleGeometryReadCount, 1);
+});
+
+test('mobile document scrolling hydrates automatically expanded visible details without pagination', { timeout: 30000 }, async (t) => {
+  const expandedProfile = {
+    id: 'custom:mobile-visible-details',
+    name: 'Mobile visible details fixture',
+    description: 'Automatically expand ordinary events before they enter the viewport.',
+    rules: { fallback: 'expanded', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [] });
+  const { page, requestedPaths } = await openWave1dAM1App(t, index, {
+    locale: 'zh-CN',
+    viewport: { width: 390, height: 844 },
+    activeSessionState: 'attached',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([expandedProfile]),
+      'sessionAnalyzer.profile': expandedProfile.id,
+    },
+  });
+  await page.locator('.mobileViewTab[data-mobile-view="events"]').click();
+  await page.waitForLoadState('networkidle');
+  const target = page.locator('#timeline .event[data-event-id]').nth(149);
+  const eventId = await target.getAttribute('data-event-id');
+  assert.ok(await target.evaluate((node) => node.classList.contains('expanded')
+    && node.getBoundingClientRect().top > innerHeight));
+  assert.match(await target.locator('.eventBody').innerText(), /结构化详情加载中/);
+  const timelineRequestsBefore = requestedPaths.filter((pathname) => pathname.endsWith('/timeline')).length;
+  const gate = deferred();
+  const started = deferred();
+  t.after(() => gate.resolve());
+  let detailRequests = 0;
+  await page.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+    if (decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-2)) !== eventId) {
+      await route.continue();
+      return;
+    }
+    detailRequests += 1;
+    started.resolve();
+    await gate.promise;
+    await route.continue().catch(() => {});
+  });
+  await page.evaluate(() => window.__wave1dAM1.reset());
+  await target.evaluate((node) => node.scrollIntoView({ block: 'center', behavior: 'instant' }));
+  assert.ok(await page.evaluate(() => window.scrollY > 1000));
+  assert.equal(await page.locator('.timelinePane').evaluate((node) => node.scrollTop), 0);
+  await page.waitForFunction((id) => window.__wave1dAM1.evidence.detailTransactions.some(
+    (row) => row.eventId === id,
+  ), eventId, { timeout: 3000 });
+  await started.promise;
+  const scanCount = await page.evaluate(() => window.__wave1dAM1.evidence.visibleScans.length);
+  await page.evaluate(() => window.scrollBy(0, -1));
+  await page.waitForFunction((count) => window.__wave1dAM1.evidence.visibleScans.length > count, scanCount);
+  assert.equal(detailRequests, 1, 'repeated document scrolls share the pending detail request');
+  assert.equal(await page.evaluate(() => document.querySelector('#timeline').contains(document.activeElement)), false);
+  const scrollYBeforeSettlement = await page.evaluate(() => window.scrollY);
+  gate.resolve();
+  await page.waitForFunction((id) => {
+    const evidence = window.__wave1dAM1.evidence;
+    const transaction = evidence.detailTransactions.find((row) => row.eventId === id);
+    return evidence.detailRequests.some((row) => row.requestSerial === transaction?.requestSerial
+      && row.presentationSettlement);
+  }, eventId);
+  assert.equal(await page.evaluate(() => window.scrollY), scrollYBeforeSettlement,
+    'focus outside the Timeline retains absolute document scroll during detail settlement');
+  assert.doesNotMatch(await target.locator('.eventBody').innerText(), /结构化详情加载中/);
+  assert.match(await target.locator('.eventBody').innerText(), /Synthetic timeline event 0149/);
+  assert.equal(await target.evaluate((node) => node.classList.contains('expanded')), true);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 150);
+  assert.equal(requestedPaths.filter((pathname) => pathname.endsWith('/timeline')).length, timelineRequestsBefore);
+  const evidence = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const transaction = evidence.detailTransactions.find((row) => row.eventId === eventId);
+  assert.equal(evidence.detailRequests.filter((row) => row.requestSerial === transaction.requestSerial
+    && row.presentationSettlement).length, 1);
+  for (const scan of evidence.visibleScans) {
+    assert.equal(scan.articleGeometryReadCount, scan.candidateArticleCount);
+    assert.equal(scan.scrollportGeometryReadCount, 1);
+  }
+
+  for (const view of ['sessions', 'detail']) {
+    await page.locator(`.mobileViewTab[data-mobile-view="${view}"]`).click();
+    await page.waitForLoadState('networkidle');
+    await page.evaluate(() => window.__wave1dAM1.reset());
+    await page.evaluate(() => window.dispatchEvent(new Event('scroll')));
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.evaluate(() => window.__wave1dAM1.evidence.visibleScans.length), 0,
+      `document scrolling does not scan the hidden mobile Timeline in ${view}`);
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.waitForLoadState('networkidle');
+  await page.evaluate(() => window.__wave1dAM1.reset());
+  await page.evaluate(() => window.dispatchEvent(new Event('scroll')));
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.evaluate(() => window.__wave1dAM1.evidence.visibleScans.length), 0,
+    'desktop document scrolling leaves detail loading to the Timeline pane');
 });
 
 test('browser Wave 1D-A M1 query, profile, and locale transitions remain full-render controls', async (t) => {
