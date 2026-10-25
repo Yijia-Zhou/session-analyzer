@@ -124,7 +124,8 @@ async function buildPiIndex({ sourceHome, repoRoot, signal, onProgress, onDiagno
   // than silently overwrite a Session or route an old link to another artifact.
   const counts = new Map();
   for (const { header } of candidates) counts.set(header.id, (counts.get(header.id) || 0) + 1);
-  const builder = createProjectQueryStoreBuilder({ signal, presentationForEvent: piQuery.projectQueryPresentation });
+  const builder = createProjectQueryStoreBuilder({ signal, presentationForEvent: piQuery.projectQueryPresentation,
+    shareTextRanges: true });
   const sessions = []; const sessionsById = new Map(); const materializationDependencies = new Map();
   const kindCounts = { main: new Map(), protocol: new Map(), raw: new Map() };
   let indexedFileCount = 0; let indexedBytes = 0; let eventCount = 0; let rawEventCount = 0;
