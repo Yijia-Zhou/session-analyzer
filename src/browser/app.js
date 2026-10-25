@@ -785,6 +785,23 @@ function fmtDate(value) {
   return date.toLocaleString();
 }
 
+const LOCALE_DATE_TIME_OPTIONS = { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' };
+const LOCALE_DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, LOCALE_DATE_TIME_OPTIONS);
+const TIME_OF_DAY_PARTS = new Set(['hour', 'minute', 'second', 'dayPeriod']);
+
+// Same text as fmtDate, but keeps the time of day on one line when the label wraps.
+function fmtDateHtml(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return escapeHtml(value);
+  const parts = LOCALE_DATE_TIME_FORMATTER.formatToParts(date);
+  const text = date.toLocaleString();
+  const split = parts.findIndex((part) => TIME_OF_DAY_PARTS.has(part.type));
+  const join = (list) => list.map((part) => part.value).join('');
+  if (split <= 0 || join(parts) !== text) return escapeHtml(text);
+  return `${escapeHtml(join(parts.slice(0, split)))}<span class="timeOfDay">${escapeHtml(join(parts.slice(split)))}</span>`;
+}
+
 function projectName(repoRoot) {
   const text = String(repoRoot || '').replace(/[\\/]+$/, '');
   if (!text) return t('selectProject');
@@ -5781,7 +5798,7 @@ function renderSessions() {
             ${session.forkContinuationState === 'waiting_for_prompt' ? `<span class="chip forkStateChip">${escapeHtml(t('forkWaitingForPrompt'))}</span>` : ''}
             <span class="chip">${escapeHtml(t('messageCountShort', { count: session.counts.messages }))}</span>
             <span class="chip">${escapeHtml(t('toolCountShort', { count: session.counts.toolCalls }))}</span>
-            <span class="chip">${escapeHtml(t('failedCommandCountShort', { count: session.counts.failedCommands }))}</span>
+            <span class="chip${session.counts.failedCommands ? ' failedChip' : ''}">${escapeHtml(t('failedCommandCountShort', { count: session.counts.failedCommands }))}</span>
           </span>
           ${earlierBranchExplanation}
         </button>
@@ -7601,7 +7618,7 @@ function renderTimelineCardMarkup(event, compactWebLifecycleIds) {
         </button>
         <span class="eventKind">${escapeHtml(presentedEventLabel(event, presentation, compactWebLifecycle))}</span>
         ${chips ? `<span class="chips">${chips}</span>` : ''}
-        <span class="eventTime">${escapeHtml(fmtDate(event.timestamp))}</span>
+        <span class="eventTime">${fmtDateHtml(event.timestamp)}</span>
       </div>
       ${compactWebLifecycle && !event.hasSearchHit ? '' : renderEventPreview(event, ds, presentation)}
       ${renderMainCacheDiscontinuityAffordance(event)}

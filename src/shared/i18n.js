@@ -25,6 +25,7 @@
         historyEarlierRecords: "Earlier records are not loaded",
         historyLaterRecords: "Later records are not loaded",
         historySkippedRecords: "{count} records omitted",
+        historySkippedRecordsOne: "{count} record omitted",
         historyContinueRetry: "Retry reading",
         historyLocated: "Showing this record. Load the surrounding context to read on.",
         historyAway: "Your linked record is available to return to.",
@@ -85,6 +86,7 @@
         filterCount: '{count} filters',
         filterCountOne: '{count} filter',
         activeFilterSummary: '{count} active filters: {summary}',
+        activeFilterSummaryOne: '{count} active filter: {summary}',
         searchResultsBreakdown: 'Results',
         noSearchMatches: 'No matches',
         clearAll: 'Clear all',
@@ -103,6 +105,7 @@
         matchingEvents: 'Matching events',
         compactJumpTargets: '{current} / {total} targets',
         compactProjectMatches: '{count} sessions',
+        compactProjectMatchesOne: '{count} session',
         enterMovesNextTarget: 'Press Enter to move to the next target',
         enterFocusesResults: 'Press Enter to focus the first project result',
         kind: 'Kind',
@@ -121,6 +124,7 @@
         declaredRequestOption: 'Declared: {value}',
         anyFile: 'Any touched file',
         suggestionEventCount: '{count} events',
+        suggestionEventCountOne: '{count} event',
         noTouchedFilesInScope: 'No touched files in this scope.',
         noMatchingTouchedFiles: 'No matching touched files.',
         active: 'Active',
@@ -187,6 +191,7 @@
         declaredRequest: 'Declared request',
         resultMatchedExactly: 'Result matched exactly',
         declaredRequests: '{count} tools',
+        declaredRequestsOne: '{count} tool',
         codeModeDeclaredSequence: 'Declared sequence',
         codeModeRequestSummary: 'Request',
         codeModeNoArguments: 'No arguments',
@@ -239,27 +244,37 @@
         scanningFiles: 'Scanning {done}/{total} transcript files',
         parsingFiles: 'Parsing {done}/{total} candidate files',
         candidates: '{count} candidates',
+        candidatesOne: '{count} candidate',
         skipped: '{count} skipped',
         sessionCount: '{count} sessions',
+        sessionCountOne: '{count} session',
         logicalEventCount: '{count} logical events',
+        logicalEventCountOne: '{count} logical event',
         rawRecordCount: '{count} raw records',
+        rawRecordCountOne: '{count} raw record',
         messageCountShort: '{count} msgs',
+        messageCountShortOne: '{count} msg',
         toolCountShort: '{count} tools',
+        toolCountShortOne: '{count} tool',
         failedCommandCountShort: '{count} failed cmds',
+        failedCommandCountShortOne: '{count} failed cmd',
         protocolCountShort: '{count} protocol',
         projectActivityLoading: 'Loading project activity from {sourceHome}...',
         projectActivity: 'Project activity',
         discoveringProjects: 'Discovering transcript projects...',
         projectCandidates: '{count} project candidates from {sourceHome}',
+        projectCandidatesOne: '{count} project candidate from {sourceHome}',
         noProjectCandidates: 'No project candidates from {sourceHome}',
         noTranscriptProjects: 'No transcript projects were found in the configured source directory.',
         transcriptSource: 'Transcript source',
         chooseTranscriptSource: 'Choose a transcript source or check its directory.',
         switchAppliesDraft: 'Switching to {source} will also apply the edited directories.',
         sourceDiagnosticsTitle: '{count} source reading issue(s)',
+        sourceDiagnosticsTitleOne: '{count} source reading issue',
         sourceDiagnosticsPartial: 'Results may be incomplete. Readable sessions remain available; resolve these issues and retry.',
         sourceDiagnosticsDetails: 'Show affected files and technical details',
         sourceDiagnosticsTruncated: '{count} additional issue(s) are not listed.',
+        sourceDiagnosticsTruncatedOne: '{count} additional issue is not listed.',
         sourceRootNotFound: 'The source path does not exist. Check the configured directory.',
         sourceRootNotDirectory: 'The source path is not a directory. Choose a directory.',
         sourceRootUnreadable: 'The source directory cannot be read. Check access permissions.',
@@ -320,6 +335,7 @@
         projectResultsGuidance: 'Choose a session result on the left to open its latest matching event.',
         projectNoResults: 'No project events match this expression.',
         projectResultCount: '{count} matching events',
+        projectResultCountOne: '{count} matching event',
         projectResultSummary: '{sessions} matching sessions · {events} matching events',
         latestMatch: 'Latest match',
         foldingStrategy: 'Folding strategy',
@@ -335,6 +351,7 @@
         eventKinds: 'Event kinds',
         noExplicitKindRules: 'No explicit event-kind rules.',
         defaultKindCount: '{count} event kinds use Default',
+        defaultKindCountOne: '{count} event kind uses Default',
         codeModeRules: 'Code Mode tool calls',
         codeModeRulesDescription: 'Declared requests inherit ordinary tool settings and do not imply execution; scripted operations have no identified request.',
         codeModeScriptOperation: 'Scripted operation',
@@ -354,6 +371,7 @@
         conditions: 'Conditions',
         noActiveConditions: 'No active conditions.',
         inactiveConditions: '{count} inactive conditions',
+        inactiveConditionsOne: '{count} inactive condition',
         saveProfileChanges: 'Save profile changes',
         cancelProfileChanges: 'Cancel profile changes',
         save: 'Save',
@@ -427,6 +445,7 @@
         inheritedContextSummary: '{raw} inherited Raw Records at the fork point support {main} Main and {protocol} Protocol events. They provide context but are not counted as this session\'s continuation activity.',
         inheritedContextPreview: 'Latest inherited Main events ({count})',
         inheritedContextPreviewOmitted: '{count} earlier inherited Main events are not shown.',
+        inheritedContextPreviewOmittedOne: '{count} earlier inherited Main event is not shown.',
         inheritedContextNoMainEvents: 'No inherited Main events were reconstructed at this fork point.',
         inheritedContextForkPoint: 'Fork point {id}',
         openParentSession: 'Open parent session',
@@ -438,7 +457,9 @@
         sessionReadingRelations: 'Session reading path',
         sessionSiblings: 'Other sessions with this parent (current list)',
         fileActivityCount: '{count} related records',
+        fileActivityCountOne: '{count} related record',
         fileProjectCount: '{count} matching sessions (latest matching record per session)',
+        fileProjectCountOne: '{count} matching session (latest matching record)',
         fileActivityNote: 'Recorded path associations only. Patch records are distinguished from other path mentions; this is not a historical filesystem snapshot.',
         filePatchRecord: 'Patch record',
         fileRecordedPath: 'Recorded path association',
@@ -2148,9 +2169,21 @@
     ));
   }
 
+  // A `{key}One` entry supplies the singular form when `vars.count` is 1. Locales without
+  // grammatical number omit it; English singulars never leak into a locale that has the key.
+  function readCounted(locale, namespace, key, count) {
+    const base = readPath(locale, namespace, key);
+    if (count === 1) {
+      const singular = readPath(locale, namespace, `${key}One`);
+      if (singular != null || base != null) return singular ?? base;
+    }
+    return base;
+  }
+
   function t(locale, namespace, key, vars = {}) {
     const resolved = resolveLocale(locale);
-    const value = readPath(resolved, namespace, key) ?? readPath(DEFAULT_LOCALE, namespace, key);
+    const count = Number(vars?.count);
+    const value = readCounted(resolved, namespace, key, count) ?? readCounted(DEFAULT_LOCALE, namespace, key, count);
     if (value == null) return '';
     return interpolate(value, vars);
   }

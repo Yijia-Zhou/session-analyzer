@@ -183,6 +183,8 @@ Raw References use a separate evidence path: the browser normally requests each 
 
 #### 4. Browser materialization and DOM lifetime / 浏览器物化与 DOM 生命周期
 
+Timeline timestamp rendering reuses one browser-default `Intl.DateTimeFormat` instance for the page lifetime, avoiding per-card formatter construction during append and full redraw. The formatted parts must still reproduce `toLocaleString()` exactly before adding the no-wrap time span; otherwise the original localized text is preserved. / 时间线时间戳渲染在页面生命周期内复用一个采用浏览器默认 locale 的 `Intl.DateTimeFormat` 实例，避免追加和完整重绘时逐卡创建格式化器。只有格式化分段仍能精确还原 `toLocaleString()` 时才添加时刻不换行的 span，否则保留原本的本地化文本。
+
 The browser uses one committed context, one canonical ordered data array, one derived exact-ID Map, and one numeric cursor for the selected timeline. The array remains the only ordering/paging authority; the Map holds the exact same event objects and answers only canonical exact-ID lookup for that committed context. / 浏览器使用一个 committed context、一个 canonical 有序数据 array、一个派生的精确 ID Map 与一个数字 cursor 表示所选时间线。Array 继续作为唯一排序／分页权威；Map 保存完全相同的 event object，只回答该 committed context 的 canonical 精确 ID lookup：
 
 ```text

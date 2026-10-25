@@ -226,6 +226,16 @@ test('i18n resolves supported locales and falls back predictably', () => {
   });
 });
 
+test('count interpolation selects the singular form only where a locale defines one', () => {
+  assert.equal(i18n.t('en', 'ui', 'toolCountShort', { count: 1 }), '1 tool');
+  assert.equal(i18n.t('en', 'ui', 'toolCountShort', { count: 0 }), '0 tools');
+  assert.equal(i18n.t('en', 'ui', 'toolCountShort', { count: 2 }), '2 tools');
+  assert.equal(i18n.t('en', 'ui', 'suggestionEventCount', { count: '1' }), '1 event');
+  assert.equal(i18n.t('en', 'ui', 'filterCountOne', { count: 1 }), '1 filter');
+  assert.equal(i18n.t('zh-CN', 'ui', 'toolCountShort', { count: 1 }), '1 个工具');
+  assert.equal(i18n.t('en', 'ui', 'mainTimeline', { count: 1 }), 'Main timeline');
+});
+
 test('known label lookup translates exact keys and English catalog values without losing fallback compatibility', () => {
   assert.equal(i18n.lookupKnownLabel('Failed command', 'zh-CN'), '失败命令');
   assert.equal(i18n.lookupKnownLabel('Goal complete', 'zh-CN'), '目标已完成');

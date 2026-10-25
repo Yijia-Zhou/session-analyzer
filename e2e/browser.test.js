@@ -8093,7 +8093,7 @@ test('browser project scope renders cards, aggregate summary, and filter-only re
   assert.equal(await page.locator('.searchMark').count(), 0, 'project cards must not enter the session jump-target registry');
   assert.equal(await page.locator('[data-search-match-controls]').first().getAttribute('hidden'), null);
   assert.equal(await page.locator('[data-search-match-nav]').first().isHidden(), true);
-  assert.match((await page.locator('.searchInlineCount').textContent()).trim(), /^\d+ sessions$/);
+  assert.match((await page.locator('.searchInlineCount').textContent()).trim(), /^\d+ sessions?$/);
 
   const summary = await page.locator('#resultSummary').textContent();
   assert.match(summary, /^\d+ matching sessions · \d+ matching events$/);
@@ -9829,7 +9829,7 @@ test('browser project query transitions clear stale cards and counts before the 
   await waitForProjectCards(page);
   await page.waitForFunction(() => document.querySelector('#resultSummary')?.textContent.includes('matching sessions'));
   assert.doesNotMatch((await page.locator('#searchMetricsPanel').textContent()).trim(), /Searching/);
-  assert.match((await page.locator('.searchInlineCount').textContent()).trim(), /^\d+ sessions$/);
+  assert.match((await page.locator('.searchInlineCount').textContent()).trim(), /^\d+ sessions?$/);
 });
 
 test('browser superseded project results abort and an immediate retry settles Searching state', async (t) => {
