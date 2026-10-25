@@ -10658,6 +10658,12 @@ timelinePane?.addEventListener('touchmove', onTimelineUserScrollIntent, { passiv
 timelinePane?.addEventListener('pointerdown', onTimelineUserScrollIntent, { passive: true });
 timelinePane?.addEventListener('pointermove', onTimelineUserScrollIntent, { passive: true });
 timelinePane?.addEventListener('keydown', onTimelineUserScrollIntent);
+window.addEventListener('scroll', () => {
+  // Mobile Timeline cards move with the document instead of the pane scroller.
+  if (window.matchMedia('(max-width: 760px)').matches && state.mobileView === 'events') {
+    queueVisibleDetailLoad();
+  }
+}, { passive: true });
 window.addEventListener('resize', () => {
   queueVisibleDetailLoad();
   syncProfileInfoSlot();

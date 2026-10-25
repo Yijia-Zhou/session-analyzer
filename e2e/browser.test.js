@@ -13743,6 +13743,96 @@ test('browser Wave 1D-A M1 visible-detail scheduling keeps candidate-first geome
   assert.equal(appendScan.articleGeometryReadCount, 1);
 });
 
+test('mobile document scrolling hydrates automatically expanded visible details without pagination', { timeout: 30000 }, async (t) => {
+  const expandedProfile = {
+    id: 'custom:mobile-visible-details',
+    name: 'Mobile visible details fixture',
+    description: 'Automatically expand ordinary events before they enter the viewport.',
+    rules: { fallback: 'expanded', kindStates: {}, conditions: [] },
+  };
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [] });
+  const { page, requestedPaths } = await openWave1dAM1App(t, index, {
+    locale: 'zh-CN',
+    viewport: { width: 390, height: 844 },
+    activeSessionState: 'attached',
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([expandedProfile]),
+      'sessionAnalyzer.profile': expandedProfile.id,
+    },
+  });
+  await page.locator('.mobileViewTab[data-mobile-view="events"]').click();
+  await page.waitForLoadState('networkidle');
+  const target = page.locator('#timeline .event[data-event-id]').nth(149);
+  const eventId = await target.getAttribute('data-event-id');
+  assert.ok(await target.evaluate((node) => node.classList.contains('expanded')
+    && node.getBoundingClientRect().top > innerHeight));
+  assert.match(await target.locator('.eventBody').innerText(), /结构化详情加载中/);
+  const timelineRequestsBefore = requestedPaths.filter((pathname) => pathname.endsWith('/timeline')).length;
+  const gate = deferred();
+  const started = deferred();
+  t.after(() => gate.resolve());
+  let detailRequests = 0;
+  await page.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+    if (decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-2)) !== eventId) {
+      await route.continue();
+      return;
+    }
+    detailRequests += 1;
+    started.resolve();
+    await gate.promise;
+    await route.continue().catch(() => {});
+  });
+  await page.evaluate(() => window.__wave1dAM1.reset());
+  await target.evaluate((node) => node.scrollIntoView({ block: 'center', behavior: 'instant' }));
+  assert.ok(await page.evaluate(() => window.scrollY > 1000));
+  assert.equal(await page.locator('.timelinePane').evaluate((node) => node.scrollTop), 0);
+  await page.waitForFunction((id) => window.__wave1dAM1.evidence.detailTransactions.some(
+    (row) => row.eventId === id,
+  ), eventId, { timeout: 3000 });
+  await started.promise;
+  const scanCount = await page.evaluate(() => window.__wave1dAM1.evidence.visibleScans.length);
+  await page.evaluate(() => window.scrollBy(0, -1));
+  await page.waitForFunction((count) => window.__wave1dAM1.evidence.visibleScans.length > count, scanCount);
+  assert.equal(detailRequests, 1, 'repeated document scrolls share the pending detail request');
+  gate.resolve();
+  await page.waitForFunction((id) => {
+    const evidence = window.__wave1dAM1.evidence;
+    const transaction = evidence.detailTransactions.find((row) => row.eventId === id);
+    return evidence.detailRequests.some((row) => row.requestSerial === transaction?.requestSerial
+      && row.presentationSettlement);
+  }, eventId);
+  assert.doesNotMatch(await target.locator('.eventBody').innerText(), /结构化详情加载中/);
+  assert.match(await target.locator('.eventBody').innerText(), /Synthetic timeline event 0149/);
+  assert.equal(await target.evaluate((node) => node.classList.contains('expanded')), true);
+  assert.equal(await page.locator('#timeline .event[data-event-id]').count(), 150);
+  assert.equal(requestedPaths.filter((pathname) => pathname.endsWith('/timeline')).length, timelineRequestsBefore);
+  const evidence = await page.evaluate(() => structuredClone(window.__wave1dAM1.evidence));
+  const transaction = evidence.detailTransactions.find((row) => row.eventId === eventId);
+  assert.equal(evidence.detailRequests.filter((row) => row.requestSerial === transaction.requestSerial
+    && row.presentationSettlement).length, 1);
+  for (const scan of evidence.visibleScans) {
+    assert.equal(scan.articleGeometryReadCount, scan.candidateArticleCount);
+    assert.equal(scan.scrollportGeometryReadCount, 1);
+  }
+
+  for (const view of ['sessions', 'detail']) {
+    await page.locator(`.mobileViewTab[data-mobile-view="${view}"]`).click();
+    await page.waitForLoadState('networkidle');
+    await page.evaluate(() => window.__wave1dAM1.reset());
+    await page.evaluate(() => window.dispatchEvent(new Event('scroll')));
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.evaluate(() => window.__wave1dAM1.evidence.visibleScans.length), 0,
+      `document scrolling does not scan the hidden mobile Timeline in ${view}`);
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.waitForLoadState('networkidle');
+  await page.evaluate(() => window.__wave1dAM1.reset());
+  await page.evaluate(() => window.dispatchEvent(new Event('scroll')));
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.evaluate(() => window.__wave1dAM1.evidence.visibleScans.length), 0,
+    'desktop document scrolling leaves detail loading to the Timeline pane');
+});
+
 test('browser Wave 1D-A M1 query, profile, and locale transitions remain full-render controls', async (t) => {
   const firstProfile = {
     id: 'custom:wave-1d-a-control-one',

@@ -7,6 +7,66 @@ const os = require('node:os');
 const { chromium } = require('playwright');
 const { createHistoryService } = require('../src/history-service');
 
+for (const locale of ['en-US', 'zh-CN']) test(`mobile pi failed command automatically loads when document scrolling reveals it (${locale})`, { timeout: 30000 }, async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-mobile-visible-detail-'));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const repo = path.join(home, 'project');
+  const directory = path.join(home, 'sessions', 'synthetic');
+  await fs.mkdir(repo);
+  await fs.mkdir(directory, { recursive: true });
+  const rows = [{ type: 'session', version: 3, id: 'mobile-failed-command', cwd: repo }];
+  let parentId = null;
+  const add = (id, message) => {
+    rows.push({ type: 'message', id, parentId, message });
+    parentId = id;
+  };
+  for (let i = 0; i < 20; i += 1) {
+    add(`before-${i}`, { role: 'user', content: `Synthetic preceding message ${i}.` });
+  }
+  add('call-failure', { role: 'assistant', content: [{ type: 'toolCall', id: 'failure', name: 'bash',
+    arguments: { command: 'synthetic-failed-command' } }] });
+  add('result-failure', { role: 'toolResult', toolName: 'bash', toolCallId: 'failure', isError: true,
+    content: [{ type: 'text', text: 'MOBILE_FAILED_COMMAND_OUTPUT: expected 0.1, received 0.09' }] });
+  await fs.writeFile(path.join(directory, 'mobile.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+  const service = await createHistoryService({ repo, source: 'pi', piHome: home });
+  t.after(() => service.close());
+  const server = service.createViewerServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
+  const browser = await chromium.launch();
+  t.after(() => browser.close());
+  const page = await browser.newPage({ locale, viewport: { width: 390, height: 844 } });
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  const detailPaths = [];
+  page.on('request', (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.endsWith('/detail')) detailPaths.push(pathname);
+  });
+  await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await page.locator('.sessionItem').first().click();
+  const failed = page.locator('#timeline .event.kind-command.status-failed');
+  await failed.waitFor({ state: 'attached' });
+  await page.waitForLoadState('networkidle');
+  const eventId = await failed.getAttribute('data-event-id');
+  const isTargetDetail = (pathname) => decodeURIComponent(pathname.split('/').at(-2)) === eventId;
+  assert.equal(detailPaths.filter(isTargetDetail).length, 0);
+  assert.ok(await failed.evaluate((node) => node.classList.contains('expanded')
+    && node.getBoundingClientRect().top > innerHeight));
+  assert.match(await failed.locator('.eventBody').innerText(), /Loading structured detail|结构化详情加载中/);
+  await failed.evaluate((node) => node.scrollIntoView({ block: 'center', behavior: 'instant' }));
+  assert.ok(await page.evaluate(() => scrollY > 1000));
+  assert.equal(await page.locator('.timelinePane').evaluate((node) => node.scrollTop), 0);
+  await page.waitForFunction((id) => {
+    const owner = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(id)}"]`);
+    return owner?.querySelector('.eventBody')?.textContent.includes('MOBILE_FAILED_COMMAND_OUTPUT');
+  }, eventId, { timeout: 3000 });
+  assert.equal(detailPaths.filter(isTargetDetail).length, 1);
+  assert.equal(await failed.evaluate((node) => node.classList.contains('expanded')), true);
+  assert.doesNotMatch(await failed.locator('.eventBody').innerText(), /Loading structured detail|结构化详情加载中/);
+  assert.deepEqual(errors, []);
+});
+
 for (const locale of ['en-US', 'zh-CN']) for (const width of [1440, 390]) test(`native pi edit patch reading (${locale}, ${width})`, { timeout: 45000 }, async (t) => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-branches-'));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
