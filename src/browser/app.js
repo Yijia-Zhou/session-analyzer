@@ -8287,6 +8287,17 @@ function sameNodeList(left, right) {
   return left.length === right.length && left.every((node, index) => node === right[index]);
 }
 
+function captureMobileTimelineFocusAnchor() {
+  // Late detail bodies can move a focused reading action on the mobile document.
+  if (!window.matchMedia('(max-width: 760px)').matches) return null;
+  const node = document.activeElement;
+  const article = node?.closest?.('.event[data-event-id]');
+  if (article?.parentElement !== el.timeline || !currentTimelineEvent(article.dataset.eventId)) return null;
+  const rect = node.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.top >= window.innerHeight) return null;
+  return { node, article, top: rect.top };
+}
+
 function captureOrdinaryOwnerIdentity(owner) {
   const article = owner.articleNode;
   const timelineScroller = el.timeline.closest('.timelinePane');
@@ -8319,6 +8330,7 @@ function captureOrdinaryOwnerIdentity(owner) {
     timelineScrollTop: timelineScroller.scrollTop,
     windowScrollX: window.scrollX,
     windowScrollY: window.scrollY,
+    mobileFocusAnchor: captureMobileTimelineFocusAnchor(),
   };
 }
 
@@ -8330,9 +8342,20 @@ function restoreAndValidateOrdinaryOwnerIdentity(identity, owner) {
   if (timelineScroller.scrollTop !== identity.timelineScrollTop) {
     timelineScroller.scrollTop = identity.timelineScrollTop;
   }
-  if (window.scrollX !== identity.windowScrollX || window.scrollY !== identity.windowScrollY) {
-    window.scrollTo(identity.windowScrollX, identity.windowScrollY);
+  const anchor = identity.mobileFocusAnchor;
+  const anchorStillOwned = anchor?.node.isConnected && document.activeElement === anchor.node
+    && anchor.article.parentElement === el.timeline && anchor.node.closest('.event[data-event-id]') === anchor.article
+    && currentTimelineEvent(anchor.article.dataset.eventId);
+  const anchorRect = anchorStillOwned ? anchor.node.getBoundingClientRect() : null;
+  const keepMobileFocusOffset = anchorRect && anchorRect.width > 0 && anchorRect.height > 0;
+  const nextWindowScrollY = keepMobileFocusOffset
+    ? window.scrollY + anchorRect.top - anchor.top
+    : identity.windowScrollY;
+  if (window.scrollX !== identity.windowScrollX || window.scrollY !== nextWindowScrollY) {
+    window.scrollTo({ left: identity.windowScrollX, top: nextWindowScrollY, behavior: 'instant' });
   }
+  // Document scrolling rounds and clamps; validate the accepted scroll position below.
+  const expectedWindowScrollY = keepMobileFocusOffset ? window.scrollY : identity.windowScrollY;
   const article = owner.articleNode;
   const headers = directChildrenMatching(article, '.eventHeader');
   const toggles = headers.length === 1
@@ -8359,7 +8382,7 @@ function restoreAndValidateOrdinaryOwnerIdentity(identity, owner) {
     && identity.timelineScroller.isConnected
     && identity.timelineScroller.scrollTop === identity.timelineScrollTop
     && window.scrollX === identity.windowScrollX
-    && window.scrollY === identity.windowScrollY;
+    && window.scrollY === expectedWindowScrollY;
   if (!exact) throw new Error('Ordinary detail patch changed owner identity or scroll state');
   return facts;
 }

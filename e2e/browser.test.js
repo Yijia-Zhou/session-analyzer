@@ -1998,7 +1998,7 @@ test('collaboration failed paginated return retries the complete saved position'
   assert.equal(await page.locator('[data-reading-back]').count(), 0);
 });
 
-test('collaboration combines hidden search, pagination, sorting and failed return on desktop and mobile', async (t) => {
+test('collaboration combines hidden search, pagination, sorting and failed return on desktop and mobile', { timeout: 30000 }, async (t) => {
   const { index, parentId, childId, eventId } = await makeCollaborationNavigationFixture(t, { precedingCount: 170 });
   const profile = { id: 'custom:hidden-collaboration', name: 'Hidden collaboration',
     rules: { kindStates: { agent_coordination: 'hidden' }, fallback: 'expanded', conditions: [] } };
@@ -2013,6 +2013,12 @@ test('collaboration combines hidden search, pagination, sorting and failed retur
     if (mobile) await page.locator('button[data-mobile-view="events"]').click();
     await origin.waitFor();
     await page.waitForLoadState('networkidle');
+    // This preceding card first enters the mobile viewport after return positioning.
+    const lateDetailEventId = mobile ? await page.locator('#timeline .event[data-event-id]').evaluateAll(
+      (cards, id) => cards[cards.findIndex((card) => card.dataset.eventId === id) - 3]?.dataset.eventId,
+      eventId,
+    ) : null;
+    if (mobile) assert.ok(lateDetailEventId);
     await origin.evaluate((node, mobile) => node.addEventListener('click', () => {
       window.__collaborationDepartureTop = node.getBoundingClientRect().top
         - (mobile ? 0 : node.closest('.timelinePane').getBoundingClientRect().top);
@@ -2025,6 +2031,16 @@ test('collaboration combines hidden search, pagination, sorting and failed retur
     await page.locator('#sortSelect').selectOption('started-asc');
     await page.waitForLoadState('networkidle');
     if (mobile) await page.locator('button[data-mobile-view="events"]').click();
+    const lateDetailGate = deferred();
+    t.after(() => lateDetailGate.resolve());
+    let lateDetailRequests = 0;
+    if (mobile) await page.route('**/api/sessions/*/events/*/detail?*', async (route) => {
+      if (decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-2)) === lateDetailEventId) {
+        lateDetailRequests += 1;
+        await lateDetailGate.promise;
+      }
+      await route.continue().catch(() => {});
+    });
     let failures = 0;
     await page.route(`**/api/sessions/${parentId}/timeline*`, async (route) => {
       const url = new URL(route.request().url());
@@ -2036,9 +2052,24 @@ test('collaboration combines hidden search, pagination, sorting and failed retur
     await page.locator('#sessionHeader [data-reading-back]').click();
     await page.waitForFunction(() => document.querySelector('#loadMoreBtn')?.textContent.includes('Retry'));
     assert.equal(failures, 1);
+    const lateDetailRequest = mobile ? page.waitForRequest((request) => {
+      const pathname = new URL(request.url()).pathname;
+      return pathname.endsWith('/detail') && decodeURIComponent(pathname.split('/').at(-2)) === lateDetailEventId;
+    }, { timeout: 10000 }) : null;
     await page.locator('#loadMoreBtn').click();
     await page.waitForFunction((id) => document.activeElement?.dataset.openCollaborationSession === id, childId);
     assert.equal(await origin.isVisible(), true);
+    if (mobile) {
+      await lateDetailRequest;
+      assert.match(await page.locator(`#timeline .event[data-event-id="${lateDetailEventId}"] > .eventBody`).innerText(), /Loading structured detail/);
+      lateDetailGate.resolve();
+      await page.waitForFunction((id) => {
+        const body = document.querySelector(`#timeline .event[data-event-id="${CSS.escape(id)}"] > .eventBody`);
+        return body && !body.textContent.includes('Loading structured detail');
+      }, lateDetailEventId);
+      assert.equal(lateDetailRequests, 1);
+      assert.equal(await origin.evaluate((node) => node === document.activeElement), true);
+    }
     const restoredTop = await origin.evaluate((node, mobile) => node.getBoundingClientRect().top
       - (mobile ? 0 : node.closest('.timelinePane').getBoundingClientRect().top), mobile);
     assert.ok(Math.abs(restoredTop - anchorTop) < 3, `${mobile ? 'mobile' : 'desktop'}: ${anchorTop} -> ${restoredTop}`);
@@ -13794,6 +13825,8 @@ test('mobile document scrolling hydrates automatically expanded visible details 
   await page.evaluate(() => window.scrollBy(0, -1));
   await page.waitForFunction((count) => window.__wave1dAM1.evidence.visibleScans.length > count, scanCount);
   assert.equal(detailRequests, 1, 'repeated document scrolls share the pending detail request');
+  assert.equal(await page.evaluate(() => document.querySelector('#timeline').contains(document.activeElement)), false);
+  const scrollYBeforeSettlement = await page.evaluate(() => window.scrollY);
   gate.resolve();
   await page.waitForFunction((id) => {
     const evidence = window.__wave1dAM1.evidence;
@@ -13801,6 +13834,8 @@ test('mobile document scrolling hydrates automatically expanded visible details 
     return evidence.detailRequests.some((row) => row.requestSerial === transaction?.requestSerial
       && row.presentationSettlement);
   }, eventId);
+  assert.equal(await page.evaluate(() => window.scrollY), scrollYBeforeSettlement,
+    'focus outside the Timeline retains absolute document scroll during detail settlement');
   assert.doesNotMatch(await target.locator('.eventBody').innerText(), /结构化详情加载中/);
   assert.match(await target.locator('.eventBody').innerText(), /Synthetic timeline event 0149/);
   assert.equal(await target.evaluate((node) => node.classList.contains('expanded')), true);
