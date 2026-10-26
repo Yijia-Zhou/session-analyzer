@@ -60,6 +60,7 @@ const allowedZhPhrases = [
   'JS REPL',
 ];
 const allowedZhTermsByPath = new Map([
+  ['ui.piNativeSession', new Set(['pi'])],
   ['ui.turnLineage', new Set(['turn'])],
   ['ui.lineageCurrent', new Set(['turn'])],
   ['section.summary is compatibility-only evidence. realtime_active does not identify an audio session.', new Set(['summary', 'realtime_active'])],

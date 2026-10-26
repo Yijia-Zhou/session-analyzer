@@ -2,8 +2,18 @@
 
 const { backgroundTerminalLabel } = require('../shared/background-terminal-presentation');
 
-const { referenceFromHash, createEvidenceNavigation } = require('./history-evidence');
+const { referenceFromHash, createEvidenceNavigation, createHistoryTraversalGuard } = require('./history-evidence');
 const searchExcerpt = require('./search-excerpt');
+const { groupPiBranches, piSessionTitle, piPreview } = require('./pi-branches');
+const piEntryNavigation = createEvidenceNavigation();
+let piBranchChooser = null;
+let piHydratedUrl = '';
+const piEntryReferences = new Map();
+const piReadingHistoryOwner = Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-');
+const piReadingPositions = new Map();
+let piReadingPositionId = 0;
+const piNativeScrollRestoration = window.history.scrollRestoration;
+const piHistoryTraversal = createHistoryTraversalGuard();
 const evidenceNavigation = createEvidenceNavigation();
 
 const rendererApi = window.sessionRenderers;
@@ -52,6 +62,9 @@ const requestOwners = {
   eventEnvelope: transitionSafety.createRequestOwner(),
   contextEventEnvelope: transitionSafety.createRequestOwner(),
   rawReferences: transitionSafety.createRequestOwner(),
+  piOverview: transitionSafety.createRequestOwner(),
+  piEntryActions: transitionSafety.createRequestOwner(),
+  piBranchPages: transitionSafety.createRequestOwner(),
 };
 const paginationIntents = transitionSafety.createPaginationIntentState();
 const detailRequestControllers = new Map();
@@ -132,6 +145,12 @@ function t(key, vars = {}) {
   return i18n.t(state?.locale || browserLocale(), 'ui', key, vars);
 }
 
+// Pi's indexed histories are branches; these counts do not deduplicate their
+// shared entries into a count of source sessions.
+function sessionCountLabel(count, sourceKind = state.sourceKind) {
+  return t(sourceKind === 'pi' ? (count === 1 ? 'piBranchCountOne' : 'piBranchCount') : 'sessionCount', { count });
+}
+
 function displayStateLabel(value) {
   return i18n.displayStateLabel(value, state?.locale || browserLocale());
 }
@@ -168,6 +187,7 @@ const state = {
   homeEditorDirty: false,
   sessions: [],
   expandedSessionGroups: new Set(),
+  collapsedPiGroups: new Set(),
   projectResults: [],
   indexRevision: 0,
   projectResultsRevision: 0,
@@ -1455,7 +1475,7 @@ function projectJobStatusText(job) {
     parts.push(t('skipped', { count: progress.skippedFileCount || 0 }));
   } else if (phase === 'parsing') {
     parts.push(t('parsingFiles', { done: progress.indexedFileCount || 0, total: progress.candidateFileCount || 0 }));
-    parts.push(t('sessionCount', { count: progress.sessionCount || 0 }));
+    parts.push(sessionCountLabel(progress.sessionCount || 0, job?.sourceKind || state.sourceKind));
     parts.push(fmtBytes(progress.indexedBytes || 0));
   } else if (job?.status === 'cancelled') {
     parts.push(t('indexingCancelled'));
@@ -2053,7 +2073,8 @@ function currentSearchMetricsModel() {
 function compactSearchMetricsLabel(model = currentSearchMetricsModel()) {
   if (model.mode === 'loading') return t('searching');
   if (model.mode !== 'ready') return '';
-  if (model.scope === 'project') return t('compactProjectMatches', { count: model.sessions });
+  if (model.scope === 'project') return state.sourceKind === 'pi'
+    ? sessionCountLabel(model.sessions) : t('compactProjectMatches', { count: model.sessions });
   return t('compactJumpTargets', { current: model.current, total: model.jumpTotal });
 }
 
@@ -2071,7 +2092,7 @@ function renderSearchMetrics() {
     } else if (noMatches) {
       el.searchMetricsPanel.innerHTML = `<p class="searchMetricsEmpty">${escapeHtml(t('noSearchMatches'))}</p>`;
     } else if (model.scope === 'project') {
-      el.searchMetricsPanel.innerHTML = `<div class="searchMetric"><span>${escapeHtml(t('matchingSessions'))}</span><strong>${model.sessions}</strong></div>
+      el.searchMetricsPanel.innerHTML = `<div class="searchMetric"><span>${escapeHtml(t(state.sourceKind === 'pi' ? 'piMatchingBranches' : 'matchingSessions'))}</span><strong>${model.sessions}</strong></div>
         <div class="searchMetric"><span>${escapeHtml(t('matchingEvents'))}</span><strong>${model.events}</strong></div>`;
     } else {
       const navigation = model.jumpTotal > 0 || model.fullTextTotal > 0
@@ -2131,7 +2152,7 @@ function updateSearchMatchControls() {
     && (targets.length > 0 || state.timelineSearchMatchCount > 0);
   controls.forEach((control) => {
     control.hidden = !visible;
-    control.title = sessionNavigation ? t('searchMatchTitle') : t('projectCompactMatchTitle');
+    control.title = sessionNavigation ? t('searchMatchTitle') : t(state.sourceKind === 'pi' ? 'piProjectCompactMatchTitle' : 'projectCompactMatchTitle');
     control.toggleAttribute('data-search-navigation-pending', state.searchNavigation.running);
     const label = control.querySelector('[data-search-match-count]');
     if (label) label.textContent = compactSearchMetricsLabel(model);
@@ -3586,9 +3607,13 @@ function renderInspectorDetail(event) {
       || (terminal && ((section.type === 'notice' && section.purpose === 'content')
         || (section.type === 'event_refs' && section.items?.length === 1)))
     ));
-    const supplemental = renderInspectorSections(supplementalSections.filter((section) => !leading.includes(section)));
+    const recorded = detail.sourceKind === 'pi'
+      ? supplementalSections.filter((section) => section.type === 'json' && section.purpose === 'context') : [];
+    const supplemental = renderInspectorSections(supplementalSections.filter((section) => !leading.includes(section) && !recorded.includes(section)));
+    const recordedDisclosure = recorded.length
+      ? `<details class="piRecordedDetails"><summary>${escapeHtml(t('piRecordedDetails'))}</summary>${renderInspectorSections(recorded)}</details>` : '';
     const supplement = includePrimary ? renderEventSearchSupplement(event) : '';
-    const body = `${renderSections(leading)}${primary}${supplement}${supplemental}`;
+    const body = `${renderSections(leading)}${primary}${supplement}${supplemental}${recordedDisclosure}`;
     if (!body) return '';
     return `<section class="inspectorSection">
       <h3>${escapeHtml(t('details'))}</h3>
@@ -4179,7 +4204,7 @@ function renderResultSummary() {
       updateSearchMatchControls();
       return;
     }
-    const summary = t('projectResultSummary', {
+    const summary = t(state.sourceKind === 'pi' ? 'piProjectResultSummary' : 'projectResultSummary', {
       sessions: state.projectSearchTotal,
       events: state.projectSearchEventTotal,
     });
@@ -4395,6 +4420,8 @@ function setProjectMode(selecting) {
 }
 
 function resetProjectViewState() {
+  cancelPiEntryNavigation();
+  piEntryReferences.clear();
   closeFileActivity();
   state.readingPositions.clear();
   state.readingHistory = [];
@@ -4492,7 +4519,7 @@ function renderProjects() {
     const action = isLoading ? `<span class="projectSpinner" aria-hidden="true"></span><span>${escapeHtml(t('indexing'))}</span>` : `<span>${escapeHtml(t('open'))}</span>`;
     const facts = statsPending
       ? `<span>${escapeHtml(t('activityLoading'))}</span>`
-      : `<span>${escapeHtml(t('sessionCount', { count: sessionCount }))}</span><span>${escapeHtml(project.updatedAt ? fmtDate(project.updatedAt) : t('noTranscriptActivity'))}</span>`;
+      : `<span>${escapeHtml(sessionCountLabel(sessionCount))}</span><span>${escapeHtml(project.updatedAt ? fmtDate(project.updatedAt) : t('noTranscriptActivity'))}</span>`;
     return `<button class="${classes}" type="button" data-project-root="${escapeHtml(project.repoRoot)}"${selectionLocked ? ' disabled' : ''}>
       <span class="projectMain">
         <span class="projectName">${escapeHtml(projectName(project.repoRoot))}${badges}</span>
@@ -4615,7 +4642,7 @@ async function applyAppState(appState) {
     appState.repoRoot,
     [
       sourceKindLabel(state.sourceKind),
-      t('sessionCount', { count: totals.sessionCount || 0 }),
+      sessionCountLabel(totals.sessionCount || 0),
       t('logicalEventCount', { count: totals.eventCount || 0 }),
       t('rawRecordCount', { count: totals.rawEventCount || 0 }),
     ].join(' | '),
@@ -4650,6 +4677,7 @@ async function finishProjectSelection(appState, options = {}) {
   await applyAppState(appState);
   setProjectMode(false);
   await loadSessions();
+  await hydratePiEntryUrl();
   if (!options.restore && el.projectStatus) el.projectStatus.textContent = '';
   if (el.projectProgress) el.projectProgress.hidden = true;
   if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
@@ -5081,6 +5109,343 @@ document.addEventListener('scroll', (event) => {
   if (wrapper) searchExcerpt.saveSupplementState(wrapper);
 }, { capture: true, passive: true });
 
+function piApiParams(values = {}) {
+  return new URLSearchParams({ source: state.sourceKind, repoRoot: state.repoRoot,
+    indexRevision: String(state.indexRevision), ...values });
+}
+
+function piEntryUrl(reference) {
+  const url = new URL(location.href);
+  url.searchParams.set('source', 'pi');
+  url.searchParams.set('repoRoot', state.repoRoot);
+  url.searchParams.set('piEntry', reference);
+  url.searchParams.delete('repo');
+  url.searchParams.delete('evidenceRef');
+  url.searchParams.delete('ref');
+  url.hash = '';
+  return url.href;
+}
+
+function rememberPiBrowserPosition() {
+  if (state.sourceKind !== 'pi' || state.searchScope !== 'session' || !state.selectedSessionId) return;
+  const saved = window.history.state?.sessionAnalyzerPiReading;
+  // A reference URL keeps the branch/entry it opened, even if the user reads
+  // another session before opening their next reference in this history slot.
+  if (new URL(location.href).searchParams.has('piEntry') && saved?.owner === piReadingHistoryOwner) {
+    const target = piReadingPositions.get(saved.id);
+    if (!target || target.sessionId !== state.selectedSessionId || target.layerId !== activeLayerId()
+        || target.selectedEventId !== state.selectedEventId) return;
+  }
+  const id = saved?.owner === piReadingHistoryOwner ? saved.id : ++piReadingPositionId;
+  piReadingPositions.delete(id);
+  piReadingPositions.set(id, structuredClone(captureReadingPosition(el.sessionHeader)));
+  // Keep browser state free of transcript content and bound retained UI snapshots.
+  if (piReadingPositions.size > 40) piReadingPositions.delete(piReadingPositions.keys().next().value);
+  window.history.replaceState({ ...window.history.state,
+    sessionAnalyzerPiReading: { owner: piReadingHistoryOwner, id, scope: readingScopeKey() } }, '', location.href);
+  // These entries restore both the pane and mobile document viewport themselves.
+  window.history.scrollRestoration = 'manual';
+}
+
+async function restorePiBrowserPosition(saved) {
+  const position = piReadingPositions.get(saved.id);
+  if (!state.projectSelected || state.selectingProject || saved.scope !== readingScopeKey()
+      || (position && position.scope !== readingScopeKey())) {
+    el.stateLine.textContent = t('piEntryUnavailable');
+    return;
+  }
+  // An evicted UI snapshot must not retire an otherwise durable entry locator.
+  if (!position && new URL(location.href).searchParams.has('piEntry')) return hydratePiEntryUrl();
+  if (!position) { el.stateLine.textContent = t('piEntryUnavailable'); return; }
+  // Retire any in-app return before excerpt resolution can await its first read.
+  state.readingNavigationId += 1;
+  const navigation = piEntryNavigation.start();
+  const current = () => navigation.current() && state.projectSelected && !state.selectingProject
+    && position.scope === readingScopeKey()
+    && window.history.state?.sessionAnalyzerPiReading?.owner === piReadingHistoryOwner
+    && window.history.state?.sessionAnalyzerPiReading?.id === saved.id;
+  const operation = { current };
+  try {
+    const restored = await restoreReadingPosition(position, operation, {
+      consumeHistory: false, historyCurrent: current, piNavigation: true,
+    });
+    if (restored && current()) piHydratedUrl = location.href;
+  } catch (error) {
+    if (operation.current() && !isIntentionalAbort(error)) throw error;
+  }
+}
+
+function cancelPiEntryNavigation() {
+  piEntryNavigation.cancel();
+  requestOwners.piBranchPages.abort();
+  if (piBranchChooser) {
+    piBranchChooser.close();
+    piBranchChooser.remove();
+    piBranchChooser = null;
+  }
+}
+
+function piReferenceButton(reference, label, branchId = '') {
+  if (!reference) return `<span>${escapeHtml(label)}</span>`;
+  return `<button type="button" class="smallBtn" data-pi-entry="${escapeHtml(reference)}"${branchId ? ` data-pi-branch="${escapeHtml(branchId)}"` : ''}>${escapeHtml(label)}</button>`;
+}
+
+function renderPiNativeStatistics(statistics) {
+  if (statistics?.schemaVersion !== 1 || statistics.scope !== 'native_session') return '';
+  const countGroups = [
+    ['piNativeRecords', ['rawRecords', 'entryRecords', 'unlinkedRecords', 'malformedRecords']],
+    ['piNativeMessages', ['userMessages', 'assistantMessages', 'systemMessages', 'otherMessages']],
+    ['piNativeTools', ['assistantToolRequests', 'toolResultMessages', 'directShellExecutions']],
+  ];
+  const fields = ['input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h', 'reasoning', 'totalTokens'];
+  const categories = ['assistant', 'tool_nested_model_work', 'usage', 'compaction', 'branch_summary'];
+  const usage = categories.filter((category) => statistics.usageByCategory?.[category]).map((category) => {
+    const group = statistics.usageByCategory[category];
+    const rows = fields.map((field) => {
+      const coverage = group.fields?.[field];
+      const sum = coverage?.overflow ? t('piNativeOverflow') : coverage?.recordedSum == null
+        ? t('piNativeUnknown') : t('piNativePartialSum', { count: coverage.recordedSum });
+      return `<div class="piNativeUsageField" data-pi-usage-field="${field}"><dt>${escapeHtml(t(`piNativeField_${field}`))}</dt><dd><strong>${escapeHtml(sum)}</strong><span>${escapeHtml(coverage
+        ? t('piNativeFieldCoverage', { recorded: coverage.recordedCount, missing: coverage.missingCount, invalid: coverage.invalidCount })
+        : t('piNativeNoReceipts'))}</span></dd></div>`;
+    }).join('');
+    return `<details class="piNativeUsageCategory" data-pi-usage-category="${category}"><summary>${escapeHtml(t(`piNativeCategory_${category}`))}</summary><p class="piNativeNote">${escapeHtml(t('piNativeReceiptCoverage', { eligible: group.eligibleRecords, receipts: group.receipts, missing: group.missingUsageRecords }))}</p><dl class="piNativeUsageFields">${rows}</dl></details>`;
+  }).join('');
+  return `<details class="piNativeStatistics" data-pi-native-statistics><summary>${escapeHtml(t('piNativeStatistics'))}</summary>
+    <p class="piNativeNote">${escapeHtml(t('piNativeScope'))}</p>
+    <p class="piNativeSource">${escapeHtml(statistics.sourceSessionId)}<br>${escapeHtml(statistics.sourceFile)}</p>
+    <div class="piNativeCountGroups">${countGroups.map(([title, keys]) => `<section><h4>${escapeHtml(t(title))}</h4><dl class="piNativeCounts">${keys.map((key) => `<div><dt>${escapeHtml(t(`piNativeCount_${key}`))}</dt><dd data-pi-native-count="${key}">${escapeHtml(statistics.counts[key])}</dd></div>`).join('')}</dl></section>`).join('')}</div>
+    <p class="piNativeNote">${escapeHtml(t('piNativeCountBasis'))}</p>
+    <p class="piNativeNote">${escapeHtml(t('piNativeToolBasis'))}</p>
+    <h4>${escapeHtml(t('piNativeUsage'))}</h4>
+    <p class="piNativeNote">${escapeHtml(t('piNativeUsageBasis'))}</p>
+    ${usage || `<p class="piNativeNote">${escapeHtml(t('piNativeNoUsage'))}</p>`}
+    <p class="piNativeNote">${escapeHtml(t('piNativeUsageSubsets'))}</p>
+  </details>`;
+}
+
+async function loadPiOverview(sessionId) {
+  requestOwners.piOverview.abort();
+  if (state.sourceKind !== 'pi' || state.searchScope !== 'session') return;
+  const scope = readingScopeKey();
+  const owner = requestOwners.piOverview.start(JSON.stringify([scope, sessionId, state.locale]));
+  try {
+    const data = await api(`/api/pi/navigation?${piApiParams({ sessionId })}`, { signal: owner.controller.signal });
+    if (!requestOwners.piOverview.isCurrent(owner) || scope !== readingScopeKey()
+        || sessionId !== state.selectedSessionId || state.searchScope !== 'session'
+        || data.indexRevision !== state.indexRevision) return;
+    el.sessionHeader.querySelector('[data-pi-overview]')?.remove();
+    const branch = data.branches.find((item) => item.sessionId === sessionId);
+    const title = data.name || piSessionTitle(branch || state.sessions.find((item) => item.id === sessionId));
+    const branchItems = data.branches.map((item) => `<li${item.sessionId === sessionId ? ' aria-current="true"' : ''}>
+      <button type="button" class="smallBtn" data-pi-session="${escapeHtml(item.sessionId)}">${escapeHtml(piPreview(item.tip) || item.title || item.leafId)}</button>
+      ${item.sessionId === sessionId ? `<span class="chip">${escapeHtml(t('piSelectedBranch'))}</span>` : ''}
+      ${item.divergence ? `<p class="piDivergence">${escapeHtml(t('piDivergence'))} ${piReferenceButton(item.divergence.reference, item.divergence.preview || item.divergence.entryId, item.sessionId)}</p>` : ''}
+      <small>${escapeHtml(item.leafId)}</small>
+    </li>`).join('');
+    el.sessionHeader.insertAdjacentHTML('beforeend', `<section class="piOverview" data-pi-overview>
+      <h3 class="piOverviewTitle">${escapeHtml(title)}</h3>
+      ${branch ? `<p class="piSelectedTip"><strong>${escapeHtml(t('piBranchTip'))}:</strong> ${escapeHtml(piPreview(branch.tip) || branch.title || branch.leafId)}</p>` : ''}
+      ${data.summaryTarget ? `<p><button type="button" class="smallBtn" data-pi-summary-target="${escapeHtml(JSON.stringify(data.summaryTarget))}" data-pi-scope="${escapeHtml(scope)}">${escapeHtml(t('piModelsUsage'))}</button></p>` : ''}
+      <details data-pi-branches${data.branchCount <= 4 && !window.matchMedia('(max-width: 760px)').matches ? ' open' : ''}>
+      <summary>${escapeHtml(t('piOverview'))} <span class="chip">${escapeHtml(t('piVisibleBranches', { count: data.branches.length }))}</span></summary>
+      <ul class="piOverviewBranches">${branchItems}</ul>
+      <div class="piLabelAnchors"><strong>${escapeHtml(t('piLabels'))}</strong> ${data.labels.length
+        ? data.labels.map((label) => piReferenceButton(label.reference, label.label)).join(' ')
+        : `<span>${escapeHtml(t('piNoLabels'))}</span>`}</div>
+      ${data.truncated ? `<p class="piSessionGroupNote">${escapeHtml(t('piOverviewTruncated'))}</p>` : ''}
+    </details>${renderPiNativeStatistics(data.nativeStatistics)}</section>`);
+  } catch (error) {
+    if (!isIntentionalAbort(error) && requestOwners.piOverview.isCurrent(owner) && scope === readingScopeKey()) throw error;
+  } finally { requestOwners.piOverview.finish(owner); }
+}
+
+function piEntryActionKey(event) {
+  return JSON.stringify([readingScopeKey(), state.locale, state.selectedSessionId, activeLayerId(), event.id]);
+}
+
+function renderPiEntryActions(event) {
+  if (state.sourceKind !== 'pi') return '';
+  const key = piEntryActionKey(event);
+  const data = piEntryReferences.get(key);
+  return `<span class="piEntryActions" data-pi-entry-actions="${escapeHtml(key)}">${data ? piEntryActionContents(data) : ''}</span>`;
+}
+
+function piEntryActionContents(data) {
+  return `${data.reference ? `<button type="button" class="smallBtn" data-pi-copy-entry="${escapeHtml(data.reference)}">${escapeHtml(t('piCopyEntryLink'))}</button><a class="smallBtn" href="${escapeHtml(piEntryUrl(data.reference))}" data-pi-entry="${escapeHtml(data.reference)}">${escapeHtml(t('piOpenEntryLink'))}</a>` : ''}
+    ${data.relatedReference ? piReferenceButton(data.relatedReference, t(data.relatedLabel === 'summarized_branch' ? 'piSummarizedBranch' : 'piRelatedEntry')) : ''}`;
+}
+
+async function loadPiEntryActions(event) {
+  if (state.sourceKind !== 'pi') return;
+  const key = piEntryActionKey(event);
+  if (piEntryReferences.has(key)) return;
+  const owner = requestOwners.piEntryActions.start(key);
+  try {
+    const data = await api(`/api/pi/entry-reference?${piApiParams({ sessionId: state.selectedSessionId,
+      eventId: event.id, layer: activeLayerId() })}`, { signal: owner.controller.signal });
+    if (!requestOwners.piEntryActions.isCurrent(owner) || key !== piEntryActionKey(event)
+        || data.indexRevision !== state.indexRevision) return;
+    piEntryReferences.set(key, data);
+    if (piEntryReferences.size > 100) piEntryReferences.delete(piEntryReferences.keys().next().value);
+    const slot = el.detail.querySelector('[data-pi-entry-actions]');
+    if (slot?.dataset.piEntryActions === key) slot.innerHTML = piEntryActionContents(data);
+  } catch (error) {
+    if (!isIntentionalAbort(error) && requestOwners.piEntryActions.isCurrent(owner)
+        && key === piEntryActionKey(event)) throw error;
+  } finally { requestOwners.piEntryActions.finish(owner); }
+}
+
+function showPiBranchChooser(data, reference, scope, options) {
+  const dialog = document.createElement('dialog');
+  const sessionId = state.selectedSessionId;
+  const intent = state.eventSelectionIntentId;
+  const current = () => piBranchChooser === dialog && scope === readingScopeKey()
+    && sessionId === state.selectedSessionId && intent === state.eventSelectionIntentId;
+  const branchItems = (branches) => branches.map((branch) => `<li>${piReferenceButton(reference, piPreview(branch.tip) || branch.title || branch.leafId, branch.sessionId)}<small>${escapeHtml(branch.leafId)}</small></li>`).join('');
+  let nextOffset = data.nextOffset;
+  let loaded = data.branches.length;
+  dialog.className = 'piBranchChooser';
+  dialog.piNavigationOptions = options;
+  dialog.setAttribute('aria-label', t('piChooseBranch'));
+  dialog.innerHTML = `<header><h2>${escapeHtml(t('piChooseBranch'))}</h2><button type="button" class="smallBtn" data-pi-chooser-close>${escapeHtml(t('close'))}</button></header>
+    <p>${escapeHtml(t('piChooseBranchNotice'))}</p>
+    <ul>${branchItems(data.branches)}</ul>
+    <button type="button" class="smallBtn" data-pi-branches-more${nextOffset == null ? ' hidden' : ''}>${escapeHtml(t('loadMoreCount', { loaded, total: data.branchCount }))}</button>`;
+  const more = dialog.querySelector('[data-pi-branches-more]');
+  piBranchChooser = dialog;
+  document.body.append(dialog);
+  dialog.addEventListener('cancel', () => cancelPiEntryNavigation());
+  dialog.addEventListener('click', (event) => {
+    if (event.target.closest('[data-pi-chooser-close]') || !current()) cancelPiEntryNavigation();
+  });
+  more.addEventListener('click', async () => {
+    if (!current() || more.disabled || nextOffset == null) return;
+    const offset = nextOffset;
+    const owner = requestOwners.piBranchPages.start(JSON.stringify([scope, reference, offset]));
+    more.disabled = true;
+    more.textContent = t('loading');
+    try {
+      const page = await api(`/api/pi/entry?${piApiParams({ reference, branchOffset: String(offset) })}`, { signal: owner.controller.signal });
+      if (!current() || !requestOwners.piBranchPages.isCurrent(owner)) return;
+      if (page.indexRevision !== state.indexRevision || page.status !== 'choose_branch'
+          || page.reference !== reference || page.branchCount !== data.branchCount) throw new Error(t('piEntryUnavailable'));
+      dialog.querySelector('ul').insertAdjacentHTML('beforeend', branchItems(page.branches));
+      loaded += page.branches.length;
+      nextOffset = page.nextOffset;
+      more.hidden = nextOffset == null;
+    } catch (error) {
+      if (current() && requestOwners.piBranchPages.isCurrent(owner) && !isIntentionalAbort(error)) showError(error);
+    } finally {
+      if (current() && requestOwners.piBranchPages.isCurrent(owner)) {
+        more.disabled = false;
+        more.textContent = t('loadMoreCount', { loaded, total: data.branchCount });
+      }
+      requestOwners.piBranchPages.finish(owner);
+    }
+  });
+  dialog.showModal();
+}
+
+async function openPiEntryReference(reference, branchId = '', options = {}) {
+  cancelPiEntryNavigation();
+  if (state.sourceKind !== 'pi' || !state.projectSelected || state.selectingProject) throw new Error(t('piEntryScopeMismatch'));
+  // Save before any cross-branch work, including opening a modal chooser.
+  if (!options.replaceUrl) rememberPiBrowserPosition();
+  const operation = piEntryNavigation.start();
+  const scope = readingScopeKey();
+  const intent = state.eventSelectionIntentId;
+  const current = () => operation.current() && scope === readingScopeKey() && intent === state.eventSelectionIntentId;
+  try {
+    const data = await api(`/api/pi/entry?${piApiParams({ reference, ...(branchId ? { branchId } : {}) })}`, { signal: operation.signal });
+    if (!current()) return false;
+    if (data.indexRevision !== state.indexRevision) throw new Error(t('piEntryUnavailable'));
+    if (data.status === 'choose_branch') { showPiBranchChooser(data, reference, scope, options); return false; }
+    const target = data.target;
+    if (data.status !== 'resolved' || !target?.sessionId || !target.eventId || !['main', 'protocol', 'raw'].includes(target.layer)) throw new Error(t('piEntryUnavailable'));
+    if (state.selectedSessionId !== target.sessionId || state.searchScope !== 'session') {
+      // Keep the current search and filters. The referenced event is explicitly
+      // revealed by the existing event navigation path even when filtered out.
+      await selectSession(target.sessionId, { piNavigation: true, preserveReadingHistory: true });
+      if (!current()) return false;
+    }
+    const navigated = await navigateToLayerEvent(target.layer, target.eventId, {
+      mobileView: target.layer === 'main' && !trajectoryPresentationActive() ? 'events' : 'detail', scrollBehavior: 'auto',
+    });
+    if (!operation.current() || scope !== readingScopeKey() || !navigated) return false;
+    const url = piEntryUrl(data.reference || reference);
+    if (options.replaceUrl || url === location.href) window.history.replaceState(null, '', url);
+    else window.history.pushState(null, '', url);
+    rememberPiBrowserPosition();
+    piHydratedUrl = location.href;
+    if (data.projectionUnavailable) el.stateLine.textContent = t('piEntryRawFallback');
+    return true;
+  } catch (error) {
+    if (!operation.current() || scope !== readingScopeKey() || isIntentionalAbort(error)) return false;
+    throw error;
+  }
+}
+
+async function hydratePiEntryUrl() {
+  if (!state.projectSelected || state.selectingProject || piHydratedUrl === location.href) return;
+  const params = new URL(location.href).searchParams;
+  const reference = params.get('piEntry');
+  if (!reference) return;
+  const repo = params.get('repoRoot') || params.get('repo');
+  if (state.sourceKind !== 'pi' || (params.has('source') && params.get('source') !== state.sourceKind)
+      || (repo && !sameProjectRoot(repo, state.repoRoot))) {
+    el.stateLine.textContent = t('piEntryScopeMismatch');
+    return;
+  }
+  piHydratedUrl = location.href;
+  await openPiEntryReference(reference, '', { replaceUrl: true });
+}
+
+window.addEventListener('popstate', (event) => {
+  cancelPiEntryNavigation();
+  piHydratedUrl = '';
+  const saved = event.state?.sessionAnalyzerPiReading;
+  piHistoryTraversal.claim(location.href, saved?.owner === piReadingHistoryOwner ? saved : null);
+  if (saved?.owner === piReadingHistoryOwner) {
+    window.history.scrollRestoration = 'manual';
+    restorePiBrowserPosition(saved).catch(showError);
+    return;
+  }
+  window.history.scrollRestoration = piNativeScrollRestoration;
+  hydratePiEntryUrl().catch(showError);
+});
+document.addEventListener('click', (event) => {
+  const summary = event.target.closest('[data-pi-summary-target]');
+  if (summary) {
+    if (summary.dataset.piScope !== readingScopeKey()) return;
+    const target = JSON.parse(summary.dataset.piSummaryTarget);
+    openReadingEvent({ ...target, id: target.eventId }, summary).catch(showError);
+    return;
+  }
+  const branch = event.target.closest('[data-pi-session]');
+  if (branch) { selectSession(branch.dataset.piSession, { mobileView: 'events' }).catch(showError); return; }
+  const entry = event.target.closest('[data-pi-entry]');
+  if (entry && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+    event.preventDefault();
+    openPiEntryReference(entry.dataset.piEntry, entry.dataset.piBranch || '',
+      entry.closest('dialog.piBranchChooser')?.piNavigationOptions || {}).catch(showError);
+    return;
+  }
+  const copy = event.target.closest('[data-pi-copy-entry]');
+  if (copy) {
+    const url = piEntryUrl(copy.dataset.piCopyEntry);
+    const write = navigator.clipboard?.writeText ? navigator.clipboard.writeText(url) : Promise.resolve().then(() => {
+      const input = document.createElement('textarea'); input.value = url; document.body.append(input);
+      input.select(); const copied = document.execCommand('copy'); input.remove();
+      if (!copied) throw new Error(t('piEntryUnavailable'));
+    });
+    write.then(() => { if (copy.isConnected) copy.textContent = t('piEntryLinkCopied'); }).catch(showError);
+  }
+});
+for (const input of ['pointerdown', 'wheel', 'touchstart', 'keydown', 'change', 'input']) {
+  document.addEventListener(input, () => piEntryNavigation.cancel(), { capture: true, passive: true });
+}
+
 function cancelHistoryNavigation() {
   evidenceNavigation.cancel();
   if (!state.historyEvidencePending) return;
@@ -5107,6 +5472,9 @@ function leaveHistoryEvidence() {
 
 async function openHistoryEvidence(reference, options = {}) {
   cancelHistoryNavigation();
+  // Retire the prior Inspector before its excerpt disappears. A pending detail
+  // settlement must not close that stale view and cancel this new reference.
+  resetDetailPane();
   const operation = evidenceNavigation.start();
   const originalRef = options.originalRef || reference;
   state.historyEvidence = { ref: reference, originalRef, active: true, messageKey: 'historyResolving' };
@@ -5126,7 +5494,8 @@ async function openHistoryEvidence(reference, options = {}) {
     state.searchFilters = { file: '', kind: '', status: '', codeModeRequest: '' };
     el.layerSelect.value = target.layer;
     syncSearchInputValue();
-    await selectSession(target.sessionId, { historyEvidence: true, preserveReadingHistory: options.preserveReadingHistory });
+    await selectSession(target.sessionId, { historyEvidence: true, preserveReadingHistory: options.preserveReadingHistory,
+      piNavigation: options.piNavigation });
     if (!operation.current()) return;
     // Older listeners can still show the exact target. Ordered context requires
     // explicit positions, never frontend decoding of an evidence reference.
@@ -5257,12 +5626,25 @@ async function returnToHistoryReference() {
 }
 
 let historyReferenceExcursion = null;
-window.addEventListener('hashchange', () => {
+window.addEventListener('hashchange', (event) => {
+  // A newer navigation may have overtaken this queued fragment notification.
+  if (event.newURL !== location.href) return;
+  // Owned popstate already restores (or explicitly rejects) this exact entry.
+  // Its companion must neither clear the owner nor start a second resolver.
+  if (piHistoryTraversal.consume(event.newURL, window.history.state?.sessionAnalyzerPiReading)) {
+    historyReferenceExcursion = null;
+    return;
+  }
   if (!state.historyReferenceReady) return;
   const reference = referenceFromHash(location.hash);
   const originalRef = historyReferenceExcursion?.ref === reference ? historyReferenceExcursion.originalRef : '';
   historyReferenceExcursion = null;
-  if (reference) openHistoryEvidence(reference, { originalRef }).catch(showError);
+  if (reference) {
+    const url = new URL(location.href);
+    url.searchParams.delete('piEntry');
+    window.history.replaceState(null, '', url.href);
+    openHistoryEvidence(reference, { originalRef }).catch(showError);
+  }
   else leaveHistoryEvidence();
 });
 document.addEventListener('click', (event) => {
@@ -5324,6 +5706,7 @@ async function init() {
         setProjectMode(false);
         renderProjectRefreshJob(job);
         await loadSessions();
+        await hydratePiEntryUrl();
         if (state.projectRefreshJobId) {
           scheduleProjectRefreshPoll(state.projectRefreshJobId, state.projectRefreshRequestId);
         }
@@ -5348,11 +5731,12 @@ async function init() {
     if (state.projectSelected) return;
     return;
   }
-  const reference = referenceFromHash(location.hash);
+  const reference = new URL(location.href).searchParams.has('piEntry') ? '' : referenceFromHash(location.hash);
   await loadSessions({ skipSelection: Boolean(reference) });
+  await hydratePiEntryUrl();
   state.historyReferenceReady = true;
   const latestReference = referenceFromHash(location.hash);
-  if (latestReference) await openHistoryEvidence(latestReference);
+  if (latestReference && !new URL(location.href).searchParams.has('piEntry')) await openHistoryEvidence(latestReference);
 }
 
 async function loadSessions(options = {}) {
@@ -5680,6 +6064,7 @@ async function drillDownProjectResult(sessionId) {
       <span class="sessionSource" title="${escapeHtml(session.sourceFile)}">${escapeHtml(session.sourceFile)}</span>
     </div>
     ${renderHeaderProjectReturnAction()}${renderSessionReadingRelations(session)}`;
+  loadPiOverview(sessionId).catch(showError);
   const loaded = await Promise.all([
     loadAnalysis(sessionId),
     loadTimelineThroughIndex(latest.timelineIndex),
@@ -5725,7 +6110,8 @@ function renderProjectResultCard(session, relationships = sessionRelationshipInd
   const latest = session.searchMatch?.latestEvent || {};
   const relationship = sessionRelationshipLabel(session, relationships);
   return `<button class="sessionItem projectResultCard" type="button" data-project-result-session-id="${escapeHtml(session.id)}">
-    <span class="sessionTitle">${escapeHtml(session.title)}</span>
+    <span class="sessionTitle">${escapeHtml(session.sourceKind === 'pi' ? piSessionTitle(session) : session.title)}</span>
+    ${session.sourceKind === 'pi' ? `<span class="chip piBranchLabel">${escapeHtml(t('piBranchLeaf', { leaf: session.sourceDerivedId || session.id }))}</span>` : ''}
     <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
     ${relationship ? `<span class="chip relationshipChip">${escapeHtml(relationship)}</span>` : ''}
     <span class="projectResultCount">${escapeHtml(t('projectResultCount', { count: session.searchMatch?.eventCount || 0 }))}</span>
@@ -5748,11 +6134,19 @@ function renderSessions() {
   }
   const relationships = sessionRelationshipIndex();
   if (state.searchScope === 'project' && hasActiveSearchExpression()) {
-    el.sessionList.innerHTML = state.projectResults.map((session) => renderProjectResultCard(session, relationships)).join('');
+    const groups = groupPiBranches(state.projectResults);
+    const piGroups = groups.filter((group) => group.branches);
+    const countNotice = piGroups.length ? `<p class="piSessionGroupNote" data-pi-search-count>${escapeHtml(t(piGroups.length === 1 ? 'piSearchGroupsOne' : 'piSearchGroups', { sessions: piGroups.length, branches: piGroups.reduce((sum, group) => sum + group.branches.length, 0) }))}. ${escapeHtml(t('piBranchCountsNotice'))}</p>` : '';
+    el.sessionList.innerHTML = countNotice + groups.map((group) => group.session
+      ? renderProjectResultCard(group.session, relationships)
+      : `<section class="piSessionGroup" data-pi-native-session="${escapeHtml(group.sourceSessionId)}"><h3 class="piSessionGroupTitle">${escapeHtml(piSessionTitle(group.branches[0]))}</h3><p class="piSessionGroupNote">${escapeHtml(t('piSearchGroupCount', { count: group.branches.length }))}</p>${group.branches.map((session) => renderProjectResultCard(session, relationships)).join('')}</section>`).join('');
     state.searchSurfaceContexts.sessions = '';
     return;
   }
   const hierarchy = sessionHierarchy();
+  const renderPiBranchLabel = (session) => session.sourceKind === 'pi'
+    ? `<span class="chip piBranchLabel">${escapeHtml(t('piBranchLeaf', { leaf: session.sourceDerivedId || session.id }))}</span>`
+    : '';
   const renderSessionBranch = (session) => {
     const active = session.id === state.selectedSessionId;
     const relationship = sessionRelationshipLabel(session, relationships);
@@ -5790,10 +6184,11 @@ function renderSessions() {
       : '';
     return `<div class="sessionBranch" data-session-branch-id="${escapeHtml(session.id)}">
       <div class="sessionRow${children.length ? ' hasSessionChildren' : ''}">
-        <button class="${sessionItemClasses(session, active)}" type="button" data-session-id="${escapeHtml(session.id)}">
-          <span class="sessionTitle">${escapeHtml(session.title)}</span>
+        <button class="${sessionItemClasses(session, active)}" type="button" data-session-id="${escapeHtml(session.id)}"${active ? ' aria-current="true"' : ''}>
+          <span class="sessionTitle">${escapeHtml(session.sourceKind === 'pi' ? piSessionTitle(session) : session.title)}</span>
           <span class="meta">${escapeHtml(fmtDate(session.updatedAt || session.startedAt))} | ${escapeHtml(fmtBytes(session.bytes))}</span>
           <span class="chips">
+            ${renderPiBranchLabel(session)}
             ${relationship ? `<span class="chip relationshipChip" title="${escapeHtml(relationshipTitle)}">${escapeHtml(relationship)}</span>` : ''}
             ${session.forkContinuationState === 'waiting_for_prompt' ? `<span class="chip forkStateChip">${escapeHtml(t('forkWaitingForPrompt'))}</span>` : ''}
             <span class="chip">${escapeHtml(t('messageCountShort', { count: session.counts.messages }))}</span>
@@ -5807,7 +6202,16 @@ function renderSessions() {
       ${children.length ? `<div class="sessionChildren" id="${escapeHtml(childrenId)}"${expanded ? '' : ' hidden'}>${children.map(renderSessionBranch).join('')}</div>` : ''}
     </div>`;
   };
-  el.sessionList.innerHTML = hierarchy.roots.map(renderSessionBranch).join('');
+  el.sessionList.innerHTML = groupPiBranches(hierarchy.roots).map((group) => {
+    if (group.session) return renderSessionBranch(group.session);
+    const collapsed = state.collapsedPiGroups.has(group.sourceSessionId);
+    const groupId = `pi-branches-${encodeURIComponent(group.sourceSessionId)}`;
+    return `<section class="piSessionGroup" aria-label="${escapeHtml(t('piNativeSession', { id: group.sourceSessionId }))}" data-pi-native-session="${escapeHtml(group.sourceSessionId)}">
+      <h3 class="piSessionGroupTitle"><button type="button" class="piGroupToggle" data-pi-group-toggle="${escapeHtml(group.sourceSessionId)}" aria-expanded="${!collapsed}" aria-controls="${escapeHtml(groupId)}" title="${escapeHtml(t('piToggleBranches'))}"><span aria-hidden="true">${collapsed ? '▸' : '▾'}</span> ${escapeHtml(piSessionTitle(group.branches[0]))}</button></h3>
+      <p class="piSessionGroupNote">${escapeHtml(t(group.branches.length === 1 ? 'piVisibleBranchOne' : 'piVisibleBranches', { count: group.branches.length }))} ${escapeHtml(t('piBranchCountsNotice'))}</p>
+      <div id="${escapeHtml(groupId)}"${collapsed ? ' hidden' : ''}>${group.branches.map(renderSessionBranch).join('')}</div>
+    </section>`;
+  }).join('');
   state.searchSurfaceContexts.sessions = state.sessionsDataContext === sessionsDataContextKey()
     ? sessionsDataContextKey()
     : '';
@@ -5821,7 +6225,7 @@ function renderProjectSearchView() {
   const noResults = active && !state.projectSearchLoading && state.projectSearchTotal === 0;
   const message = !active
     ? t('projectSearchPrompt')
-    : (state.projectSearchLoading ? t('searching') : (noResults ? t('projectNoResults') : t('projectResultsGuidance')));
+    : (state.projectSearchLoading ? t('searching') : (noResults ? t('projectNoResults') : t(state.sourceKind === 'pi' ? 'piProjectResultsGuidance' : 'projectResultsGuidance')));
   el.sessionHeader.innerHTML = `<h2>${escapeHtml(t('projectSearchTitle'))}</h2>`;
   el.analysisPanel.innerHTML = '';
   replaceTimelineRoot(`<div class="projectSearchState"><p>${escapeHtml(message)}</p></div>`, 'non-main');
@@ -5925,6 +6329,7 @@ async function openInheritedSourceSession(button) {
 }
 
 async function selectSession(sessionId, options = {}) {
+  if (!options.piNavigation) cancelPiEntryNavigation();
   if (!options.historyEvidence) leaveHistoryEvidence();
   else resetDetailPane();
   closeFileActivity();
@@ -5980,11 +6385,15 @@ async function selectSession(sessionId, options = {}) {
     updateLoadMoreButton();
     return true;
   }
+  const piOverview = loadPiOverview(sessionId);
   const requests = [
     loadAnalysis(sessionId),
     loadTimeline(false),
     refreshFileSuggestions({ returnOutcome: true }),
   ];
+  // Its disclosures affect the scroll geometry saved by browser history.
+  if (options.piNavigation && options.settleRequests) requests.push(piOverview);
+  else piOverview.catch(showError);
   // A reading-return retry must not race unfinished sibling requests from its failed attempt.
   const loaded = options.settleRequests
     ? (await Promise.allSettled(requests)).map((result) => {
@@ -6182,7 +6591,7 @@ async function loadFileActivity(view, offset = 0) {
     view.entries = entries;
     view.offset = offset;
     view.total = data.total;
-    body.innerHTML = `<p>${escapeHtml(t(view.project ? 'fileProjectCount' : 'fileActivityCount', { count: data.total }))}</p><ul class="fileActivityList">${entries.map((entry, index) =>
+    body.innerHTML = `<p>${escapeHtml(t(view.project ? (state.sourceKind === 'pi' ? 'piFileProjectCount' : 'fileProjectCount') : 'fileActivityCount', { count: data.total }))}</p><ul class="fileActivityList">${entries.map((entry, index) =>
       `<li><button type="button" class="smallBtn" data-file-activity-entry="${index}">${escapeHtml(entry.label || entry.id)}${entry.toolName ? ` · ${escapeHtml(entry.toolName)}` : ''}</button><time title="${escapeHtml(entry.timestamp || '')}" datetime="${escapeHtml(entry.timestamp || '')}">${escapeHtml(fileActivityTime(entry.timestamp))}</time>${entry.summary ? `<span>${escapeHtml(entry.summary)}</span>` : ''}<span>${escapeHtml(t(entry.association === 'patch_record' ? 'filePatchRecord' : entry.association === 'project_search' ? 'fileProjectMatch' : 'fileRecordedPath'))}</span></li>`).join('')}</ul>
       ${offset ? `<button type="button" class="smallBtn" data-file-activity-page="${Math.max(0, offset - 50)}">${escapeHtml(t('previous'))}</button>` : ''}
       ${offset + entries.length < data.total ? `<button type="button" class="smallBtn" data-file-activity-page="${offset + 50}">${escapeHtml(t('next'))}</button>` : ''}`;
@@ -6387,7 +6796,8 @@ function startReadingRestoration(position, { historyPosition = position, consume
   return operation.promise;
 }
 
-async function restoreReadingPosition(position, operation, { historyPosition = position, consumeHistory = true } = {}) {
+async function restoreReadingPosition(position, operation, { historyPosition = position, consumeHistory = true,
+  historyCurrent = () => state.readingHistory.at(-1) === historyPosition, piNavigation = false } = {}) {
   state.searchQuery = position.searchQuery;
   state.searchFilters = { ...position.searchFilters };
   state.layerId = position.layerId;
@@ -6402,13 +6812,13 @@ async function restoreReadingPosition(position, operation, { historyPosition = p
   syncSearchInputValue();
   updateProfileApplicabilityUi();
   if (position.historyContext) {
-    const current = () => state.readingRestoration === operation && state.readingHistory.at(-1) === historyPosition
+    const current = () => (piNavigation || state.readingRestoration === operation) && historyCurrent()
       && position.scope === readingScopeKey();
     operation.current = current;
     for (const id of position.detailEventIds) delete state.detailErrors[detailKey(position.sessionId, position.layerId, id)];
     const opened = await openHistoryEvidence(position.historyContext.ref, {
       originalRef: position.historyContext.originalRef, preserveReadingHistory: true,
-      displayOverrides: position.historyContext.displayOverrides,
+      displayOverrides: position.historyContext.displayOverrides, piNavigation,
     });
     if (current() && !opened && state.historyEvidence?.error) throw new Error(state.historyEvidence.error);
     operation.current = () => current() && opened?.current();
@@ -6436,7 +6846,7 @@ async function restoreReadingPosition(position, operation, { historyPosition = p
   let selectionIntentId = state.eventSelectionIntentId;
   let searchKey;
   const current = () => navigationId === state.readingNavigationId && position.scope === readingScopeKey()
-    && state.readingHistory.at(-1) === historyPosition
+    && historyCurrent()
     && selectionIntentId === state.eventSelectionIntentId
     && searchKey === searchTargetKey() && position.mainPresentationId === state.mainPresentationId
     && state.selectedSessionId === position.sessionId && activeLayerId() === position.layerId
@@ -6445,7 +6855,7 @@ async function restoreReadingPosition(position, operation, { historyPosition = p
   operation.current = current;
   // A previous attempt may have cached a detail failure for this same session.
   for (const id of position.detailEventIds) delete state.detailErrors[detailKey(position.sessionId, position.layerId, id)];
-  const loading = selectSession(position.sessionId, { mobileView: 'events', preserveReadingHistory: true, settleRequests: true });
+  const loading = selectSession(position.sessionId, { mobileView: 'events', preserveReadingHistory: true, settleRequests: true, piNavigation });
   searchKey = searchTargetKey();
   await loading;
   if (!current()) return false;
@@ -7974,6 +8384,17 @@ function sameNodeList(left, right) {
   return left.length === right.length && left.every((node, index) => node === right[index]);
 }
 
+function captureMobileTimelineFocusAnchor() {
+  // Late detail bodies can move a focused reading action on the mobile document.
+  if (!window.matchMedia('(max-width: 760px)').matches) return null;
+  const node = document.activeElement;
+  const article = node?.closest?.('.event[data-event-id]');
+  if (article?.parentElement !== el.timeline || !currentTimelineEvent(article.dataset.eventId)) return null;
+  const rect = node.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.top >= window.innerHeight) return null;
+  return { node, article, top: rect.top };
+}
+
 function captureOrdinaryOwnerIdentity(owner) {
   const article = owner.articleNode;
   const timelineScroller = el.timeline.closest('.timelinePane');
@@ -8006,6 +8427,7 @@ function captureOrdinaryOwnerIdentity(owner) {
     timelineScrollTop: timelineScroller.scrollTop,
     windowScrollX: window.scrollX,
     windowScrollY: window.scrollY,
+    mobileFocusAnchor: captureMobileTimelineFocusAnchor(),
   };
 }
 
@@ -8017,9 +8439,20 @@ function restoreAndValidateOrdinaryOwnerIdentity(identity, owner) {
   if (timelineScroller.scrollTop !== identity.timelineScrollTop) {
     timelineScroller.scrollTop = identity.timelineScrollTop;
   }
-  if (window.scrollX !== identity.windowScrollX || window.scrollY !== identity.windowScrollY) {
-    window.scrollTo(identity.windowScrollX, identity.windowScrollY);
+  const anchor = identity.mobileFocusAnchor;
+  const anchorStillOwned = anchor?.node.isConnected && document.activeElement === anchor.node
+    && anchor.article.parentElement === el.timeline && anchor.node.closest('.event[data-event-id]') === anchor.article
+    && currentTimelineEvent(anchor.article.dataset.eventId);
+  const anchorRect = anchorStillOwned ? anchor.node.getBoundingClientRect() : null;
+  const keepMobileFocusOffset = anchorRect && anchorRect.width > 0 && anchorRect.height > 0;
+  const nextWindowScrollY = keepMobileFocusOffset
+    ? window.scrollY + anchorRect.top - anchor.top
+    : identity.windowScrollY;
+  if (window.scrollX !== identity.windowScrollX || window.scrollY !== nextWindowScrollY) {
+    window.scrollTo({ left: identity.windowScrollX, top: nextWindowScrollY, behavior: 'instant' });
   }
+  // Document scrolling rounds and clamps; validate the accepted scroll position below.
+  const expectedWindowScrollY = keepMobileFocusOffset ? window.scrollY : identity.windowScrollY;
   const article = owner.articleNode;
   const headers = directChildrenMatching(article, '.eventHeader');
   const toggles = headers.length === 1
@@ -8046,7 +8479,7 @@ function restoreAndValidateOrdinaryOwnerIdentity(identity, owner) {
     && identity.timelineScroller.isConnected
     && identity.timelineScroller.scrollTop === identity.timelineScrollTop
     && window.scrollX === identity.windowScrollX
-    && window.scrollY === identity.windowScrollY;
+    && window.scrollY === expectedWindowScrollY;
   if (!exact) throw new Error('Ordinary detail patch changed owner identity or scroll state');
   return facts;
 }
@@ -9545,6 +9978,7 @@ function renderInspectorPresentation(event, options = {}) {
     title: presentedEventLabel(event, presentation),
     actions: [
       renderBackToProjectResultsAction(),
+      renderPiEntryActions(event),
       renderReadFromHereAction(),
       renderCacheMainContextAction(event),
       renderInspectorRawAction(refs),
@@ -9559,6 +9993,7 @@ function renderInspectorPresentation(event, options = {}) {
   </div>`,
     refreshSearch: options.refreshSearch !== false,
   });
+  loadPiEntryActions(event).catch(showError);
 }
 
 function showInspector(event, options = {}) {
@@ -9623,6 +10058,7 @@ function rawPayloadText(raw) {
 }
 
 async function showRaw(event, options = {}) {
+  loadPiEntryActions(event).catch(showError);
   if (!options.passive) cancelHistoryNavigation();
   if (!options.passive) state.eventSelectionIntentId += 1;
   if (state.contextReveal || state.contextRevealPending) clearContextReveal({ render: false });
@@ -9643,7 +10079,7 @@ async function showRaw(event, options = {}) {
     renderDetailShell({
       title: t('rawRefs'),
       subtitle: rawRefsSubtitle(event),
-      actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
+      actions: [renderBackToProjectResultsAction(), renderPiEntryActions(event), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
       body: `<div class="rawRefsView">
       <div class="notice warning"><p>${escapeHtml(t('noRawRows'))}</p></div>
     </div>`,
@@ -9654,7 +10090,7 @@ async function showRaw(event, options = {}) {
   renderDetailShell({
     title: t('rawRefs'),
     subtitle: rawRefsSubtitle(event),
-    actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
+    actions: [renderBackToProjectResultsAction(), renderPiEntryActions(event), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
     body: `<div class="rawRefsView">
       <p class="rawMeta">${escapeHtml(t('loading'))}</p>
     </div>`,
@@ -9675,7 +10111,7 @@ async function showRaw(event, options = {}) {
     renderDetailShell({
       title: t('rawRefs'),
       subtitle: rawRefsSubtitle(event),
-      actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
+      actions: [renderBackToProjectResultsAction(), renderPiEntryActions(event), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
       body: `<div class="rawRefsView">
       <p class="rawMeta">${escapeHtml(t('rawRowsForEvent', { count: refs.length, plural: refs.length === 1 ? '' : 's', eventId: event.id }))}</p>
       ${payloads.map((item) => item.unavailable
@@ -9693,7 +10129,7 @@ async function showRaw(event, options = {}) {
       renderDetailShell({
         title: t('rawRefs'),
         subtitle: rawRefsSubtitle(event),
-        actions: [renderBackToProjectResultsAction(), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
+        actions: [renderBackToProjectResultsAction(), renderPiEntryActions(event), renderReadFromHereAction(), `<button class="smallBtn" type="button" data-detail-action="inspect">${escapeHtml(t('inspectEvent'))}</button>`].filter(Boolean).join(''),
         body: `<div class="rawRefsView">${renderDetailFailure(detailErrorState(error), 'data-detail-action')}</div>`,
       });
       return true;
@@ -9936,6 +10372,15 @@ el.projectHomeFields?.addEventListener('input', (event) => {
 });
 
 el.sessionList.addEventListener('click', (event) => {
+  const piToggle = event.target.closest('[data-pi-group-toggle]');
+  if (piToggle) {
+    const id = piToggle.dataset.piGroupToggle;
+    if (state.collapsedPiGroups.has(id)) state.collapsedPiGroups.delete(id);
+    else state.collapsedPiGroups.add(id);
+    renderSessions();
+    el.sessionList.querySelector(`[data-pi-group-toggle="${CSS.escape(id)}"]`)?.focus();
+    return;
+  }
   const childToggle = event.target.closest('[data-session-children-toggle]');
   if (childToggle) {
     const sessionId = childToggle.dataset.sessionChildrenToggle;
@@ -10333,6 +10778,12 @@ timelinePane?.addEventListener('touchmove', onTimelineUserScrollIntent, { passiv
 timelinePane?.addEventListener('pointerdown', onTimelineUserScrollIntent, { passive: true });
 timelinePane?.addEventListener('pointermove', onTimelineUserScrollIntent, { passive: true });
 timelinePane?.addEventListener('keydown', onTimelineUserScrollIntent);
+window.addEventListener('scroll', () => {
+  // Mobile Timeline cards move with the document instead of the pane scroller.
+  if (window.matchMedia('(max-width: 760px)').matches && state.mobileView === 'events') {
+    queueVisibleDetailLoad();
+  }
+}, { passive: true });
 window.addEventListener('resize', () => {
   queueVisibleDetailLoad();
   syncProfileInfoSlot();

@@ -5,6 +5,8 @@ const { createEmptyMaterializedPresentationIndexes } = require('./canonical-cont
 const { sanitizeLogicalDetailValue, redactEmbeddedDataUrls } = require('./shared/logical-detail-sanitizer');
 const { projectSearchJson } = require('./search-json');
 
+const { nativeTool } = require('./pi-native-tools');
+const { sanitizePiImageRecord } = require('./pi-images');
 const SOURCE_KIND = 'pi';
 const searchPolicy = {
   opaqueTypes: new Set(['image', 'audio', 'image_url', 'input_image', 'output_image']),
@@ -53,7 +55,7 @@ function makeRaw(row, session) {
     payloadType: row.parseError ? 'malformed_json' : string(message.role) || string(record.type) || 'unknown',
     role: string(message.role), turnId: '', callId: string(message.toolCallId), toolName: string(message.toolName),
     preview: preview(contentText(message.content) || string(record.summary) || text),
-    messageText: safe(contentText(message.content)), searchText: text, parsed: safe(row.parsed),
+    messageText: safe(contentText(message.content)), searchText: text, parsed: safe(sanitizePiImageRecord(row.parsed)),
     parseError: row.parseError, entryId: string(record.id),
     // Invalid parent values remain in parsed/physical Raw, never in a scalar
     // context field that Detail will coerce to a string.
@@ -86,7 +88,7 @@ function emptyCounts() {
 function summarize(session) {
   const counts = emptyCounts();
   const tools = new Map(); const kinds = new Map(); const protocols = new Map(); const turns = new Set();
-  const failedCommands = [];
+  const failedCommands = []; const patchCounts = new Map();
   for (const event of session.logicalEvents) {
     if (event.turnId) turns.add(event.turnId);
     if (event.layer === 'protocol') { counts.protocol++; protocols.set(event.subtype, (protocols.get(event.subtype) || 0) + 1); }
@@ -98,7 +100,11 @@ function summarize(session) {
       if (event.kind === 'compaction') counts.compactions++;
       if (event.kind === 'abort') counts.aborts++;
       if (event.kind === 'error') counts.errors++;
-      if (['command', 'other_tool_call'].includes(event.kind)) {
+      if (event.kind === 'patch') {
+        counts.patches++;
+        for (const file of event.touchedFiles) patchCounts.set(file, (patchCounts.get(file) || 0) + 1);
+      }
+      if (['command', 'other_tool_call', 'patch'].includes(event.kind)) {
         counts.toolCalls++;
         if (event.toolName) tools.set(event.toolName, (tools.get(event.toolName) || 0) + 1);
         if (event.kind === 'command' && event.status === 'failed') {
@@ -115,9 +121,9 @@ function summarize(session) {
   session.rawEventCount = session.rawEvents.length; session.logicalEventCount = session.logicalEvents.length;
   const rows = (map) => [...map].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   session.analysis = { sessionId: session.id, title: session.title, counts, toolUsage: rows(tools),
-    failedCommands, slowCommands: [], patchedFiles: [], tokenStats: { maxObserved: 0 }, timelineStats: rows(kinds), protocolStats: rows(protocols) };
+    failedCommands, slowCommands: [], patchedFiles: [...patchCounts].map(([file, count]) => ({ file, count })), tokenStats: { maxObserved: 0 }, timelineStats: rows(kinds), protocolStats: rows(protocols) };
   session.summary = { topTools: session.analysis.toolUsage.slice(0, 5), failedCommandCount: failedCommands.length,
-    patchedFiles: [], protocolCount: counts.protocol };
+    patchedFiles: session.analysis.patchedFiles.slice(0, 10), protocolCount: counts.protocol };
   return session;
 }
 
@@ -178,6 +184,14 @@ function makeSession(document, sourceFile, leafId, selectedRows, invalidTree) {
           session.logicalEvents.push(eventFor(session, raw, suffix, { kind: block.type === 'thinking' ? 'reasoning' : `${message.role}_message`,
             role: message.role, preview: text, searchText: text, hasReadableReasoning: block.type === 'thinking',
             pi: { text, blockIndex, model: string(message.model), provider: string(message.provider) } }));
+        } else if (block?.type === 'image') {
+          projected = true;
+          // Keep the previous image-event identity while making saved message
+          // media discoverable in Main at its original content-block position.
+          const subtype = `pi_content_image_${blockIndex}`;
+          session.logicalEvents.push(eventFor(session, raw, subtype, { kind: `${message.role}_message`, subtype,
+            role: message.role, preview: 'Saved image', searchText: '',
+            pi: { blockIndex, model: string(message.model), provider: string(message.provider) } }));
         } else if (block?.type === 'toolCall' && message.role === 'assistant') {
           projected = true;
           const matchingCalls = calls.get(block.id) || []; const matchingResults = results.get(block.id) || [];
@@ -187,19 +201,23 @@ function makeSession(document, sourceFile, leafId, selectedRows, invalidTree) {
           const result = resultRow?.parsed.message;
           if (resultRow) consumedResults.add(resultRow.line);
           const name = string(block.name); const args = block.arguments;
-          const command = name === 'bash' ? string(args?.command) : '';
+
           const output = safe(contentText(result?.content));
           const status = result ? (result.isError === true ? 'failed' : result.isError === false ? 'success' : 'incomplete')
             : block.argumentsError ? 'failed' : 'incomplete';
-          const touchedFiles = ['read', 'write', 'edit'].includes(name) && typeof args?.path === 'string' ? [args.path] : [];
+          const native = block.argumentsError ? null : nativeTool(name, args, result, status);
+          const command = native?.command || '';
+          const touchedFiles = native?.path ? [native.path] : [];
           const pairedRaw = resultRow ? byLine.get(resultRow.line) : null;
           const refs = pairedRaw ? [piRawRef(raw), piRawRef(pairedRaw)] : [piRawRef(raw)];
-          session.logicalEvents.push(eventFor(session, raw, suffix, { kind: name === 'bash' ? 'command' : 'other_tool_call',
-            toolName: name, preview: command || `${name} ${search(args)}`, status,
+          session.logicalEvents.push(eventFor(session, raw, suffix, { kind: native?.patch ? 'patch' : native?.command !== undefined ? 'command' : 'other_tool_call',
+            toolName: name, label: native?.patch ? 'Patch applied' : '', preview: native?.preview || command || `${name} ${search(args)}`, status,
             severity: status === 'failed' ? 'error' : 'normal', touchedFiles: safe(touchedFiles),
-            searchText: [name, search(args), string(block.argumentsError), output, result?.nestedCalls ? search(result.nestedCalls) : ''].join('\n'),
+            searchText: [name, search(args), string(block.argumentsError), output,
+              native?.patch ? search(result.details.patch) : '', result?.nestedCalls ? search(result.nestedCalls) : ''].join('\n'),
             rawRefs: refs, outputStats: { durationMs: Number.isFinite(result?.durationMs) && result.durationMs >= 0 ? result.durationMs : 0 },
             pi: { callId: string(block.id), blockIndex, arguments: safe(args ?? null), command: safe(command), output,
+              nativeActivity: native?.activity || '', commandLanguage: native?.language || '', patch: safe(native?.patch ?? null),
               argumentsError: safe(string(block.argumentsError)), pairing: result ? 'exact_id_ancestor' : 'missing_or_ambiguous_result',
               nestedCalls: safe(result?.nestedCalls ?? null) } }));
         } else {
@@ -221,13 +239,21 @@ function makeSession(document, sourceFile, leafId, selectedRows, invalidTree) {
     } else if (entry.type === 'message' && message?.role === 'toolResult') {
       if (!consumedResults.has(row.line)) session.logicalEvents.push(protocol(session, raw, 'pi_unpaired_tool_result', 'Tool result without a unique ancestor call'));
     } else if (entry.type === 'message' && message?.role === 'bashExecution') {
-      const status = message.cancelled ? 'failed' : Number.isInteger(message.exitCode) ? (message.exitCode === 0 ? 'success' : 'failed') : 'incomplete';
+      const status = message.cancelled === true ? 'cancelled' : Number.isInteger(message.exitCode) ? (message.exitCode === 0 ? 'success' : 'failed') : 'incomplete';
       session.logicalEvents.push(eventFor(session, raw, 'bash', { kind: 'command', subtype: 'pi_bash_execution', toolName: 'bash',
         status, severity: status === 'failed' ? 'error' : 'normal', preview: string(message.command), searchText: search(message),
         outputStats: { exitCode: Number.isInteger(message.exitCode) ? message.exitCode : null },
         pi: { command: safe(string(message.command)), output: safe(string(message.output)), cancelled: message.cancelled === true,
           truncated: message.truncated === true, excludeFromContext: message.excludeFromContext === true,
           fullOutputPath: safe(string(message.fullOutputPath)) } }));
+    } else if (entry.type === 'message' && message?.role === 'system') {
+      session.logicalEvents.push(protocol(session, raw, 'pi_system', 'Recorded system prompt and tool changes'));
+    } else if (entry.type === 'model_change') {
+      session.logicalEvents.push(protocol(session, raw, 'pi_model_change', `Recorded model selection: ${string(entry.provider)} / ${string(entry.modelId)}`));
+    } else if (entry.type === 'thinking_level_change') {
+      session.logicalEvents.push(protocol(session, raw, 'pi_thinking_level_change', `Recorded thinking selection: ${string(entry.thinkingLevel)}`));
+    } else if (entry.type === 'usage') {
+      session.logicalEvents.push(protocol(session, raw, 'pi_usage', `Recorded usage: ${string(entry.kind) || 'unspecified category'}`));
     } else if (entry.type === 'compaction') {
       session.logicalEvents.push(eventFor(session, raw, 'compaction', { kind: 'compaction', preview: string(entry.summary),
         searchText: raw.searchText, pi: { text: safe(string(entry.summary)), firstKeptEntryId: string(entry.firstKeptEntryId),
@@ -240,7 +266,8 @@ function makeSession(document, sourceFile, leafId, selectedRows, invalidTree) {
       const onBranch = selectedRows.includes(target) && target?.line < row.line;
       session.logicalEvents.push(protocol(session, raw, 'pi_context_edit',
         `Context edit: ${entry.replacement === null ? 'omit' : 'replace content'} of ${string(entry.targetId)}${onBranch ? '' : ' (unresolved target)'}`, {
-          pi: { targetId: string(entry.targetId), targetOnBranch: onBranch, replacement: safe(entry.replacement ?? null),
+          // Reuse the cached display record's image/depth sanitization.
+          pi: { targetId: string(entry.targetId), targetOnBranch: onBranch, replacement: raw.parsed.replacement ?? null,
             text: 'This append-only record changes model context. The original transcript remains visible.' } }));
     } else if (entry.type === 'custom_message' || (entry.type === 'message' && message?.role === 'custom')) {
       const custom = entry.type === 'custom_message' ? entry : message;
@@ -254,17 +281,24 @@ function makeSession(document, sourceFile, leafId, selectedRows, invalidTree) {
   return summarize(session);
 }
 
-function sessionsFromPiDocument(document, sourceFile, requestedLeafId) {
-  if (document.invalidTree) return (!requestedLeafId || requestedLeafId === 'invalid-tree')
-    ? [makeSession(document, sourceFile, 'invalid-tree', document.entries, true)] : [];
+function* iteratePiSessions(document, sourceFile, requestedLeafId) {
+  if (document.invalidTree) {
+    if (!requestedLeafId || requestedLeafId === 'invalid-tree') yield makeSession(document, sourceFile, 'invalid-tree', document.entries, true);
+    return;
+  }
   const loose = document.entries.filter((row) => !row.parsed || !string(row.parsed.id));
   const leaves = document.leaves.length ? document.leaves : [{ parsed: { id: 'empty' } }];
-  return leaves.filter((leaf) => !requestedLeafId || leaf.parsed.id === requestedLeafId).map((leaf) => {
+  for (const leaf of leaves) {
+    if (requestedLeafId && leaf.parsed.id !== requestedLeafId) continue;
     const selected = [];
     for (let row = document.byId.get(leaf.parsed.id); row; row = document.byId.get(row.parsed.parentId)) selected.push(row);
     selected.push(...loose); selected.sort((a, b) => a.line - b.line);
-    return makeSession(document, sourceFile, leaf.parsed.id, selected, false);
-  });
+    yield makeSession(document, sourceFile, leaf.parsed.id, selected, false);
+  }
 }
 
-module.exports = { SOURCE_KIND, contentText, emptyCounts, iso, lastRecordedTimestamp, piRawRef, search, sessionsFromPiDocument, sanitizePiValue: safe };
+function sessionsFromPiDocument(document, sourceFile, requestedLeafId) {
+  return [...iteratePiSessions(document, sourceFile, requestedLeafId)];
+}
+
+module.exports = { SOURCE_KIND, contentText, emptyCounts, iso, lastRecordedTimestamp, piRawRef, search, iteratePiSessions, sessionsFromPiDocument, sanitizePiValue: safe };

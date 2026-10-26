@@ -13,6 +13,7 @@ const { createSourceDiagnostics } = require('./source-diagnostics');
 const storage = require('./pi-storage');
 const logical = require('./pi-logical');
 const { buildPiEventDetail } = require('./pi-detail');
+const { readPiImagePreview, sanitizePiImageRecord } = require('./pi-images');
 
 const SOURCE_KIND = 'pi';
 function defaultPiHome() {
@@ -116,14 +117,17 @@ async function buildPiIndex({ sourceHome, repoRoot, signal, onProgress, onDiagno
       candidateBytes += document.acceptedBytes;
       candidates.push({ header: { id: document.header.id },
         acceptedSnapshot: { acceptedBytes: document.acceptedBytes, digest: document.digest, fileIdentity: document.fileIdentity },
-        sourceFile: path.relative(sessionsRoot, file).replace(/\\/g, '/') });
+        // Normalize only host separators: a POSIX backslash is part of the
+        // physical filename and must survive every later snapshot read.
+        sourceFile: path.relative(sessionsRoot, file).split(path.sep).join('/') });
     } catch (error) { report(error, file, diagnostics.add, signal); skippedFileCount++; }
   }
   // Duplicate physical session identity is ambiguous. Exclude both copies rather
   // than silently overwrite a Session or route an old link to another artifact.
   const counts = new Map();
   for (const { header } of candidates) counts.set(header.id, (counts.get(header.id) || 0) + 1);
-  const builder = createProjectQueryStoreBuilder({ signal, presentationForEvent: piQuery.projectQueryPresentation });
+  const builder = createProjectQueryStoreBuilder({ signal, presentationForEvent: piQuery.projectQueryPresentation,
+    shareTextRanges: true });
   const sessions = []; const sessionsById = new Map(); const materializationDependencies = new Map();
   const kindCounts = { main: new Map(), protocol: new Map(), raw: new Map() };
   let indexedFileCount = 0; let indexedBytes = 0; let eventCount = 0; let rawEventCount = 0;
@@ -142,7 +146,9 @@ async function buildPiIndex({ sourceHome, repoRoot, signal, onProgress, onDiagno
       document = storage.parsePiDocument(await storage.readPiSnapshot(path.resolve(sessionsRoot, sourceFile),
         { sessionsRoot, acceptedSnapshot, signal }));
     } catch (error) { report(error, sourceFile, diagnostics.add, signal); skippedFileCount++; continue; }
-    const branchSessions = logical.sessionsFromPiDocument(document, sourceFile);
+    // Project one branch at a time. Keeping every full branch Session alive here
+    // multiplies shared-prefix payloads before the bounded query shards own them.
+    const branchSessions = logical.iteratePiSessions(document, sourceFile);
     const entries = [{ role: 'primary_transcript', pathIdentity: sourceFile, existence: 'present', kind: 'file',
       policy: 'accepted_prefix', acceptedBytes: document.acceptedBytes, lineCount: document.lines.length,
       digest: document.digest, directoryEntries: [], evidence: { fileIdentity: document.fileIdentity } }];
@@ -226,7 +232,7 @@ async function readPiRawRecord(index, session, raw, options = {}) {
   let parsed = null; try { parsed = JSON.parse(text); } catch { /* Preserve malformed bytes verbatim. */ }
   // The raw string is exact evidence. Bound its parsed companion as well so
   // HTTP JSON encoding cannot overflow on a record deeper than the JS stack.
-  return { raw: text, parsed: logical.sanitizePiValue(parsed), rawId: raw.rawId, sourceKind: SOURCE_KIND, sourceLocator: raw.sourceLocator };
+  return { raw: text, parsed: logical.sanitizePiValue(sanitizePiImageRecord(parsed)), rawId: raw.rawId, sourceKind: SOURCE_KIND, sourceLocator: raw.sourceLocator };
 }
 
 const piAdapter = {
@@ -235,7 +241,7 @@ const piAdapter = {
   defaultHome: defaultPiHome,
   query: piQuery, discoverConfiguredProjects: async () => [], discoverProjects: discoverPiProjects,
   buildIndex: buildPiIndex, materializeSession: materializePiSession, buildEventDetail: buildPiEventDetail,
-  readRawRecord: readPiRawRecord, validateMaterializationDescriptor: validatePiMaterializationDescriptor,
+  readRawRecord: readPiRawRecord, readImagePreview: readPiImagePreview, validateMaterializationDescriptor: validatePiMaterializationDescriptor,
   validateLegacyRawOwnerIndex: validatePiLegacyRawOwnerIndex, validateMaterializedPrivateState() {},
   materializationContextFields: ['sessionsRoot'], materializedPrivateFields: [],
 };

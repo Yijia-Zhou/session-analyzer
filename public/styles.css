@@ -6157,3 +6157,65 @@ body[data-history-reading='isolated'] #resultSummary { display: none; }
   .historyEvidenceActions .smallBtn { min-height: 40px; }
   .historyExcerpt { max-height: 120px; }
 }
+
+.piSessionGroup {
+  min-width: 0;
+  margin-bottom: 12px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.piSessionGroupTitle {
+  margin: 0 0 6px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.piSessionGroupNote {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.piBranchLabel { white-space: normal; overflow-wrap: anywhere; }
+
+.piGroupToggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 4px 0; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; overflow-wrap: anywhere; }
+.piOverview { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
+.piOverview summary { cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+.piOverviewBranches, .piBranchChooser ul { display: grid; gap: 8px; padding: 0; list-style: none; }
+.piOverviewBranches li { border-left: 3px solid var(--line); padding-left: 8px; }
+.piOverviewBranches li[aria-current] { border-left-color: var(--accent, #2e6bd1); }
+.piOverviewBranches .smallBtn, .piLabelAnchors .smallBtn, .piBranchChooser .smallBtn { white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.piOverviewBranches small, .piBranchChooser small { display: block; color: var(--muted); overflow-wrap: anywhere; margin: 3px 0; }
+.piSelectedTip, .piDivergence { margin: 7px 0; overflow-wrap: anywhere; }
+.piDivergence { color: var(--muted); }
+.piLabelAnchors { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.piEntryActions { display: contents; }
+.piEntryActions a { text-decoration: none; }
+.piBranchChooser { width: min(560px, calc(100vw - 32px)); max-height: 80vh; overflow: auto; border: 1px solid var(--line); border-radius: 12px; padding: 18px; background: var(--panel, #fff); color: var(--text, #222); }
+.piBranchChooser::backdrop { background: #0006; }
+.piBranchChooser header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.piBranchChooser h2 { font-size: 18px; margin: 0; }
+@media (max-width: 760px) { .piGroupToggle, .piOverview .smallBtn, .piBranchChooser .smallBtn { min-height: 40px; } }
+
+.piOverviewTitle { margin: 0 0 6px; font-size: 13px; overflow-wrap: anywhere; }
+.piOverviewBranches { max-height: 260px; overflow: auto; overscroll-behavior: contain; }
+.piRecordedDetails > summary { cursor: pointer; padding: 8px 0; font-weight: 600; }
+.piNativeStatistics { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; }
+.piNativeStatistics h4 { margin: 12px 0 6px; font-size: 12px; }
+.piNativeNote, .piNativeSource { margin: 8px 0; color: var(--muted); line-height: 1.6; overflow-wrap: anywhere; }
+.piNativeSource { font-size: 11px; }
+.piNativeCountGroups { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 0 18px; }
+.piNativeCounts, .piNativeUsageFields { margin: 6px 0 10px; }
+.piNativeCounts > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 4px 0; }
+.piNativeCounts dt, .piNativeUsageFields dt { overflow-wrap: anywhere; }
+.piNativeCounts dd { margin: 0; font-variant-numeric: tabular-nums; }
+.piNativeUsageCategory { margin: 8px 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.piNativeUsageField { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 2fr); gap: 6px 14px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.piNativeUsageField:last-child { border-bottom: 0; }
+.piNativeUsageField dd { margin: 0; overflow-wrap: anywhere; }
+.piNativeUsageField strong { display: block; font-weight: 500; }
+.piNativeUsageField dd span { display: block; margin-top: 3px; color: var(--muted); }
+@media (max-width: 760px) {
+  .piNativeStatistics summary { min-height: 32px; line-height: 1.6; }
+  .piNativeUsageField { grid-template-columns: minmax(0, 1fr); }
+}
