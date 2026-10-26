@@ -63,6 +63,10 @@ Package smoke packs the project, installs the tarball into a fresh temporary pro
 
 ## Validation scope / 验证范围
 
+For pi reader characterization, run `node scripts/pi-session-profile.js` with other suites paused. Fresh child processes measure a synthetic 4 MiB linear session and a 1,000-entry shared prefix with 16 leaves: physical/projected counts, cold indexing/materialization, first/repeated Detail and project search, memory snapshots and process maximum RSS. `--reader-root=<checkout>` selects another reader checkout. These are descriptive single samples, not timing gates or real-corpus capacity guarantees. / pi reader 量测时暂停其他套件，运行所列脚本。独立新进程测量合成 4 MiB 线性会话及 1,000 条共享前缀、16 个叶的分支树：物理／投影数量、冷索引／物化、首次／重复详情及项目搜索、内存快照及进程最大 RSS。参数可选择另一 reader checkout。结果为描述性单样本，不是时延门槛或真实语料容量保证。
+
+The optional `--suite capacity` pi profile runs eleven bounded fresh-process cases, independently varying bytes, shared-prefix length, branch count, large text/media records and artifact count. It reports physical/projected amplification and actual query temporary-file bytes separately from accounted query bytes. `--list-cases`, repeated `--case NAME`, and `--self-check` support targeted runs; pause other suites while measuring. / pi 可选 capacity 量测集运行十一项有界新进程样例，分别改变字节、共享前缀长度、分支数、大文本／媒体记录及工件数；分别报告物理／投影放大、真实查询临时文件字节及查询核算字节。所列参数支持按需运行，量测时暂停其他套件。
+
 For Codex compressed-reader characterization, run `node scripts/codex-rollout-profile.js` by itself. It generates synthetic 64 MiB streaming input and the same small session in plain/compressed forms, reporting sampled RSS, decode counts, cold indexing, first detail/materialization and warm detail; it is descriptive evidence, not a timing gate or a real-corpus claim. / 定性核验 Codex 压缩 reader 时，单独运行该脚本。它生成合成的 64 MiB 流式输入，以及同一小会话的普通／压缩表示，报告采样 RSS、解码次数、冷索引、首次详情／物化和暖详情；这是描述性证据，不是时延门槛或真实语料声明。
 
 Choose checks for the affected behavior and risk; the command table is not a checklist for every edit. / 按受影响行为与风险选择检查；命令表不是每次编辑都要执行的清单。
@@ -91,7 +95,7 @@ The implementation is `scripts/ci-scope.js`; its tests exercise real Git history
 
 The collaboration keyboard-navigation and mobile Timeline return tests record bounded focus/input events, collaboration DOM removal, scroll positions, API request completion and named checkpoints. On failure, `e2e/browser-diagnostics.js` writes `diagnostics.json`, a viewport screenshot and a Playwright `trace.zip` under `output/playwright/browser-failures/`; CI uploads this directory as `browser-navigation-failures-<attempt>` with seven-day retention. Successful tests discard their traces. All captured pages and API payloads come from synthetic fixtures; do not use this capture helper against real transcripts. Inspect the actual input target and departure/return geometry before changing a timeout or assertion. / 协作键盘导航与移动端 Timeline 返回测试记录有界的焦点／输入事件、协作 DOM 移除、滚动位置、API 请求完成情况与具名检查点。失败时，所列 helper 在上述目录保存 JSON、视口截图与 Playwright trace；CI 按上述名称上传，保留七天。成功测试丢弃 trace。捕获页面与 API 载荷均来自合成 fixture；不要对真实转录使用此 helper。调整超时或断言前，先核对实际输入目标及离开／返回时的几何位置。
 
-`e2e/turn-lineage.test.js` uses the same failure recorder for its keyboard/evidence-return matrix and same-session/Protocol/stale-source test, so their failures use the same CI artifact path. / `e2e/turn-lineage.test.js` 的键盘／依据返回矩阵及同会话／Protocol／来源失效测试复用同一失败记录器，失败时保存到同一 CI 工件路径。
+`e2e/turn-lineage.test.js` uses the same failure recorder for its keyboard/evidence-return matrix and same-session/Protocol/stale-source test, so their failures use the same CI artifact path. / `e2e/turn-lineage.test.js` 的键盘／依据返回矩阵及同会话／Protocol／来源失效测试复用同一失败记录器，失败时保存到同一 CI 工件路径。 `e2e/history-evidence.test.js` also records the nearby/Protocol/Raw identity scenario and delayed-old-detail/new-reference regressions, including checkpoints around reference resolution. / `e2e/history-evidence.test.js` 的附近记录／Protocol／Raw 身份场景及旧详情迟到／新引用回归也复用该记录器，并记录引用解析阶段的检查点。
 
 ## Repository layout / 仓库布局
 

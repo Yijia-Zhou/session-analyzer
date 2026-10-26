@@ -45,6 +45,7 @@ const { createIndexDiagnostics } = require('./src/runtime-diagnostics');
 const { createLargeTranscriptHistoryWarning } = require('./src/runtime-capacity');
 const { queryPagination, requireQueryRevision } = require('./src/shared/query-pagination');
 const { withQueryStoreBuildScope } = require('./src/project-query-disk');
+const { readPiNavigation, createPiEntryReference, resolvePiEntryReference } = require('./src/pi-navigation');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -952,6 +953,36 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           return;
         }
         sendJson(res, 200, { files, indexRevision: lease.indexRevision });
+        return;
+      }
+
+      if (['/api/pi/navigation', '/api/pi/entry-reference', '/api/pi/entry'].includes(pathname)) {
+        if (req.method !== 'GET') { sendError(res, 405, 'This navigation endpoint is read-only'); return; }
+        if (!requireIndex(state, res)) return;
+        if (!searchParams.has('indexRevision') || searchParams.get('source') !== 'pi' || !searchParams.get('repoRoot')) {
+          sendError(res, 400, 'Source, project and index revision are required'); return;
+        }
+        const branchOffset = searchParams.get('branchOffset');
+        if (pathname === '/api/pi/entry' && branchOffset !== null
+            && (!/^(0|[1-9]\d*)$/.test(branchOffset) || !Number.isSafeInteger(Number(branchOffset)))) {
+          sendError(res, 400, 'Invalid branch offset'); return;
+        }
+        const { value: result, lease } = await withIndexRevisionLease(state, requestAbort.signal, async (capture) => {
+          requireQueryRevision(searchParams.get('indexRevision'), capture.indexRevision);
+          const { index, signal } = capture;
+          if (index.sourceKind !== 'pi' || index.repoRoot !== searchParams.get('repoRoot')) return null;
+          if (pathname === '/api/pi/entry') return resolvePiEntryReference(index, searchParams.get('reference'), {
+            signal, branchId: searchParams.get('branchId') || '', branchOffset: branchOffset === null ? 0 : Number(branchOffset),
+          });
+          const session = index.sessionsById.get(searchParams.get('sessionId'));
+          if (!session) return null;
+          if (pathname === '/api/pi/navigation') return readPiNavigation(index, session, { signal });
+          const layer = searchParams.get('layer') || 'main';
+          if (!['main', 'protocol', 'raw'].includes(layer)) return null;
+          return createPiEntryReference(index, session, searchParams.get('eventId'), layer, { signal });
+        });
+        if (!result) { sendError(res, 404, 'The selected pi history is unavailable'); return; }
+        sendJson(res, 200, { ...result, indexRevision: lease.indexRevision });
         return;
       }
 

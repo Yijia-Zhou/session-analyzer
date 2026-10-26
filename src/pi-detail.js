@@ -1,8 +1,13 @@
 'use strict';
 
 const MarkdownIt = require('markdown-it');
+const { nativePatchSections } = require('./pi-native-tools');
+const { recordedConfiguration, recordedStateSections } = require('./pi-recorded-state');
+const { readableRecordedStateSections, nativeToolReadingSections } = require('./pi-reading-presentation');
+const { piImagePreviewSection, sanitizePiImageRecord } = require('./pi-images');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 const { sanitizeLogicalDetailValue } = require('./shared/logical-detail-sanitizer');
+const { nestedCallSections } = require('./pi-nested-calls');
 const { piRawRef, sanitizePiValue: safe } = require('./pi-logical');
 const markdown = new MarkdownIt({ html: false, linkify: true });
 // Budget each presentation section before the shared contract validates it.
@@ -23,15 +28,6 @@ const kv = (entries, purpose = 'context', title = '') => ({ type: 'kv', purpose,
 const notice = (text, purpose = 'context') => ({ type: 'notice', purpose, level: 'info', text });
 const content = (text, purpose = 'content') => ({ type: 'markdown', purpose, html: markdown.render(String(text || '').slice(0, 100_000)) });
 
-function nestedCallsSection(value) {
-  // Only the native bounded receipt is understood: no outputs, ancestry,
-  // subagents, or source-independent dispatch graph can be inferred from it.
-  if (!value || !Array.isArray(value.calls) || typeof value.complete !== 'boolean'
-      || !value.calls.every((call) => call && typeof call.id === 'string' && typeof call.name === 'string'
-        && ['ok', 'error', 'unfinished'].includes(call.status))) return null;
-  return { type: 'json', purpose: 'context', title: 'Recorded nested calls (results are not recorded)', value: safe(value) };
-}
-
 function residualFields(raw, event) {
   const record = raw.parsed;
   if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
@@ -47,7 +43,7 @@ function residualFields(raw, event) {
     if (unknownBlock) message.content = Array.isArray(message.content) ? message.content[Number(unknownBlock[1])] : message.content;
     else if (event.subtype !== 'pi_unpaired_tool_result' && event.subtype !== 'pi_empty_message'
         && event.subtype !== 'pi_invalid_tree' && event.subtype !== 'pi_message') delete message.content;
-    if (event.kind === 'command' || event.kind === 'other_tool_call') {
+    if (['command', 'other_tool_call', 'patch'].includes(event.kind)) {
       for (const key of ['toolCallId', 'toolName', 'isError', 'details', 'nestedCalls', 'command', 'output', 'exitCode',
         'cancelled', 'truncated', 'fullOutputPath', 'excludeFromContext']) delete message[key];
     }
@@ -75,7 +71,7 @@ async function buildPiEventDetail(index, session, eventId, layer = 'main', optio
       subtype: raw.role || '', layer: 'raw', title: raw.payloadType, sourceLocator: raw.sourceLocator,
       sourceRecordType: raw.recordType, sourceEventType: raw.payloadType, meta: { source: raw.source }, rawRefs: [piRawRef(raw)],
       timelineSections: parsed === null ? [{ type: 'code', purpose: 'content', code: safe(text), language: 'text' }]
-        : [{ type: 'raw_json', purpose: 'fallback', title: 'Physical pi JSONL record', value: safe(parsed), expanded: true }],
+        : [{ type: 'raw_json', purpose: 'fallback', title: 'Physical pi JSONL record', value: safe(sanitizePiImageRecord(parsed)), expanded: true }],
       inspectorSections: [] });
   }
   const event = session.logicalEvents.find((item) => item.id === eventId && item.layer === layer);
@@ -86,25 +82,35 @@ async function buildPiEventDetail(index, session, eventId, layer = 'main', optio
     subtype: event.subtype, layer: event.layer, title: event.label || event.toolName || event.kind,
     sourceLocator: event.sourceLocator, meta: { source: event.source }, rawRefs: event.rawRefs,
     timelineSections: [], inspectorSections: [] };
+  // Readable summaries lead; the full typed evidence stays available in a
+  // collapsed disclosure instead of pushing useful model/usage tables away.
+  const recordedEvidence = [];
+  const addRecordedReading = (entry, stateContext = {}) => {
+    detail.inspectorSections.push(...readableRecordedStateSections(entry, stateContext));
+    recordedEvidence.push(...recordedStateSections(entry, stateContext));
+  };
   const context = [['Entry id', raws[0]?.entryId], ['Parent entry id', raws[0]?.parentId ?? '(root)'],
     ['Branch tip', session.sourceDerivedId], ['Provider', facts.provider || raws[0]?.parsed?.message?.provider],
     ['Model', facts.model || raws[0]?.parsed?.message?.model],
     ['API', raws[0]?.parsed?.message?.api],
     ['Status', event.status], ['Stop reason', raws[0]?.role === 'assistant' ? raws[0]?.parsed?.message?.stopReason : undefined],
     ['Tool call id', facts.callId], ['Pairing evidence', facts.pairing]];
-  if (event.kind === 'command' || event.kind === 'other_tool_call') {
-    if (facts.command) detail.timelineSections.push({ type: 'code', purpose: 'request', language: 'bash', code: facts.command });
-    else detail.timelineSections.push({ type: 'json', purpose: 'request', value: facts.arguments ?? {} });
+  if (['command', 'other_tool_call', 'patch'].includes(event.kind)) {
+    const native = nativeToolReadingSections(facts, facts.pairing === 'exact_id_ancestor'
+      ? raws.filter((raw) => raw.role === 'toolResult').map((raw) => raw.parsed.message) : []);
+    if (facts.command) detail.timelineSections.push({ type: 'code', purpose: 'request', language: facts.commandLanguage || 'bash', code: facts.command });
+    else if (!native.timelineSections.length) detail.timelineSections.push({ type: 'json', purpose: 'request', value: facts.arguments ?? {} });
+    detail.timelineSections.push(...native.timelineSections);
+    detail.inspectorSections.push(...native.inspectorSections);
+    if (facts.patch) detail.timelineSections.push(...nativePatchSections(facts.patch));
+    if (facts.nativeActivity === 'edit' && !facts.patch) detail.inspectorSections.push(notice('Requested replacements are recorded; no successful valid unified patch confirms the file changes.'));
     if (facts.output) detail.timelineSections.push({ type: 'terminal', purpose: 'result', text: facts.output.slice(0, 100_000) });
     else detail.timelineSections.push(notice(event.status === 'incomplete' ? 'No unique completed result is recorded for this call.' : 'No textual output was recorded.', 'result'));
     if (facts.arguments !== undefined) detail.inspectorSections.push({ type: 'json', purpose: 'request', title: 'Recorded arguments', value: facts.arguments });
     if (facts.argumentsError) detail.inspectorSections.push(notice(facts.argumentsError));
-    const nested = nestedCallsSection(facts.nestedCalls);
+    const nested = nestedCallSections(facts.nestedCalls);
     if (nested) {
-      detail.inspectorSections.push(nested);
-      detail.inspectorSections.push(notice(facts.nestedCalls.complete
-        ? 'This receipt lists completed nested calls; nested result payloads are not persisted.'
-        : 'This receipt is incomplete: calls or arguments may be omitted, or calls may be unfinished.'));
+      detail.inspectorSections.push(...nested);
     } else if (facts.nestedCalls) detail.inspectorSections.push({ type: 'raw_json', purpose: 'fallback', title: 'Unrecognized nested-call receipt', value: facts.nestedCalls, expanded: false });
     for (const raw of raws) {
       const message = raw.parsed?.message;
@@ -132,9 +138,47 @@ async function buildPiEventDetail(index, session, eventId, layer = 'main', optio
       context.push(['Target entry id', facts.targetId], ['Target is an earlier branch ancestor', facts.targetOnBranch]);
       detail.inspectorSections.push({ type: 'json', purpose: 'context', title: 'Recorded context replacement (null omits the target)', value: facts.replacement });
     }
-    if (facts.usage) detail.inspectorSections.push({ type: 'json', purpose: 'context', title: 'Recorded usage (no inferred totals)', value: facts.usage });
+
     if (event.subtype === 'pi_custom_message') context.push(['Custom message type', facts.customType], ['Display requested by source', facts.display]);
   }
+  const branchRows = session.rawEvents;
+  const validBranch = !session.logicalEvents.find((candidate) => candidate.subtype === 'pi_branch')?.pi?.invalidTree;
+  const configuration = validBranch ? recordedConfiguration(branchRows).get(raws[0]?.line) : null;
+  for (const raw of validBranch ? raws : []) {
+    const entry = raw.parsed;
+    // Assistant usage has its own receipt event; paired tools carry nested work on their result record.
+    if (entry?.message?.role === 'assistant' && event.subtype !== 'pi_usage') continue;
+    addRecordedReading(entry, { selectedRows: branchRows });
+  }
+  if (configuration && event.subtype !== 'pi_branch' && event.subtype !== 'pi_invalid_tree') {
+    addRecordedReading(null, { configuration });
+  }
+  if (event.subtype === 'pi_branch' && !facts.invalidTree) {
+    addRecordedReading(null, { branchRows });
+  }
+  if (event.kind === 'compaction') {
+    const boundary = raws[0]?.parsed?.firstKeptEntryId;
+    const target = typeof boundary === 'string' && branchRows.find((raw) => raw.entryId === boundary && raw.line < raws[0].line);
+    const retainsNone = typeof boundary === 'string' && boundary === raws[0]?.entryId;
+    context.push(['First kept boundary resolves on selected branch', Boolean(target || retainsNone)],
+      ['First kept boundary source line', target?.line]);
+    if (retainsNone) detail.inspectorSections.push(notice('The first kept entry is this compaction itself: no earlier conversation entries are retained by this boundary.'));
+  }
+  if (validBranch) {
+    const entry = raws[0]?.parsed;
+    const targetId = entry?.type === 'context_edit' || entry?.type === 'label' ? entry.targetId
+      : entry?.type === 'compaction' ? entry.firstKeptEntryId
+        : entry?.type === 'branch_summary' ? entry.fromId : null;
+    const target = typeof targetId === 'string' && branchRows.find((raw) => raw.entryId === targetId && raw.line < raws[0].line);
+    if (target) detail.inspectorSections.push({ type: 'event_refs', purpose: 'traceability', title: 'Referenced pi entry',
+      items: [{ id: target.rawId, label: `Entry ${target.entryId}`, kind: target.payloadType, status: '', layer: 'raw' }] });
+    if (entry?.type === 'label') {
+      context.push(['Label target entry id', entry.targetId], ['Recorded label', entry.label === '' || entry.label === undefined ? '(label cleared)' : entry.label]);
+    }
+  }
+  const imagePreview = piImagePreviewSection(session, event, snapshot);
+  if (imagePreview) detail.timelineSections.push(imagePreview);
+  detail.inspectorSections.push(...recordedEvidence);
   // Fallback is only residual evidence after modeled fields are subtracted.
   // Complete original records are available through their validated Raw refs.
   for (const raw of raws) {

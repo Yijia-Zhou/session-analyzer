@@ -15,11 +15,14 @@ const live = new Set();
 const TEXT_BYTES = 256 * 1024;
 const PAGE_ROWS = 512;
 const PAGE_BYTES = 1024 * 1024;
+const TEXT_RANGE_CACHE_ENTRIES = 16_384;
+const TEXT_RANGE_CACHE_BYTES = 4 * 1024 * 1024;
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 function close(state) {
   if (state.cleaned) return;
   state.closed = true;
+  state.textRangeCache?.clear();
   try {
     if (!state.fdClosed) { fs.closeSync(state.fd); state.fdClosed = true; }
     fs.rmSync(state.directory, { recursive: true, force: true });
@@ -83,6 +86,14 @@ function readPage(state, page) {
 }
 
 function createDiskBuilder(helpers, options = {}) {
+  function cacheLimit(name, fallback) {
+    const value = options[name] ?? fallback;
+    if (!Number.isSafeInteger(value) || value < 0) throw helpers.contractError(`${name} must be a nonnegative safe integer`);
+    return value;
+  }
+  const shareTextRanges = options.shareTextRanges === true;
+  const cacheEntries = shareTextRanges ? cacheLimit('textRangeCacheEntries', TEXT_RANGE_CACHE_ENTRIES) : 0;
+  const cacheBytes = shareTextRanges ? cacheLimit('textRangeCacheBytes', TEXT_RANGE_CACHE_BYTES) : 0;
   let directory;
   let fd;
   try {
@@ -93,7 +104,9 @@ function createDiskBuilder(helpers, options = {}) {
     if (directory) fs.rmSync(directory, { recursive: true, force: true });
     throw capacityError(error);
   }
-  const state = { directory, fd, bytes: 0, closed: false };
+  const state = { directory, fd, bytes: 0, closed: false,
+    textRangeCache: cacheEntries && cacheBytes ? new Map() : null };
+  let retainedCacheBytes = 0;
   live.add(state);
   const store = { schemaVersion: 3, shardsBySessionId: new Map(), accountedBytes: 0 };
   states.set(store, state);
@@ -115,17 +128,70 @@ function createDiskBuilder(helpers, options = {}) {
     }
     return { start, bytes: buffer.length };
   }
-  function* writeText(text) {
-    const start = state.bytes;
+  function* encodedText(text) {
     // Encode bounded UTF-16 slices, keeping surrogate pairs together.
     for (let offset = 0; offset < text.length;) {
       let end = Math.min(text.length, offset + 65536);
       if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end -= 1;
-      write(Buffer.from(text.slice(offset, end), 'utf8'));
+      yield Buffer.from(text.slice(offset, end), 'utf8');
       offset = end;
+    }
+  }
+  function* writeText(text) {
+    let key;
+    let weight;
+    // No source strings or payload buffers survive this call in the cache.
+    // Reuse one bounded encoding for short fields; large fields stay streamed.
+    const short = state.textRangeCache && text.length < 65536 ? Buffer.from(text, 'utf8') : null;
+    const parts = () => short ? [short] : encodedText(text);
+    if (state.textRangeCache) {
+      const hash = createHash('sha256');
+      let bytes = 0;
+      for (const part of parts()) {
+        checkpoint();
+        hash.update(part);
+        bytes += part.length;
+        if (!short) yield;
+      }
+      key = `${bytes}:${hash.digest('hex')}`;
+      // Account fixed range/bookkeeping data and UTF-16 key storage. The count
+      // cap separately bounds engine-specific Map/object overhead.
+      weight = key.length * 2 + 32;
+      const candidate = state.textRangeCache.get(key);
+      if (candidate) {
+        let offset = 0;
+        let equal = true;
+        for (const part of parts()) {
+          checkpoint();
+          if (!part.equals(read(state, candidate.start + offset, part.length))) { equal = false; break; }
+          offset += part.length;
+          if (!short) yield;
+        }
+        if (equal) {
+          // Hashes only select candidates: exact encoded bytes authorize reuse.
+          state.textRangeCache.delete(key);
+          state.textRangeCache.set(key, candidate);
+          return { ...candidate };
+        }
+      }
+    }
+    const start = state.bytes;
+    for (const part of parts()) {
+      write(part);
       if (text.length >= 65536) yield;
     }
-    return { start, bytes: state.bytes - start };
+    const reference = { start, bytes: state.bytes - start };
+    if (state.textRangeCache && weight <= cacheBytes) {
+      if (state.textRangeCache.delete(key)) retainedCacheBytes -= weight;
+      while (state.textRangeCache.size >= cacheEntries || retainedCacheBytes + weight > cacheBytes) {
+        const oldest = state.textRangeCache.keys().next().value;
+        state.textRangeCache.delete(oldest);
+        retainedCacheBytes -= oldest.length * 2 + 32;
+      }
+      state.textRangeCache.set(key, reference);
+      retainedCacheBytes += weight;
+    }
+    return { ...reference };
   }
   function* addRows(sessionId, layers) {
     checkpoint();
@@ -196,6 +262,8 @@ function createDiskBuilder(helpers, options = {}) {
         options.signal?.removeEventListener('abort', abort);
         state.shards = store.shardsBySessionId;
         state.manifest = manifestDigest(store);
+        state.textRangeCache?.clear();
+        retainedCacheBytes = 0;
         return store;
       } catch (error) { close(state); throw capacityError(error); }
     },
