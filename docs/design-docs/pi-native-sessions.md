@@ -10,6 +10,8 @@ Only version 3 is interpreted. Unsupported versions are skipped with source diag
 
 Environment-derived agent paths follow pi 1.4.0 `config.getAgentDir()` / `utils/paths.normalizePath()`: expand `~` and home-relative paths, decode `file://` URLs, and normalize Windows shell drive paths on Windows. Explicit `--pi-home` retains the shared CLI path behavior. / 环境变量中的 agent 路径遵循 pi 1.4.0 所列函数：展开 `~` 与用户目录相对路径、解码 `file://` URL，并在 Windows 上规范化 shell 盘符路径。显式 `--pi-home` 保持共享 CLI 路径行为。
 
+Indexed artifact identities normalize only the host platform's path separator to `/`. On POSIX, literal backslashes in filenames and directory names remain literal through discovery, snapshot replay, Detail, Raw and native-entry resolution; they cannot alias slash-separated paths. / 索引工件身份仅将运行平台的路径分隔符规范化为 `/`。POSIX 文件名和目录名中的字面反斜杠在发现、快照重读、Detail、Raw 及原生 entry 解析中保持原样，不得与斜杠分隔的路径混同。
+
 ## Branch ownership / 分支归属
 
 pi persists an append-only tree: each entry has `id` and `parentId`, while the header has no entry parent. File order alone does not establish conversational ancestry. The analyzer emits one canonical Session for each valid root-to-leaf path, with ID `pi:<encoded-header-id>:<encoded-leaf-id>` (ordinary native UUID/hex IDs remain unchanged), `sourceSessionId` equal to the native session ID and `sourceDerivedId` equal to the leaf. Titles include the branch tip. / pi 保存追加树：每个 entry 有 `id` 与 `parentId`，header 不属于 entry 父链；文件顺序本身不证明对话祖先关系。Analyzer 为每条有效根到叶路径产生一个 canonical Session，使用所列 ID（普通原生 UUID／hex ID 不变），原生会话 ID 写入 sourceSessionId，叶节点写入 sourceDerivedId，标题包含分支叶节点。
@@ -21,6 +23,10 @@ Tool result pairing is confined to the same ancestor path and exact call identit
 Whole-native physical record and usage statistics are available separately in the overview, using the same accepted snapshot. Shared ancestors count once; each distinct sibling result remains separate. This does not change selected-branch counts or pool query-store rows. See [native statistics](pi-native-statistics.md) for contribution, coverage and scope rules. / 概览独立提供同一已接纳快照的完整原生物理记录及用量统计，共享祖先计一次，不同兄弟结果各自保留；不改变所选分支计数，也不合并查询存储行。贡献项、覆盖及范围规则见原生统计设计。
 
 ## Mapping and boundaries / 映射与边界
+
+Tool-result text reaches the shared Detail sanitizer without an earlier silent slice. The existing per-string and total-string budgets still apply with explicit omission markers; viewer truncation neither changes terminal status nor replaces the tool's own recorded truncation facts. Search retains the tail and exact Raw retains the physical record. / 工具结果文本不再先无提示截取，而是交由共享 Detail sanitizer 处理；现有单字符串与总字符串限额及明确省略标记继续生效。查看器截断不改变终态，也不替代工具自身记录的截断事实；搜索保留末尾文本，精确 Raw 保留物理记录。
+
+The known `context_edit.replacement.content` shape uses the same image-payload omission as message/custom-message content. Logical replacement evidence reuses the sanitized parsed record, including null/string/malformed fallback values. Exact physical Raw remains unchanged, and search continues to exclude image bytes. This adds neither replacement image previews nor model-context replay. / 已知的 `context_edit.replacement.content` 结构复用消息／自定义消息内容的图片 payload 省略规则。逻辑 replacement 依据复用已清理的解析记录，并保留 null／字符串／畸形值回退；物理 Raw 原文不变，搜索继续排除图片 bytes。不新增 replacement 图片预览或模型上下文重放。
 
 Scalar Detail context accepts primitive values only. Unsupported structured metadata such as provider/model/API/stop reason displays a Raw-reference notice instead of invoking object-to-string conversion; its original value remains available in Raw. / 标量 Detail 上下文仅接受基本类型值。Provider／model／API／stop reason 等不支持的结构化元数据显示 Raw 引用提示，不执行对象到字符串的转换；原始值仍可通过 Raw 查看。
 

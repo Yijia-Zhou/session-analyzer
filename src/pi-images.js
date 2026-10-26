@@ -40,13 +40,19 @@ function inspectPiImage(block) {
 // a shallow copy: original snapshot records remain exact Raw/readback evidence.
 function sanitizePiImageRecord(record) {
   if (!record || typeof record !== 'object' || Array.isArray(record)) return record;
+  // Context edits own replacement.content in the pinned writer schema. Only
+  // these known content owners are normalized; extension fields stay opaque.
   const owner = record.type === 'custom_message' ? record
     : record.type === 'message' && ['user', 'assistant', 'custom', 'toolResult'].includes(record.message?.role)
-      ? record.message : null;
+      ? record.message
+      : record.type === 'context_edit' && record.replacement && typeof record.replacement === 'object'
+        && !Array.isArray(record.replacement) ? record.replacement : null;
   if (!owner || !Array.isArray(owner.content)) return record;
   const content = owner.content.map((block) => block?.type === 'image' && Object.hasOwn(block, 'data')
     ? { ...block, data: SAVED_IMAGE_MARKER } : block);
-  return owner === record ? { ...record, content } : { ...record, message: { ...owner, content } };
+  if (owner === record) return { ...record, content };
+  const ownerKey = record.type === 'context_edit' ? 'replacement' : 'message';
+  return { ...record, [ownerKey]: { ...owner, content } };
 }
 
 function rawRecord(snapshot, raw, session) {

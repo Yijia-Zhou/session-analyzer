@@ -104,7 +104,7 @@ async function buildPiEventDetail(index, session, eventId, layer = 'main', optio
     detail.inspectorSections.push(...native.inspectorSections);
     if (facts.patch) detail.timelineSections.push(...nativePatchSections(facts.patch));
     if (facts.nativeActivity === 'edit' && !facts.patch) detail.inspectorSections.push(notice('Requested replacements are recorded; no successful valid unified patch confirms the file changes.'));
-    if (facts.output) detail.timelineSections.push({ type: 'terminal', purpose: 'result', text: facts.output.slice(0, 100_000) });
+    if (facts.output) detail.timelineSections.push({ type: 'terminal', purpose: 'result', text: facts.output });
     else detail.timelineSections.push(notice(event.status === 'incomplete' ? 'No unique completed result is recorded for this call.' : 'No textual output was recorded.', 'result'));
     if (facts.arguments !== undefined) detail.inspectorSections.push({ type: 'json', purpose: 'request', title: 'Recorded arguments', value: facts.arguments });
     if (facts.argumentsError) detail.inspectorSections.push(notice(facts.argumentsError));
