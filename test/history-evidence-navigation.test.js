@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { referenceFromHash, createEvidenceNavigation } = require('../src/browser/history-evidence');
+const { referenceFromHash, createEvidenceNavigation, createHistoryTraversalGuard } = require('../src/browser/history-evidence');
 const { excerptCoveredByText, renderSupplement } = require('../src/browser/search-excerpt');
 const { escapeHtml } = require('../src/browser/renderers');
 const i18n = require('../src/shared/i18n');
@@ -25,6 +25,40 @@ test('new references and user cancellation permanently retire pending navigation
   const retry = navigation.start();
   assert.equal(retry.current(), true);
   assert.equal(second.current(), false);
+});
+
+test('an owned traversal consumes its matching hashchange once, including after cancellation', () => {
+  const guard = createHistoryTraversalGuard();
+  const saved = { owner: 'document-a', id: 4 };
+  const navigation = createEvidenceNavigation();
+  const restore = navigation.start();
+  guard.claim('http://viewer.test/#ref=saved', saved);
+  navigation.cancel();
+  assert.equal(restore.current(), false);
+  assert.equal(guard.consume('http://viewer.test/#ref=saved', { ...saved }), true,
+    'the companion event must not restart a restore cancelled by newer input');
+  assert.equal(guard.consume('http://viewer.test/#ref=saved', saved), false);
+});
+
+test('genuine hash changes, unrelated owners and newer traversals retain their own navigation', () => {
+  const guard = createHistoryTraversalGuard();
+  const saved = { owner: 'document-a', id: 4 };
+  const url = 'http://viewer.test/#ref=saved';
+  for (const [nextUrl, nextSaved] of [
+    ['http://viewer.test/#ref=another', saved], ['http://viewer.test/', saved],
+    [url, null], [url, { ...saved, owner: 'document-b' }], [url, { ...saved, id: 5 }],
+  ]) {
+    guard.claim(url, saved);
+    assert.equal(guard.consume(nextUrl, nextSaved), false);
+    assert.equal(guard.consume(url, saved), false, 'a mismatched event retires the old claim');
+  }
+  guard.claim(url, saved);
+  guard.claim(url, null);
+  assert.equal(guard.consume(url, saved), false, 'unowned popstate clears a previous claim');
+  guard.claim(url, saved);
+  const next = { ...saved, id: 5 };
+  guard.claim('http://viewer.test/?piEntry=next', next);
+  assert.equal(guard.consume('http://viewer.test/?piEntry=next', next), true);
 });
 
 test('excerpt coverage preserves evidence text while accepting readable Markdown formatting', () => {

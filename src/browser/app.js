@@ -2,7 +2,7 @@
 
 const { backgroundTerminalLabel } = require('../shared/background-terminal-presentation');
 
-const { referenceFromHash, createEvidenceNavigation } = require('./history-evidence');
+const { referenceFromHash, createEvidenceNavigation, createHistoryTraversalGuard } = require('./history-evidence');
 const searchExcerpt = require('./search-excerpt');
 const { groupPiBranches, piSessionTitle, piPreview } = require('./pi-branches');
 const piEntryNavigation = createEvidenceNavigation();
@@ -13,6 +13,7 @@ const piReadingHistoryOwner = Array.from(crypto.getRandomValues(new Uint32Array(
 const piReadingPositions = new Map();
 let piReadingPositionId = 0;
 const piNativeScrollRestoration = window.history.scrollRestoration;
+const piHistoryTraversal = createHistoryTraversalGuard();
 const evidenceNavigation = createEvidenceNavigation();
 
 const rendererApi = window.sessionRenderers;
@@ -5387,6 +5388,7 @@ window.addEventListener('popstate', (event) => {
   cancelPiEntryNavigation();
   piHydratedUrl = '';
   const saved = event.state?.sessionAnalyzerPiReading;
+  piHistoryTraversal.claim(location.href, saved?.owner === piReadingHistoryOwner ? saved : null);
   if (saved?.owner === piReadingHistoryOwner) {
     window.history.scrollRestoration = 'manual';
     restorePiBrowserPosition(saved).catch(showError);
@@ -5607,7 +5609,15 @@ async function returnToHistoryReference() {
 }
 
 let historyReferenceExcursion = null;
-window.addEventListener('hashchange', () => {
+window.addEventListener('hashchange', (event) => {
+  // A newer navigation may have overtaken this queued fragment notification.
+  if (event.newURL !== location.href) return;
+  // Owned popstate already restores (or explicitly rejects) this exact entry.
+  // Its companion must neither clear the owner nor start a second resolver.
+  if (piHistoryTraversal.consume(event.newURL, window.history.state?.sessionAnalyzerPiReading)) {
+    historyReferenceExcursion = null;
+    return;
+  }
   if (!state.historyReferenceReady) return;
   const reference = referenceFromHash(location.hash);
   const originalRef = historyReferenceExcursion?.ref === reference ? historyReferenceExcursion.originalRef : '';

@@ -504,28 +504,251 @@ test('pi browser reading snapshots reject an index revision change', { timeout: 
   assert.equal(await page.evaluate(() => history.length), length);
 });
 
-test('pi browser Back restores a snapshot-bound history excerpt', { timeout: 45000 }, async (t) => {
+// Observe the complete application from before its listeners are installed. These
+// This helper only observes events and real fetches. The separately named
+// simulated-companion test explicitly labels its one untrusted event delivery.
+async function observeExcerptNavigation(page) {
+  await page.addInitScript(() => {
+    window.__piExcerptTrace = { events: [], requests: [], pending: 0 };
+    for (const type of ['popstate', 'hashchange']) window.addEventListener(type, (event) => {
+      window.__piExcerptTrace.events.push({ type, trusted: event.isTrusted, url: location.href, state: structuredClone(history.state) });
+    });
+    const fetch = window.fetch;
+    window.fetch = async (...args) => {
+      const trace = window.__piExcerptTrace;
+      const request = { url: String(args[0]), settled: false };
+      trace.requests.push(request); trace.pending += 1;
+      try { return await fetch(...args); }
+      finally { request.settled = true; trace.pending -= 1; }
+    };
+  });
+}
+
+async function excerptSettled(page, eventId, detailView = 'inspector') {
+  await page.waitForFunction(({ eventId, detailView }) => document.body.dataset.historyReading === 'isolated'
+    && document.body.dataset.detailView === detailView
+    && document.querySelector('#timeline .event.selected')?.dataset.eventId === eventId
+    && !document.querySelector('[data-history-action="cancel"]')
+    && window.__piExcerptTrace.pending === 0, { eventId, detailView });
+  // Fetch settlement precedes JSON parsing/rendering. Fence the next painted DOM.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+async function excerptSnapshot(page) {
+  return page.evaluate(() => ({
+    url: location.href,
+    session: document.querySelector('.sessionItem.active')?.dataset.sessionId,
+    layer: document.querySelector('#layerSelect').value,
+    reading: document.body.dataset.historyReading,
+    selected: document.querySelector('#timeline .event.selected')?.dataset.eventId,
+    view: document.body.dataset.detailView,
+    mobileView: document.body.dataset.mobileView,
+    cards: [...document.querySelectorAll('#timeline .event')].map((node) => ({
+      id: node.dataset.eventId, expanded: node.classList.contains('expanded'),
+      details: [...node.querySelectorAll('details')].map((detail) => detail.open),
+    })),
+    inspectorDetails: [...document.querySelectorAll('#detail details')].map((node) => node.open),
+    // The separate local Detail-view stack is not part of a reading position.
+    detail: (() => {
+      const node = document.querySelector('#detail').cloneNode(true);
+      node.querySelector('[data-detail-action="back"]')?.remove();
+      return node.textContent;
+    })(),
+    scroll: document.querySelector('.timelinePane').scrollTop,
+    detailScroll: document.querySelector('.detailPane').scrollTop,
+    returns: [...document.querySelectorAll('[data-reading-back]')].map((node) => node.textContent),
+  }));
+}
+
+async function preparedExcerpt(t, detailView) {
   const data = await fixture(t);
+  const rows = (await fs.readFile(data.file, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  rows.find((row) => row.id === 'summary-b').summary += '\n\n' + Array.from({ length: 24 }, (_, i) => `Synthetic recovery paragraph ${i}: retain the reader viewport and disclosure choices.`).join('\n\n');
+  await fs.writeFile(data.file, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
   const server = await data.start();
   const hit = (await server.service.execute('search', { query: 'A failed', layer: 'protocol' })).items[0];
   assert.ok(hit?.ref);
   const browser = await chromium.launch(); t.after(() => browser.close());
   const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } });
+  const errors = []; page.on('pageerror', (error) => errors.push(error.message));
+  await observeExcerptNavigation(page);
   const original = `${server.origin}/#ref=${encodeURIComponent(hit.ref)}`;
   await page.goto(original);
-  const button = page.getByRole('button', { name: 'Read summarized branch', exact: true });
-  await button.waitFor();
-  await button.click();
+  await excerptSettled(page, hit.eventId);
+  // Retain a real, independent in-app return entry through the browser trips.
+  await page.getByRole('button', { name: 'Read summarized branch', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-a'
-    && document.querySelector('#layerSelect')?.value === 'raw' && new URL(location.href).searchParams.has('piEntry'));
-  const length = await page.evaluate(() => history.length);
+    && document.querySelector('#layerSelect').value === 'raw' && new URL(location.href).searchParams.has('piEntry'));
+  const returnEvent = await page.locator('#timeline .event.selected').getAttribute('data-event-id');
+  await page.getByRole('button', { name: 'Selected branch models and usage', exact: true }).click();
+  await page.locator('[data-reading-back]').first().waitFor();
   await page.goBack();
-  await page.waitForFunction((event) => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-b'
-    && document.querySelector('#layerSelect')?.value === 'protocol' && document.querySelector('#timeline .event.selected')?.dataset.eventId === event, hit.eventId);
-  await button.waitFor();
-  assert.equal(page.url(), original);
-  assert.equal(await page.locator('body').getAttribute('data-history-reading'), 'isolated');
+  await excerptSettled(page, hit.eventId);
+  const nearby = page.locator('#timeline .event').filter({ hasText: 'Successful attempt' });
+  const selected = await nearby.getAttribute('data-event-id');
+  assert.notEqual(selected, hit.eventId, 'exercise a nearby record, not the linked anchor');
+  assert.equal(await nearby.evaluate((node) => node.classList.contains('expanded')), false);
+  await nearby.locator('.eventHeader').click();
+  await excerptSettled(page, selected);
+  // Keep the new manual expansion and open Timeline and Detail disclosures.
+  // The original anchor supplies enough real content for pane scrolling.
+  const anchorDisclosure = page.locator(`#timeline .event[data-event-id="${hit.eventId}"] details`).first();
+  await anchorDisclosure.locator('summary').click();
+  const inspectorDisclosure = page.locator('#detail details').first();
+  await inspectorDisclosure.locator('summary').click();
+  if (detailView === 'rawRefs') {
+    await page.locator('#detail [data-detail-action="raw"]').click();
+    await excerptSettled(page, selected, detailView);
+  }
+  await page.locator('.timelinePane').evaluate((node) => { node.scrollTop = 160; });
+  await page.locator('.detailPane').evaluate((node) => { node.scrollTop = 70; });
+  await excerptSettled(page, selected, detailView);
+  const snapshot = await excerptSnapshot(page);
+  assert.ok(snapshot.scroll > 0, 'the saved excerpt has a meaningful scrolled viewport');
+  assert.ok(snapshot.cards.some((card) => card.id === selected && card.expanded), 'save a manual fold override');
+  assert.ok(snapshot.cards.some((card) => card.details.some(Boolean)), 'save an open Timeline disclosure');
+  if (detailView === 'inspector') assert.ok(snapshot.inspectorDetails.some(Boolean), 'save an open Detail disclosure');
+  assert.ok(snapshot.returns.length, 'the independent in-app return must still exist');
+  return { page, server, hit, selected, original, snapshot, returnEvent, errors };
+}
+
+function excerptReads(requests) {
+  return {
+    resolve: requests.filter(({ url }) => url.startsWith('/api/history/resolve?')).length,
+    context: requests.filter(({ url }) => /^\/api\/sessions\/[^/]+\/events\/[^/?]+\?/.test(url)).length,
+  };
+}
+
+function excerptTraversal(events) {
+  return events.map(({ type, trusted, url, state }) => ({ type, trusted,
+    hash: new URL(url).hash ? 'reference' : 'empty',
+    nativeEntry: new URL(url).searchParams.has('piEntry'),
+    savedPosition: state?.sessionAnalyzerPiReading?.id ?? null,
+  }));
+}
+
+for (const view of ['inspector', 'rawRefs']) test(`pi browser Back restores the complete snapshot-bound excerpt (${view})`, { timeout: 45000 }, async (t) => {
+  const { page, hit, selected, snapshot, returnEvent, errors } = await preparedExcerpt(t, view);
+  // Activate the real native-entry action without Playwright scrolling the saved
+  // viewport to it. This invokes the application's normal delegated click path.
+  await page.getByRole('button', { name: 'Read referenced entry', exact: true }).evaluate((node) => node.click());
+  await page.waitForFunction(() => new URL(location.href).searchParams.has('piEntry') && window.__piExcerptTrace.pending === 0);
+  const target = page.url();
+  const length = await page.evaluate(() => history.length);
+  const targetEvent = await page.locator('#timeline .event.selected').getAttribute('data-event-id');
+  for (let trip = 0; trip < 2; trip += 1) {
+    const before = await page.evaluate(() => ({ events: window.__piExcerptTrace.events.length, requests: window.__piExcerptTrace.requests.length }));
+    await page.goBack();
+    await excerptSettled(page, selected, view);
+    const trace = await page.evaluate(({ events, requests }) => ({ events: window.__piExcerptTrace.events.slice(events), requests: window.__piExcerptTrace.requests.slice(requests) }), before);
+    t.diagnostic(JSON.stringify({ trip, traversal: excerptTraversal(trace.events), reads: excerptReads(trace.requests) }));
+    assert.equal(excerptReads(trace.requests).resolve, 1, 'one owner resolves the saved excerpt');
+    assert.equal(excerptReads(trace.requests).context, snapshot.cards.length, 'each context record is fetched once');
+    assert.deepEqual(await excerptSnapshot(page), snapshot, 'restore selection, folds, disclosures, Detail, viewport, and in-app return');
+    assert.equal(await page.evaluate(() => history.length), length);
+    assert.ok(trace.events.length && trace.events[0].type === 'popstate');
+    assert.ok(trace.events[0].state?.sessionAnalyzerPiReading, 'the real popstate carries its snapshot owner');
+    if (trip === 0) {
+      await page.goForward();
+      await page.waitForFunction((id) => location.href.includes('piEntry=') && document.querySelector('#timeline .event.selected')?.dataset.eventId === id
+        && window.__piExcerptTrace.pending === 0, targetEvent);
+      assert.equal(page.url(), target);
+      assert.equal(await page.evaluate(() => history.length), length);
+    }
+  }
+  await page.locator('[data-reading-back]:visible').first().click();
+  await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-a'
+    && document.querySelector('#layerSelect').value === 'raw'
+    && document.querySelector('#timeline .event.selected')?.dataset.eventId === id
+    && !document.querySelector('[data-reading-back]') && window.__piExcerptTrace.pending === 0, returnEvent);
+  assert.notEqual(returnEvent, hit.eventId);
+  assert.deepEqual(errors, []);
+});
+
+for (const simulatedCompanion of [false, true]) test(simulatedCompanion
+  ? 'pi excerpt simulated companion hashchange preserves the gated Back owner and later Forward'
+  : 'pi excerpt browser Forward retires a gated Back before its real response arrives', { timeout: 45000 }, async (t) => {
+  const { page, selected, snapshot, errors } = await preparedExcerpt(t, 'rawRefs');
+  await page.getByRole('button', { name: 'Read referenced entry', exact: true }).evaluate((node) => node.click());
+  await page.waitForFunction(() => new URL(location.href).searchParams.has('piEntry') && window.__piExcerptTrace.pending === 0);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const target = await excerptSnapshot(page);
+  const length = await page.evaluate(() => history.length);
+  let release; const gate = new Promise((resolve) => { release = resolve; });
+  let started; const pending = new Promise((resolve) => { started = resolve; });
+  let delivered; const completed = new Promise((resolve) => { delivered = resolve; });
+  t.after(() => release());
+  let delayed = false;
+  await page.route('**/api/history/resolve?**', async (route) => {
+    if (delayed) { await route.continue(); return; }
+    delayed = true;
+    const response = await route.fetch(); started(); await gate;
+    try { await route.fulfill({ response }); } catch { /* A newer traversal may abort the old real request. */ }
+    delivered();
+  });
+  const before = await page.evaluate(() => ({ events: window.__piExcerptTrace.events.length, requests: window.__piExcerptTrace.requests.length }));
+  await page.goBack(); await pending;
+  if (simulatedCompanion) {
+    const owner = await page.evaluate(() => structuredClone(history.state));
+    assert.ok(owner?.sessionAnalyzerPiReading, 'the native Back establishes its saved reading owner');
+    // Delivery-channel simulation only: Chromium's native query-changing Back
+    // above emits popstate alone here. Deliberately deliver its companion hash
+    // event to the real application while its real resolution request is held.
+    await page.evaluate((oldURL) => {
+      window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL: location.href }));
+    }, target.url);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const companion = await page.evaluate(({ events, requests }) => ({
+      events: window.__piExcerptTrace.events.slice(events),
+      requests: window.__piExcerptTrace.requests.slice(requests),
+      state: structuredClone(history.state),
+    }), before);
+    t.diagnostic(JSON.stringify({ simulatedCompanion: true, traversal: excerptTraversal(companion.events),
+      reads: excerptReads(companion.requests), savedPosition: companion.state?.sessionAnalyzerPiReading?.id ?? null }));
+    assert.deepEqual(companion.state, owner, 'the simulated companion must retain the Back snapshot owner and id');
+    assert.equal(excerptReads(companion.requests).resolve, 1, 'the simulated companion must not start a second evidence resolver');
+  }
+  await page.goForward();
+  await page.waitForFunction(({ url, id, view }) => location.href === url
+    && document.querySelector('#timeline .event.selected')?.dataset.eventId === id
+    && document.body.dataset.detailView === view && window.__piExcerptTrace.pending <= 1
+    && document.querySelector('#detail').textContent.includes('B_SUCCEEDED_EVIDENCE'), { url: target.url, id: target.selected, view: target.view });
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const forwarded = await excerptSnapshot(page);
+  assert.deepEqual({ ...forwarded, scroll: target.scroll }, target, 'Forward restores the target reading surface');
+  release(); await completed;
+  await page.waitForFunction(() => window.__piExcerptTrace.pending === 0 && !document.querySelector('[data-history-action="cancel"]'));
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const trace = await page.evaluate(({ events, requests }) => ({ events: window.__piExcerptTrace.events.slice(events), requests: window.__piExcerptTrace.requests.slice(requests) }), before);
+  t.diagnostic(JSON.stringify({ gatedTraversal: excerptTraversal(trace.events), reads: excerptReads(trace.requests) }));
+  assert.equal(excerptReads(trace.requests).resolve, 1, 'the gated Back starts one evidence resolver');
+  assert.deepEqual(await excerptSnapshot(page), forwarded, 'the late Back cannot replace the newer Forward surface or viewport');
   assert.equal(await page.evaluate(() => history.length), length);
+  await page.goBack();
+  await excerptSettled(page, selected, 'rawRefs');
+  assert.deepEqual(await excerptSnapshot(page), snapshot, 'a later Back still restores the unconsumed excerpt');
+  assert.deepEqual(errors, []);
+});
+
+test('pi excerpt manual reference changes still resolve after snapshot-owned browser Back', { timeout: 45000 }, async (t) => {
+  const { page, server, selected, errors } = await preparedExcerpt(t, 'inspector');
+  await page.getByRole('button', { name: 'Read referenced entry', exact: true }).evaluate((node) => node.click());
+  await page.waitForFunction(() => new URL(location.href).searchParams.has('piEntry') && window.__piExcerptTrace.pending === 0);
+  await page.goBack(); await excerptSettled(page, selected);
+  const alternate = (await server.service.execute('search', { query: 'Successful attempt', layer: 'protocol' })).items[0];
+  assert.ok(alternate?.ref);
+  const before = await page.evaluate(() => window.__piExcerptTrace.requests.length);
+  // Assigning location.hash is a real user-style fragment navigation; the browser
+  // generates its events and a fresh history entry without a synthetic dispatch.
+  await page.evaluate((ref) => { location.hash = `ref=${encodeURIComponent(ref)}`; }, alternate.ref);
+  await excerptSettled(page, alternate.eventId);
+  assert.equal(new URLSearchParams(new URL(page.url()).hash.slice(1)).get('ref'), alternate.ref);
+  assert.equal(new URL(page.url()).searchParams.has('piEntry'), false);
+  const requests = await page.evaluate((start) => window.__piExcerptTrace.requests.slice(start), before);
+  assert.equal(excerptReads(requests).resolve, 1, 'a genuine new hash still has one evidence resolver');
+  await page.evaluate(() => { location.hash = ''; });
+  await page.waitForFunction(() => document.body.dataset.historyReading !== 'isolated' && window.__piExcerptTrace.pending === 0);
+  assert.deepEqual(errors, []);
 });
 
 test('pi browser references still resolve after their bounded reading snapshot is evicted', { timeout: 45000 }, async (t) => {
