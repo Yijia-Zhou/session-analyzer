@@ -9,6 +9,10 @@ const piEntryNavigation = createEvidenceNavigation();
 let piBranchChooser = null;
 let piHydratedUrl = '';
 const piEntryReferences = new Map();
+const piReadingHistoryOwner = Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-');
+const piReadingPositions = new Map();
+let piReadingPositionId = 0;
+const piNativeScrollRestoration = window.history.scrollRestoration;
 const evidenceNavigation = createEvidenceNavigation();
 
 const rendererApi = window.sessionRenderers;
@@ -5104,6 +5108,55 @@ function piEntryUrl(reference) {
   return url.href;
 }
 
+function rememberPiBrowserPosition() {
+  if (state.sourceKind !== 'pi' || state.searchScope !== 'session' || !state.selectedSessionId) return;
+  const saved = window.history.state?.sessionAnalyzerPiReading;
+  // A reference URL keeps the branch/entry it opened, even if the user reads
+  // another session before opening their next reference in this history slot.
+  if (new URL(location.href).searchParams.has('piEntry') && saved?.owner === piReadingHistoryOwner) {
+    const target = piReadingPositions.get(saved.id);
+    if (!target || target.sessionId !== state.selectedSessionId || target.layerId !== activeLayerId()
+        || target.selectedEventId !== state.selectedEventId) return;
+  }
+  const id = saved?.owner === piReadingHistoryOwner ? saved.id : ++piReadingPositionId;
+  piReadingPositions.delete(id);
+  piReadingPositions.set(id, structuredClone(captureReadingPosition(el.sessionHeader)));
+  // Keep browser state free of transcript content and bound retained UI snapshots.
+  if (piReadingPositions.size > 40) piReadingPositions.delete(piReadingPositions.keys().next().value);
+  window.history.replaceState({ ...window.history.state,
+    sessionAnalyzerPiReading: { owner: piReadingHistoryOwner, id, scope: readingScopeKey() } }, '', location.href);
+  // These entries restore both the pane and mobile document viewport themselves.
+  window.history.scrollRestoration = 'manual';
+}
+
+async function restorePiBrowserPosition(saved) {
+  const position = piReadingPositions.get(saved.id);
+  if (!state.projectSelected || state.selectingProject || saved.scope !== readingScopeKey()
+      || (position && position.scope !== readingScopeKey())) {
+    el.stateLine.textContent = t('piEntryUnavailable');
+    return;
+  }
+  // An evicted UI snapshot must not retire an otherwise durable entry locator.
+  if (!position && new URL(location.href).searchParams.has('piEntry')) return hydratePiEntryUrl();
+  if (!position) { el.stateLine.textContent = t('piEntryUnavailable'); return; }
+  // Retire any in-app return before excerpt resolution can await its first read.
+  state.readingNavigationId += 1;
+  const navigation = piEntryNavigation.start();
+  const current = () => navigation.current() && state.projectSelected && !state.selectingProject
+    && position.scope === readingScopeKey()
+    && window.history.state?.sessionAnalyzerPiReading?.owner === piReadingHistoryOwner
+    && window.history.state?.sessionAnalyzerPiReading?.id === saved.id;
+  const operation = { current };
+  try {
+    const restored = await restoreReadingPosition(position, operation, {
+      consumeHistory: false, historyCurrent: current, piNavigation: true,
+    });
+    if (restored && current()) piHydratedUrl = location.href;
+  } catch (error) {
+    if (operation.current() && !isIntentionalAbort(error)) throw error;
+  }
+}
+
 function cancelPiEntryNavigation() {
   piEntryNavigation.cancel();
   requestOwners.piBranchPages.abort();
@@ -5225,7 +5278,7 @@ async function loadPiEntryActions(event) {
   } finally { requestOwners.piEntryActions.finish(owner); }
 }
 
-function showPiBranchChooser(data, reference, scope) {
+function showPiBranchChooser(data, reference, scope, options) {
   const dialog = document.createElement('dialog');
   const sessionId = state.selectedSessionId;
   const intent = state.eventSelectionIntentId;
@@ -5235,6 +5288,7 @@ function showPiBranchChooser(data, reference, scope) {
   let nextOffset = data.nextOffset;
   let loaded = data.branches.length;
   dialog.className = 'piBranchChooser';
+  dialog.piNavigationOptions = options;
   dialog.setAttribute('aria-label', t('piChooseBranch'));
   dialog.innerHTML = `<header><h2>${escapeHtml(t('piChooseBranch'))}</h2><button type="button" class="smallBtn" data-pi-chooser-close>${escapeHtml(t('close'))}</button></header>
     <p>${escapeHtml(t('piChooseBranchNotice'))}</p>
@@ -5278,6 +5332,8 @@ function showPiBranchChooser(data, reference, scope) {
 async function openPiEntryReference(reference, branchId = '', options = {}) {
   cancelPiEntryNavigation();
   if (state.sourceKind !== 'pi' || !state.projectSelected || state.selectingProject) throw new Error(t('piEntryScopeMismatch'));
+  // Save before any cross-branch work, including opening a modal chooser.
+  if (!options.replaceUrl) rememberPiBrowserPosition();
   const operation = piEntryNavigation.start();
   const scope = readingScopeKey();
   const intent = state.eventSelectionIntentId;
@@ -5286,7 +5342,7 @@ async function openPiEntryReference(reference, branchId = '', options = {}) {
     const data = await api(`/api/pi/entry?${piApiParams({ reference, ...(branchId ? { branchId } : {}) })}`, { signal: operation.signal });
     if (!current()) return false;
     if (data.indexRevision !== state.indexRevision) throw new Error(t('piEntryUnavailable'));
-    if (data.status === 'choose_branch') { showPiBranchChooser(data, reference, scope); return false; }
+    if (data.status === 'choose_branch') { showPiBranchChooser(data, reference, scope, options); return false; }
     const target = data.target;
     if (data.status !== 'resolved' || !target?.sessionId || !target.eventId || !['main', 'protocol', 'raw'].includes(target.layer)) throw new Error(t('piEntryUnavailable'));
     if (state.selectedSessionId !== target.sessionId || state.searchScope !== 'session') {
@@ -5302,6 +5358,7 @@ async function openPiEntryReference(reference, branchId = '', options = {}) {
     const url = piEntryUrl(data.reference || reference);
     if (options.replaceUrl || url === location.href) window.history.replaceState(null, '', url);
     else window.history.pushState(null, '', url);
+    rememberPiBrowserPosition();
     piHydratedUrl = location.href;
     if (data.projectionUnavailable) el.stateLine.textContent = t('piEntryRawFallback');
     return true;
@@ -5326,9 +5383,16 @@ async function hydratePiEntryUrl() {
   await openPiEntryReference(reference, '', { replaceUrl: true });
 }
 
-window.addEventListener('popstate', () => {
+window.addEventListener('popstate', (event) => {
   cancelPiEntryNavigation();
   piHydratedUrl = '';
+  const saved = event.state?.sessionAnalyzerPiReading;
+  if (saved?.owner === piReadingHistoryOwner) {
+    window.history.scrollRestoration = 'manual';
+    restorePiBrowserPosition(saved).catch(showError);
+    return;
+  }
+  window.history.scrollRestoration = piNativeScrollRestoration;
   hydratePiEntryUrl().catch(showError);
 });
 document.addEventListener('click', (event) => {
@@ -5344,7 +5408,8 @@ document.addEventListener('click', (event) => {
   const entry = event.target.closest('[data-pi-entry]');
   if (entry && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
     event.preventDefault();
-    openPiEntryReference(entry.dataset.piEntry, entry.dataset.piBranch || '').catch(showError);
+    openPiEntryReference(entry.dataset.piEntry, entry.dataset.piBranch || '',
+      entry.closest('dialog.piBranchChooser')?.piNavigationOptions || {}).catch(showError);
     return;
   }
   const copy = event.target.closest('[data-pi-copy-entry]');
@@ -5410,7 +5475,8 @@ async function openHistoryEvidence(reference, options = {}) {
     state.searchFilters = { file: '', kind: '', status: '', codeModeRequest: '' };
     el.layerSelect.value = target.layer;
     syncSearchInputValue();
-    await selectSession(target.sessionId, { historyEvidence: true, preserveReadingHistory: options.preserveReadingHistory });
+    await selectSession(target.sessionId, { historyEvidence: true, preserveReadingHistory: options.preserveReadingHistory,
+      piNavigation: options.piNavigation });
     if (!operation.current()) return;
     // Older listeners can still show the exact target. Ordered context requires
     // explicit positions, never frontend decoding of an evidence reference.
@@ -6292,12 +6358,15 @@ async function selectSession(sessionId, options = {}) {
     updateLoadMoreButton();
     return true;
   }
-  loadPiOverview(sessionId).catch(showError);
+  const piOverview = loadPiOverview(sessionId);
   const requests = [
     loadAnalysis(sessionId),
     loadTimeline(false),
     refreshFileSuggestions({ returnOutcome: true }),
   ];
+  // Its disclosures affect the scroll geometry saved by browser history.
+  if (options.piNavigation && options.settleRequests) requests.push(piOverview);
+  else piOverview.catch(showError);
   // A reading-return retry must not race unfinished sibling requests from its failed attempt.
   const loaded = options.settleRequests
     ? (await Promise.allSettled(requests)).map((result) => {
@@ -6700,7 +6769,8 @@ function startReadingRestoration(position, { historyPosition = position, consume
   return operation.promise;
 }
 
-async function restoreReadingPosition(position, operation, { historyPosition = position, consumeHistory = true } = {}) {
+async function restoreReadingPosition(position, operation, { historyPosition = position, consumeHistory = true,
+  historyCurrent = () => state.readingHistory.at(-1) === historyPosition, piNavigation = false } = {}) {
   state.searchQuery = position.searchQuery;
   state.searchFilters = { ...position.searchFilters };
   state.layerId = position.layerId;
@@ -6715,13 +6785,13 @@ async function restoreReadingPosition(position, operation, { historyPosition = p
   syncSearchInputValue();
   updateProfileApplicabilityUi();
   if (position.historyContext) {
-    const current = () => state.readingRestoration === operation && state.readingHistory.at(-1) === historyPosition
+    const current = () => (piNavigation || state.readingRestoration === operation) && historyCurrent()
       && position.scope === readingScopeKey();
     operation.current = current;
     for (const id of position.detailEventIds) delete state.detailErrors[detailKey(position.sessionId, position.layerId, id)];
     const opened = await openHistoryEvidence(position.historyContext.ref, {
       originalRef: position.historyContext.originalRef, preserveReadingHistory: true,
-      displayOverrides: position.historyContext.displayOverrides,
+      displayOverrides: position.historyContext.displayOverrides, piNavigation,
     });
     if (current() && !opened && state.historyEvidence?.error) throw new Error(state.historyEvidence.error);
     operation.current = () => current() && opened?.current();
@@ -6749,7 +6819,7 @@ async function restoreReadingPosition(position, operation, { historyPosition = p
   let selectionIntentId = state.eventSelectionIntentId;
   let searchKey;
   const current = () => navigationId === state.readingNavigationId && position.scope === readingScopeKey()
-    && state.readingHistory.at(-1) === historyPosition
+    && historyCurrent()
     && selectionIntentId === state.eventSelectionIntentId
     && searchKey === searchTargetKey() && position.mainPresentationId === state.mainPresentationId
     && state.selectedSessionId === position.sessionId && activeLayerId() === position.layerId
@@ -6758,7 +6828,7 @@ async function restoreReadingPosition(position, operation, { historyPosition = p
   operation.current = current;
   // A previous attempt may have cached a detail failure for this same session.
   for (const id of position.detailEventIds) delete state.detailErrors[detailKey(position.sessionId, position.layerId, id)];
-  const loading = selectSession(position.sessionId, { mobileView: 'events', preserveReadingHistory: true, settleRequests: true });
+  const loading = selectSession(position.sessionId, { mobileView: 'events', preserveReadingHistory: true, settleRequests: true, piNavigation });
   searchKey = searchTargetKey();
   await loading;
   if (!current()) return false;

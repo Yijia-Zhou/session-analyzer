@@ -52,7 +52,7 @@ async function fixture(t, extraBranches = 0, statistics = false) {
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const close = async () => { await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }); await service?.close(); };
     t.after(close);
-    return { origin: `http://127.0.0.1:${server.address().port}`, close };
+    return { origin: `http://127.0.0.1:${server.address().port}`, close, service };
   };
   return { home, repo, file, start };
 }
@@ -354,6 +354,205 @@ test('pi entry browser back and forward resolve without growing browser history'
   await page.waitForFunction(() => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-b'
     && document.querySelector('#detail [data-pi-entry-actions] a')?.href === location.href);
   assert.equal(page.url(), second);
+  assert.equal(await page.evaluate(() => history.length), length);
+});
+
+test('pi entry browser Back restores an ordinary reading entry and Forward retains the target', { timeout: 45000 }, async (t) => {
+  const data = await fixture(t);
+  const server = await data.start();
+  const browser = await chromium.launch(); t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } });
+  await page.goto(server.origin);
+  await page.locator('[data-session-id="pi:recovery:label-a"]').click();
+  // Establish an independent in-app return entry before the browser round trip.
+  await page.getByRole('button', { name: 'Selected branch models and usage', exact: true }).click();
+  await page.locator('#detail .piRecordedDetails').waitFor();
+  await page.locator('#layerSelect').selectOption('main');
+  const response = await page.request.get(`${server.origin}/api/sessions/pi%3Arecovery%3Alabel-a/timeline?layer=main&limit=150`);
+  const event = (await response.json()).events.find((item) => item.kind === 'command');
+  await page.locator(`#timeline .event[data-event-id="${event.id}"] .eventHeader`).click();
+  await page.locator('#detail [data-pi-entry-actions] a').waitFor();
+  const pane = page.locator('.timelinePane');
+  await pane.evaluate((node) => { node.scrollTop = 20; });
+  const scrollTop = await pane.evaluate((node) => node.scrollTop);
+  assert.ok(scrollTop > 0);
+  const original = page.url();
+  const initialLength = await page.evaluate(() => history.length);
+  // Keep the saved viewport intact while activating the actual overview label.
+  await page.locator('[data-pi-overview] [data-pi-entry]').filter({ hasText: 'Successful attempt' }).evaluate((node) => node.click());
+  await page.waitForFunction(() => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-b'
+    && document.querySelector('#layerSelect')?.value === 'raw' && new URL(location.href).searchParams.has('piEntry'));
+  const target = page.url();
+  const targetEvent = await page.locator('#timeline .event.selected').getAttribute('data-event-id');
+  await page.goBack();
+  await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-a'
+    && document.querySelector('#layerSelect')?.value === 'main' && document.querySelector('#timeline .event.selected')?.dataset.eventId === id, event.id);
+  await page.waitForFunction((top) => Math.abs(document.querySelector('.timelinePane').scrollTop - top) < 1, scrollTop);
+  assert.equal(page.url(), original);
+  assert.match(await page.locator('#detail').innerText(), /attempt A/);
+  assert.equal(await page.evaluate(() => history.length), initialLength + 1);
+  await page.goForward();
+  await page.waitForFunction((id) => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-b'
+    && document.querySelector('#layerSelect')?.value === 'raw' && document.querySelector('#timeline .event.selected')?.dataset.eventId === id, targetEvent);
+  assert.equal(page.url(), target);
+  assert.equal(await page.evaluate(() => history.length), initialLength + 1);
+  await page.locator('[data-reading-back]:visible').first().click();
+  await page.waitForFunction(() => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-a'
+    && document.querySelector('#layerSelect')?.value === 'main' && !document.querySelector('#timeline .event.selected'));
+  await page.waitForFunction(() => !document.querySelector('[data-reading-back]'));
+  assert.equal(await page.locator('[data-reading-back]').count(), 0);
+});
+
+test('pi chooser browser Forward retires an unfinished Back and retains the chosen branch', { timeout: 45000 }, async (t) => {
+  const data = await fixture(t);
+  const server = await data.start();
+  const browser = await chromium.launch(); t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } });
+  const errors = []; page.on('pageerror', (error) => errors.push(error.message));
+  const { chooser, sessionId, href } = await openSharedChooser(page, server.origin);
+  const target = await chooser.locator(`[data-pi-branch]:not([data-pi-branch="${sessionId}"])`).getAttribute('data-pi-branch');
+  const originalEvent = await page.locator('#timeline .event.selected').getAttribute('data-event-id');
+  await chooser.locator(`[data-pi-branch="${target}"]`).click();
+  await page.waitForURL(href);
+  const targetEvent = await page.locator('#timeline .event.selected').getAttribute('data-event-id');
+  const length = await page.evaluate(() => history.length);
+  let release; const gate = new Promise((resolve) => { release = resolve; });
+  let started; const pending = new Promise((resolve) => { started = resolve; });
+  let delivered; const completed = new Promise((resolve) => { delivered = resolve; });
+  t.after(() => release());
+  let delayed = false;
+  await page.route('**/api/sessions/*/timeline?**', async (route) => {
+    if (delayed || !decodeURIComponent(new URL(route.request().url()).pathname).includes(`/sessions/${sessionId}/timeline`)) {
+      await route.continue(); return;
+    }
+    delayed = true;
+    const response = await route.fetch(); started(); await gate;
+    try { await route.fulfill({ response }); } catch { /* Forward retires the Back request. */ }
+    delivered();
+  });
+  await page.goBack(); await pending;
+  await page.goForward();
+  await page.waitForFunction(({ session, event }) => document.querySelector('.sessionItem.active')?.dataset.sessionId === session
+    && document.querySelector('#timeline .event.selected')?.dataset.eventId === event, { session: target, event: targetEvent });
+  release(); await completed;
+  await page.request.get(server.origin + '/api/state');
+  assert.equal(await page.locator('.sessionItem.active').getAttribute('data-session-id'), target);
+  assert.equal(await page.locator('dialog.piBranchChooser').count(), 0);
+  assert.equal(page.url(), href);
+  assert.equal(await page.evaluate(() => history.length), length);
+  await page.goBack();
+  await page.waitForFunction(({ session, event }) => document.querySelector('.sessionItem.active')?.dataset.sessionId === session
+    && document.querySelector('#timeline .event.selected')?.dataset.eventId === event, { session: sessionId, event: originalEvent });
+  assert.equal(new URL(page.url()).searchParams.has('piEntry'), false);
+  assert.equal(await page.evaluate(() => history.length), length);
+  assert.deepEqual(errors, []);
+});
+
+test('pi browser Back restores the mobile reading surface and document scroll', { timeout: 45000 }, async (t) => {
+  const data = await fixture(t);
+  const server = await data.start();
+  const browser = await chromium.launch(); t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'en-US', viewport: { width: 390, height: 900 } });
+  const mobile = (view) => page.locator(`button[data-mobile-view="${view}"]`).click();
+  await page.goto(server.origin);
+  await mobile('sessions');
+  await page.locator('[data-session-id="pi:recovery:label-a"]').click();
+  await mobile('events');
+  await page.locator('#layerSelect').selectOption('main');
+  const response = await page.request.get(`${server.origin}/api/sessions/pi%3Arecovery%3Alabel-a/timeline?layer=main&limit=150`);
+  const event = (await response.json()).events.find((item) => item.kind === 'command');
+  await page.locator(`#timeline .event[data-event-id="${event.id}"] .eventHeader`).click();
+  await page.locator('#detail [data-pi-entry-actions] a').waitFor();
+  await mobile('events');
+  await page.evaluate(() => window.scrollTo(0, 120));
+  const scrollTop = await page.evaluate(() => window.scrollY);
+  assert.ok(scrollTop > 0);
+  await page.locator('[data-pi-overview] [data-pi-entry]').filter({ hasText: 'Successful attempt' }).evaluate((node) => node.click());
+  await page.waitForFunction(() => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-b'
+    && document.querySelector('#layerSelect')?.value === 'raw' && new URL(location.href).searchParams.has('piEntry'));
+  const target = page.url(); const length = await page.evaluate(() => history.length);
+  await page.goBack();
+  await page.waitForFunction(({ id, top }) => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-a'
+    && document.querySelector('#layerSelect')?.value === 'main' && document.querySelector('#timeline .event.selected')?.dataset.eventId === id
+    && document.body.dataset.mobileView === 'events' && Math.abs(window.scrollY - top) < 1, { id: event.id, top: scrollTop });
+  await page.goForward();
+  await page.waitForFunction(() => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-b'
+    && document.querySelector('#layerSelect')?.value === 'raw' && document.body.dataset.mobileView === 'detail');
+  assert.equal(page.url(), target);
+  assert.equal(await page.evaluate(() => history.length), length);
+});
+
+test('pi browser reading snapshots reject an index revision change', { timeout: 45000 }, async (t) => {
+  const data = await fixture(t);
+  const server = await data.start(true);
+  const browser = await chromium.launch(); t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } });
+  await page.goto(server.origin);
+  await page.locator('[data-session-id="pi:recovery:label-a"]').click();
+  await page.locator('[data-pi-overview] [data-pi-entry]').filter({ hasText: 'Successful attempt' }).click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.has('piEntry'));
+  await fs.appendFile(data.file, JSON.stringify({ type: 'message', id: 'next-b', parentId: 'label-b',
+    message: { role: 'assistant', content: 'B_AFTER_REFRESH' } }) + '\n');
+  await page.locator('#projectRefreshBtn').click();
+  await page.waitForFunction(() => document.querySelector('#projectRefreshBtn')?.dataset.refreshing === 'false'
+    && document.querySelector('#projectRefreshStatus')?.classList.contains('success'));
+  const active = await page.locator('.sessionItem.active').getAttribute('data-session-id');
+  const length = await page.evaluate(() => history.length);
+  await page.goBack();
+  await page.waitForFunction(() => document.querySelector('#stateLine')?.textContent.includes('entry is unavailable'));
+  assert.equal(await page.locator('.sessionItem.active').getAttribute('data-session-id'), active);
+  assert.equal(await page.evaluate(() => history.length), length);
+});
+
+test('pi browser Back restores a snapshot-bound history excerpt', { timeout: 45000 }, async (t) => {
+  const data = await fixture(t);
+  const server = await data.start();
+  const hit = (await server.service.execute('search', { query: 'A failed', layer: 'protocol' })).items[0];
+  assert.ok(hit?.ref);
+  const browser = await chromium.launch(); t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } });
+  const original = `${server.origin}/#ref=${encodeURIComponent(hit.ref)}`;
+  await page.goto(original);
+  const button = page.getByRole('button', { name: 'Read summarized branch', exact: true });
+  await button.waitFor();
+  await button.click();
+  await page.waitForFunction(() => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-a'
+    && document.querySelector('#layerSelect')?.value === 'raw' && new URL(location.href).searchParams.has('piEntry'));
+  const length = await page.evaluate(() => history.length);
+  await page.goBack();
+  await page.waitForFunction((event) => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-b'
+    && document.querySelector('#layerSelect')?.value === 'protocol' && document.querySelector('#timeline .event.selected')?.dataset.eventId === event, hit.eventId);
+  await button.waitFor();
+  assert.equal(page.url(), original);
+  assert.equal(await page.locator('body').getAttribute('data-history-reading'), 'isolated');
+  assert.equal(await page.evaluate(() => history.length), length);
+});
+
+test('pi browser references still resolve after their bounded reading snapshot is evicted', { timeout: 45000 }, async (t) => {
+  const data = await fixture(t);
+  const server = await data.start();
+  const browser = await chromium.launch(); t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } });
+  await page.goto(server.origin);
+  await page.locator('[data-session-id="pi:recovery:label-a"]').click();
+  await page.locator('#layerSelect').selectOption('main');
+  const response = await page.request.get(`${server.origin}/api/sessions/pi%3Arecovery%3Alabel-a/timeline?layer=main&limit=150`);
+  const event = (await response.json()).events.find((item) => item.kind === 'command');
+  await page.locator(`#timeline .event[data-event-id="${event.id}"] .eventHeader`).click();
+  const link = page.locator('#detail [data-pi-entry-actions] a');
+  await link.waitFor(); const original = await link.getAttribute('href');
+  await link.click(); await page.waitForURL(original);
+  for (let i = 0; i < 41; i += 1) {
+    const before = page.url();
+    await page.locator('[data-pi-overview] [data-pi-entry]').filter({ hasText: i % 2 ? 'Failed attempt' : 'Successful attempt' }).evaluate((node) => node.click());
+    await page.waitForFunction((url) => location.href !== url, before);
+  }
+  const length = await page.evaluate(() => history.length);
+  await page.evaluate(() => history.go(-41));
+  await page.waitForFunction((event) => document.querySelector('.sessionItem.active')?.dataset.sessionId === 'pi:recovery:label-a'
+    && document.querySelector('#layerSelect')?.value === 'main' && document.querySelector('#timeline .event.selected')?.dataset.eventId === event, event.id);
+  assert.equal(page.url(), original);
+  assert.equal(await page.locator('dialog.piBranchChooser').count(), 0);
   assert.equal(await page.evaluate(() => history.length), length);
 });
 

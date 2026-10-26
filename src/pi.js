@@ -117,7 +117,9 @@ async function buildPiIndex({ sourceHome, repoRoot, signal, onProgress, onDiagno
       candidateBytes += document.acceptedBytes;
       candidates.push({ header: { id: document.header.id },
         acceptedSnapshot: { acceptedBytes: document.acceptedBytes, digest: document.digest, fileIdentity: document.fileIdentity },
-        sourceFile: path.relative(sessionsRoot, file).replace(/\\/g, '/') });
+        // Normalize only host separators: a POSIX backslash is part of the
+        // physical filename and must survive every later snapshot read.
+        sourceFile: path.relative(sessionsRoot, file).split(path.sep).join('/') });
     } catch (error) { report(error, file, diagnostics.add, signal); skippedFileCount++; }
   }
   // Duplicate physical session identity is ambiguous. Exclude both copies rather

@@ -266,7 +266,8 @@ function makeSession(document, sourceFile, leafId, selectedRows, invalidTree) {
       const onBranch = selectedRows.includes(target) && target?.line < row.line;
       session.logicalEvents.push(protocol(session, raw, 'pi_context_edit',
         `Context edit: ${entry.replacement === null ? 'omit' : 'replace content'} of ${string(entry.targetId)}${onBranch ? '' : ' (unresolved target)'}`, {
-          pi: { targetId: string(entry.targetId), targetOnBranch: onBranch, replacement: safe(entry.replacement ?? null),
+          // Reuse the cached display record's image/depth sanitization.
+          pi: { targetId: string(entry.targetId), targetOnBranch: onBranch, replacement: raw.parsed.replacement ?? null,
             text: 'This append-only record changes model context. The original transcript remains visible.' } }));
     } else if (entry.type === 'custom_message' || (entry.type === 'message' && message?.role === 'custom')) {
       const custom = entry.type === 'custom_message' ? entry : message;
