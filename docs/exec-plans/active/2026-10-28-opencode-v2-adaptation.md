@@ -1,6 +1,6 @@
 # OpenCode v2 适配整体实施计划
 
-状态：第 3 版评审稿，2026-10-28（Asia/Shanghai）。研究与计划修订已完成；下述产品实现、测试接线和兼容声明尚未完成。本轮只收紧验收契约，供 GPT Pro 和后续实施者复核，不增加架构层次。
+状态：实现跟踪版，2026-10-28（Asia/Shanghai）。基于第 3 版已评审契约推进；M0／M1／M2 的产品代码、fixture 与测试接线已落地，正在完成最终回归及独立审查。Linux 本地验收与未执行的平台／远程 CI 分开记录；尚未发布包含 OpenCode 的 Analyzer 版本。M4 保持后续范围。
 
 ## 1. 目标与总体决策
 
@@ -16,6 +16,7 @@
 | --- | --- |
 | Analyzer | v0.3.0-development，d8b787f54b4d0613732578cae1ead5bd858a35ea |
 | 研究工作分支 | research/opencode-v2；独立 worktree，未修改原 checkout |
+| 实现工作分支 | feat/opencode-v2-native；从研究分支承接，开发基线仍为上列 d8b787f |
 | OpenCode 实跑版本 | @opencode/cli@2.1.4；68bc26b7da1990ce10ffecfbc1e09eb13aa5d824 |
 | OpenCode 开发源码 | ab4d1f3ab1a05278b4d0392124b9e7f1c8131f17；仅静态检查，schema 已与稳定版不同 |
 | 实验运行环境 | Linux x64、Node 24.19.0；不代表已验证 Windows 或所有 Node 22 |
@@ -167,9 +168,9 @@ history.read.source 当前有意限定 Codex JSONL；OpenCode 首版可以继续
 
 ## 8. 交付证据与可复现性
 
-本次评审包包含更新报告、本计划、原 PoC、原脱敏样本/实测摘要，以及只读 SHM 合成实验的观察结果。旧实验摘要保留原义，不因计划修订改成“已实现”“已通过 CI”。
+此前第 3 版评审包包含更新报告、本计划、原 PoC、原脱敏样本/实测摘要，以及只读 SHM 合成实验的观察结果。旧实验摘要保留原义，不因后续产品实现改成当时“已实现”“已通过 CI”；本轮产品代码与测试以实现分支为准。
 
-后续在 M1/M2 补充不含凭据的采集脚本、可重建的最小数据库（DDL 与种子行）、确定性比较器、独立固定预期，以及分页响应或摘要对应关系和 fixture manifest。原始私人 DB 不是必须的交付物；可以通过专用合成项目和脱敏重建流程复现所声明的行为。新脚本重跑证明的是新一轮结果，不倒推为已经独立复现原实验。
+M1／M2 已加入 `test/helpers/opencode-fixture.js`、固定 DDL、`test/fixtures/opencode/provenance.json` 与三份最小化实录形态 fixture。存储测试独立比较原生 SQL 行、成员及顺序；mapper 与实录测试使用手写固定预期；集成测试分别验证索引、查询、Detail 和 Raw。实录 fixture 记录原工件 hash／selector 及脱敏方法，以合成 session／project 行和来源数组顺序重建 SQL；这不等于原私人数据库重放或完整原 API／SQL 实验的独立复现。普通测试不需要凭据、CLI、网络或模型。详见[fixture 依据](../../../test/fixtures/opencode/README.md)。
 
 现有 sqlite-probe.mjs 只记录计数、hash 和水位，不保存旧消息 payload；其 mutation 汇总未完整覆盖整会话删除/纯 metadata 变化，也没有生产级字段大小与生命周期管理。它可作诊断证据，不能直接承担 reader、快照仓库或完整失效契约。
 
@@ -189,7 +190,14 @@ history.read.source 当前有意限定 Codex JSONL；OpenCode 首版可以继续
 - 2026-10-27：完成固定版本源码研究、隔离安装、免费模型真实 case、SQLite PoC、API/SQL 对照及第三方 UI 静态研究。
 - 2026-10-28：核查外部建议；补充 export 过滤解释、project metadata 水位反例和只读 SHM 合成实验；修订实现顺序、快照生命周期及 CI 分层。
 - 2026-10-28，第 3 版小修：补充 WAL/目录权限矩阵、快照 ID 与三层完整性、预算失败的全有或全无发布语义；M0→M4 顺序及首版范围保持不变，未新增实验或产品测试。
-- 待执行：M0 至 M4。尚无 OpenCode 产品 adapter、相关产品测试通过记录或支持版本发布。
+- 2026-10-28：开始按 M0→M3 实施；并行建立原生 SQLite 捕获、纯 mapper、revision 资源所有权、CLI／浏览器来源入口及合成验收。新增[原生设计与兼容说明](../../design-docs/opencode-native-sessions.md)、产品规格及双语使用入口。此进度项不代表测试通过或版本发布；执行结果在完成验证后另行记录。
+- 2026-10-28：M0、M1、M2 的本轮实现和本地验收完成。版本、输入闭包、预算、诊断、权限及所有权决定写入[原生设计](../../design-docs/opencode-native-sessions.md)；纯 mapper、合成及最小化实录 fixture、只读捕获、revision 资源管理、查询／详情／Raw、更新／删除及失败刷新均已接通。分支 `feat/opencode-v2-native` 基于研究 HEAD `b09df3f54ff9c3b72d85f027d86fc8cabcc5b128`；核对时 `v0.3.0-development` 仍为 `d8b787f54b4d0613732578cae1ead5bd858a35ea`。
+- 最终 Linux 回归：Node 22.22.2 与 Node 24.19.0 的完整 Node 套件各 2088／2088 通过，无跳过。其后的 UNC 规范项目身份传递修正及新回归，在两个运行时分别重跑 adapter 集成套件，均 8／8 通过。原有 Codex 测试曾将两个并发文件打开的完成顺序当作 FIFO；现以独立 gate 验证排队次序，生产调度代码未改变。npm 12.0.2 安装包测试覆盖五种来源的 Timeline→Detail→Raw 和 history status→search→context→read→raw→open，全部通过；生成资产检查通过。
+- 独立静态审查及实测修复了原生 patch、shell signal、空文本 native compaction、长正文提示、附件内容投影，以及 WAL salt／rollback 尾部、staging 清理重试、非 STRICT 数值字段和 UNC 身份问题。存储套件 43／43、最小化实录套件 8／8 通过；审查与测试证据分开记录，最终拟提交 diff 的 SHA-256 与基线记录在提交消息中，不将本地检查称作远程 CI。
+- 真实案例复核：对原隔离数据库的 1 个项目、7 个会话、37 条消息逐行比较新 adapter 的 44 条 Raw 与 SQL，检查 87 个 Detail，全部通过。这是当前实现对既有案例的新一轮检查，不声称重放原先的 API／SQL 实验。已启动本地源码服务，索引成功、7 个会话、0 条来源诊断；系统 Chromium 中实际打开原生命令的 Timeline／Detail／Raw，再从全项目搜索跳转另一会话的命中内容，通过。
+- 2026-10-28，浏览器本地证据：Linux、Node 24.19.0、系统 Chromium 154；Playwright 自带 Chromium 下载受网络策略阻止，未修改产品依赖或绕过策略。全量执行 421 项，414 通过、7 失败；其中 4 项新增来源／文案预期已修正，最终受影响组合（4 项既有测试及 OpenCode 双视口）6／6 通过。余下 3 项在未修改的研究 HEAD 同样复现：系统策略拒绝 `data:` 导航、两项 native select 顶部几何断言差异；不能表述为全量浏览器通过。
+- OpenCode 浏览器覆盖 1440／390：来源选择、搜索、Timeline 内容、Detail、SQLite Raw locator；同 ID／seq／时间戳正文更新；失败刷新不发布候选、旧数据提示跨页面 reload 保留；成功刷新读新正文；整会话删除；旧持有 history revision 的 Raw 仍可读，跨 revision 引用明确拒绝。一次既有 home identity 测试中间复跑出现不同等待点的偶发超时；增加现有诊断 recorder 后，当前版及基线各 4 次单独执行、最终组合均通过，未声称已定位该偶发根因。
+- M3 的远程 CI、Windows 验证及 Playwright 标准浏览器矩阵仍待执行；本地执行记录不能替代这些门槛。M4 的上游兼容任务、HTTP／SSE、长期归档及性能扩展保持后续范围；计划继续保留在 active，尚无 OpenCode 支持版本发布。
 
 固定源码入口：
 

@@ -25,10 +25,10 @@ test('CLI defaults and server compatibility export', () => {
 test('canonical options preserve values and repeated options use the last value', () => {
   assert.deepEqual(parse(
     '--repo', 'old', '--repo', ' project ', '--source', 'claude-code',
-    '--codex-home', 'codex', '--claude-home', 'claude', '--dsh-home', 'dsh', '--pi-home', 'pi',
+    '--codex-home', 'codex', '--claude-home', 'claude', '--dsh-home', 'dsh', '--pi-home', 'pi', '--opencode-home', 'open code.db',
     '--port', '9000', '--host', '0.0.0.0', '--log-dir', 'logs',
   ), { repo: ' project ', source: 'claude-code', codexHome: 'codex',
-    claudeHome: 'claude', dshHome: 'dsh', piHome: 'pi', port: 9000, host: '0.0.0.0', logDir: 'logs', errors: [] });
+    claudeHome: 'claude', dshHome: 'dsh', piHome: 'pi', opencodeHome: 'open code.db', port: 9000, host: '0.0.0.0', logDir: 'logs', errors: [] });
 });
 
 test('aliases normalize long-option case, hyphens and underscores', () => {
@@ -39,6 +39,7 @@ test('aliases normalize long-option case, hyphens and underscores', () => {
     ['claudeHome', ['claudehome', 'claudepath', 'claudedir', 'claudedirectory']],
     ['dshHome', ['dshhome', 'dshpath', 'deepseekhome', 'deepseekharnesshome']],
     ['piHome', ['pihome', 'pipath', 'pidir', 'pidirectory']],
+    ['opencodeHome', ['opencodehome', 'opencodepath', 'opencodedir', 'opencodedatabase']],
     ['port', ['port']], ['host', ['host', 'hostname']], ['logDir', ['logdir']],
   ];
   for (const [field, aliases] of groups) {
@@ -59,11 +60,12 @@ test('aliases normalize long-option case, hyphens and underscores', () => {
 test('missing and blank values retain exact errors and following options', () => {
   const expected = [
     ['--repo', 'a repository path'],
-    ['--source', 'one of: codex, claude-code, deepseek-harness, pi'],
+    ['--source', 'one of: codex, claude-code, deepseek-harness, pi, opencode'],
     ['--codex-home', 'a Codex home path'],
     ['--claude-home', 'a Claude home path'],
     ['--dsh-home', 'a DeepSeek Harness sessions root'],
     ['--pi-home', 'a pi agent directory'],
+    ['--opencode-home', 'an OpenCode data directory or database path'],
     ['--port', 'an integer between 1 and 65535'],
     ['--host', 'a non-empty host name or IP address'],
     ['--log-dir', 'a directory path'],
@@ -98,11 +100,11 @@ test('unknown options consume only the following non-option and errors stay orde
 });
 
 test('source normalization and invalid sources preserve parsed value and errors', () => {
-  for (const source of ['codex', 'claude-code', 'deepseek-harness', 'pi']) {
+  for (const source of ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode']) {
     assert.deepEqual(parse('--source', ` ${source.toUpperCase()} `), { ...defaults(), source });
   }
   assert.deepEqual(parse('--source', 'UNKNOWN', '--source', 'codex'), {
-    ...defaults(), errors: ['Invalid value for --source: "UNKNOWN". Expected one of: codex, claude-code, deepseek-harness, pi.'],
+    ...defaults(), errors: ['Invalid value for --source: "UNKNOWN". Expected one of: codex, claude-code, deepseek-harness, pi, opencode.'],
   });
   assert.equal(parse('--source', 'UNKNOWN').source, 'unknown');
 });
@@ -115,6 +117,19 @@ test('pi source home is explicit and leaves environment/default resolution to it
   assert.equal(history.source, 'pi');
   assert.equal(history.piHome, '/agent');
   assert.match(formatHistoryHelp(), /--pi-home <path>/);
+});
+
+test('OpenCode roots pass through unchanged and default resolution stays in its adapter', () => {
+  assert.equal(Object.hasOwn(parse('--source', 'opencode'), 'opencodeHome'), false);
+  for (const sourceHome of ['/data/open code', '/data/opencode.db']) {
+    assert.equal(parse('--source', 'opencode', '--opencode-home', 'old', '--opencode-home', sourceHome).opencodeHome, sourceHome);
+    const { parseHistoryArgs, formatHistoryHelp } = require('../src/history-cli');
+    const history = parseHistoryArgs(['serve', '--repo', '/project', '--source', 'opencode', '--opencode-home', sourceHome]);
+    assert.equal(history.source, 'opencode');
+    assert.equal(history.opencodeHome, sourceHome);
+    assert.match(formatHistoryHelp(), /--opencode-home <path>/);
+    assert.match(formatHistoryHelp(), /pi\|opencode/);
+  }
 });
 
 test('port accepts integer numeric representations in range and preserves last valid port', () => {
@@ -135,15 +150,16 @@ test('formatHelp returns the exact public help without terminal output or traili
     "Session Analyzer",
     "",
     "Usage:",
-    "  session-analyzer [--repo <repo-path>] [--source <source>] [--codex-home <path>] [--claude-home <path>] [--dsh-home <path>] [--pi-home <path>] [--port <port>] [--host <host>] [--log-dir <path>]",
+    "  session-analyzer [--repo <repo-path>] [--source <source>] [--codex-home <path>] [--claude-home <path>] [--dsh-home <path>] [--pi-home <path>] [--opencode-home <path>] [--port <port>] [--host <host>] [--log-dir <path>]",
     "",
     "Options:",
     "  --repo <repo-path>     Repository to analyze. If omitted, select a project in the browser.",
-    "  --source <source>       Transcript source: codex, claude-code, deepseek-harness, or pi. Defaults to codex.",
+    "  --source <source>       Transcript source: codex, claude-code, deepseek-harness, pi, or opencode. Defaults to codex.",
     "  --codex-home <path>    Codex home directory. Defaults to ~/.codex.",
     "  --claude-home <path>   Claude home directory. Used only with --source claude-code. Defaults to ~/.claude.",
     "  --dsh-home <path>      DeepSeek Harness sessions persistence root. Used only with --source deepseek-harness. Defaults to ~/.dsh/sessions.",
     "  --pi-home <path>       pi agent directory containing sessions/. Used only with --source pi. Defaults to PI_CODING_AGENT_DIR or ~/.pi/agent.",
+    "  --opencode-home <path> OpenCode data directory or SQLite database. Used only with --source opencode. Defaults to OPENCODE_DB or the OpenCode XDG data directory.",
     "  --port <port>          Local server port. Must be an integer from 1 to 65535. Defaults to 17890.",
     "  --host <host>          Advanced: bind host. Defaults to 127.0.0.1.",
     "  --log-dir <path>       Write throttled indexing diagnostics as bounded JSONL logs.",
@@ -155,6 +171,7 @@ test('formatHelp returns the exact public help without terminal output or traili
     "  session-analyzer --source claude-code --repo C:\\path\\to\\project --claude-home C:\\Users\\you\\.claude",
     "  session-analyzer --source deepseek-harness --repo C:\\path\\to\\project --dsh-home C:\\Users\\you\\.dsh\\sessions",
     "  session-analyzer --source pi --repo C:\\path\\to\\project --pi-home C:\\Users\\you\\.pi\\agent",
+    "  session-analyzer --source opencode --repo /path/to/project --opencode-home /path/to/opencode.db",
     "",
     "Privacy:",
     "  The default host is 127.0.0.1. Binding to another host can expose transcript content",

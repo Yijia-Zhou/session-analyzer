@@ -45,6 +45,7 @@ const { createIndexDiagnostics } = require('./src/runtime-diagnostics');
 const { createLargeTranscriptHistoryWarning } = require('./src/runtime-capacity');
 const { queryPagination, requireQueryRevision } = require('./src/shared/query-pagination');
 const { withQueryStoreBuildScope } = require('./src/project-query-disk');
+const { withIndexResourceBuildScope } = require('./src/index-resources');
 const { readPiNavigation, createPiEntryReference, resolvePiEntryReference } = require('./src/pi-navigation');
 
 const MIME = {
@@ -56,10 +57,18 @@ const MIME = {
   '.svg': 'image/svg+xml',
 };
 
+const OPENCODE_PUBLIC_ERROR_CODES = new Set([
+  'OPENCODE_CAPTURE_LIMIT', 'OPENCODE_BUDGET_EXCEEDED', 'OPENCODE_DISK_FULL',
+  'OPENCODE_PERMISSION_DENIED', 'OPENCODE_DATABASE_BUSY', 'OPENCODE_DATABASE_INVALID',
+  'OPENCODE_DATABASE_NOT_FOUND', 'OPENCODE_SOURCE_UNREADABLE', 'OPENCODE_SOURCE_UNSUPPORTED',
+  'OPENCODE_SQLITE_UNAVAILABLE', 'OPENCODE_SCHEMA_UNSUPPORTED', 'OPENCODE_DATA_INVALID',
+  'OPENCODE_READONLY_VIOLATION', 'OPENCODE_INVALID_LIMIT', 'OPENCODE_PROJECT_INVALID',
+]);
 const PUBLIC_RUNTIME_ERROR_CODES = new Set([
   'MATERIALIZATION_BUSY',
   'DEEPSEEK_SOURCE_BUSY',
   'MATERIALIZATION_CONTRACT_VIOLATION',
+  ...OPENCODE_PUBLIC_ERROR_CODES,
 ]);
 
 function sendJson(res, status, payload) {
@@ -155,6 +164,14 @@ async function readJsonBody(req, limit = 64 * 1024) {
 function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
   const resolvedLocale = i18n.resolveLocale(locale);
   const query = queryForIndex(state.index);
+  const refreshJob = state.activeProjectJob;
+  const refreshFailure = refreshJob?.dataMayBeStale
+    && refreshJob.retainedIndexRevision === state.indexRevision
+    && sameProjectJobScope(state, refreshJob)
+    ? { jobId: refreshJob.id, status: refreshJob.status, error: refreshJob.error,
+      errorCode: refreshJob.errorCode || '', retainedIndexRevision: state.indexRevision,
+      dataMayBeStale: true }
+    : null;
   return {
     ...sourceConfigurationPayload(state),
     locale: resolvedLocale,
@@ -177,8 +194,17 @@ function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
     ...query.indexPresentation(state.index, { locale: resolvedLocale }),
     foldingProfiles: foldingProfiles.map((profile) => i18n.localizeProfile(profile, resolvedLocale)),
     projectSelected: true,
+    ...(refreshFailure ? { refreshFailure } : {}),
     ...(state.historyViewer ? { historyViewer: { fixedScope: true } } : {}),
   };
+}
+
+function sameProjectJobScope(state, job) {
+  return Boolean(state.index && state.revisionLease && !state.revisionLease.retirementController.signal.aborted
+    && job.activeSourceRevision === state.activeSourceRevision
+    && job.sourceKind === state.sourceKind
+    && normalizeFsPath(job.sourceHome) === normalizeFsPath(activeSourceHome(state))
+    && normalizeFsPath(job.repoRoot) === normalizeFsPath(state.index.repoRoot));
 }
 
 function activeProjectJob(state) {
@@ -242,6 +268,10 @@ function projectJobPayload(job) {
     buildMs: job.buildMs,
     error: job.error,
     errorCode: job.errorCode || '',
+    ...(['failed', 'cancelled'].includes(job.status) ? {
+      retainedIndexRevision: job.retainedIndexRevision || 0,
+      dataMayBeStale: job.dataMayBeStale === true,
+    } : {}),
     progress: job.progress,
   };
 }
@@ -621,7 +651,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   job.sourceHome = jobSourceHome;
   job.activeSourceRevision = state.activeSourceRevision || 0;
   const buildIndex = state.buildIndexOverride || ((context) => state.adapter.buildIndex(context));
-  job.promise = withQueryStoreBuildScope(() => Promise.resolve().then(() => buildIndex({
+  job.promise = withIndexResourceBuildScope(() => withQueryStoreBuildScope(() => Promise.resolve().then(() => buildIndex({
     repoRoot,
     sourceKind: jobSourceKind,
     sourceHome: jobSourceHome,
@@ -694,6 +724,10 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       errorCode: safeError.code || '',
     });
   }).then(async (committedIndex) => {
+    if (['failed', 'cancelled'].includes(job.status)) {
+      job.retainedIndexRevision = sameProjectJobScope(state, job) ? state.indexRevision : 0;
+      job.dataMayBeStale = job.retainedIndexRevision > 0;
+    }
     // Observability cannot change a settled job or invalidate its committed index.
     try {
       await state.onProjectJobSettled?.({
@@ -704,7 +738,7 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       // The consumer owns reporting failures in its optional callback.
     }
     return committedIndex;
-  }));
+  })));
 
   return job;
 }
@@ -1269,7 +1303,8 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       sendError(
         res,
         statusCode,
-        statusCode >= 500 && safeError.code !== 'DEEPSEEK_SOURCE_BUSY' ? 'Internal server error' : safeError.message,
+        statusCode >= 500 && safeError.code !== 'DEEPSEEK_SOURCE_BUSY'
+          && !OPENCODE_PUBLIC_ERROR_CODES.has(safeError.code) ? 'Internal server error' : safeError.message,
         details,
         statusCode < 500 || PUBLIC_RUNTIME_ERROR_CODES.has(safeError.code)
           ? safeError.code
@@ -1311,6 +1346,7 @@ async function main() {
     claudeHome: opts.claudeHome,
     dshHome: opts.dshHome,
     piHome: opts.piHome,
+    opencodeHome: opts.opencodeHome,
     repo: opts.repo,
     logDir: opts.logDir,
     onProjectJobSettled(job) {

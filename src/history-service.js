@@ -4,8 +4,11 @@ const { createHash, createHmac, randomBytes, timingSafeEqual } = require('node:c
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { requireSourceAdapter, materializeSessionForIndex, buildEventDetailForSession,
-  readIndexedRawRecord } = require('./source-adapters');
+  readIndexedRawRecord, validateIndexOwnershipForCommit } = require('./source-adapters');
 const { scanProjectQueryShard, disposeProjectQueryStore } = require('./project-query-store');
+const { withQueryStoreBuildScope } = require('./project-query-disk');
+const { hasIndexResources, retainIndexResources, withIndexResourceBuildScope,
+  withIndexResources, disposeIndexResources } = require('./index-resources');
 const { createSourceDiagnostics } = require('./source-diagnostics');
 const { classifyRetrievalArtifact, mayContainRetrievalArtifact, mayContainCodexRetrievalCall } = require('./history-artifacts');
 const { createHistoryPresentation, detailText } = require('./history-presentation');
@@ -75,8 +78,15 @@ async function createHistoryService(options = {}) {
   const diagnostics = createSourceDiagnostics();
   const sourceObservation = adapter.kind === 'codex' ? await createHistorySourceObservation({ sourceHome }) : null;
   const indexStartedAt = new Date().toISOString();
-  const index = await adapter.buildIndex({ repoRoot: options.repo, sourceHome,
-    onDiagnostic: (entry) => diagnostics.add(entry) });
+  const index = await withIndexResourceBuildScope(() => withQueryStoreBuildScope(async () => {
+    const candidate = await adapter.buildIndex({ repoRoot: options.repo, sourceHome,
+      onDiagnostic: (entry) => diagnostics.add(entry) });
+    if (hasIndexResources(candidate)) await validateIndexOwnershipForCommit(candidate);
+    return candidate;
+  }));
+  let releaseResources = () => {};
+  try {
+  releaseResources = retainIndexResources(index);
   const indexEndedAt = new Date().toISOString();
   if (sourceObservation) await sourceObservation.bindIndex(index, { startedAt: indexStartedAt, endedAt: indexEndedAt });
   const sourceRoot = index.sourceRoot || sourceHome;
@@ -626,15 +636,33 @@ async function createHistoryService(options = {}) {
       target: { sessionId: anchor.sessionId, layer: anchor.layer, eventId: anchor.eventId },
       excerpt: anchor.excerpt, context: window, targetVerified: true };
   }
-  return { execute, resolveEvidence,
+  function run(operation, args) {
+    if (closed) return operation(...args);
+    return withIndexResources(index, () => operation(...args));
+  }
+  return {
+    execute: (...args) => run(execute, args),
+    resolveEvidence: (...args) => run(resolveEvidence, args),
     createViewerServer() {
       if (closed) fail('CONTEXT_EXPIRED', 'The retrieval service is closed');
       return require('../server').createServer(index, 0, {
         [adapter.homeOption]: sourceHome, sessionPrewarm: false,
-        historyViewer: { resolve: (value) => resolveEvidence({ refs: [value] }) },
+        historyViewer: { resolve: (value) => run(resolveEvidence, [{ refs: [value] }]) },
       });
     },
-    close() { closed = true; presentation.clear(); disposeProjectQueryStore(index.projectQueryStore); } };
+    close() {
+      if (closed) return;
+      closed = true;
+      presentation.clear();
+      releaseResources();
+      if (!hasIndexResources(index)) disposeProjectQueryStore(index.projectQueryStore);
+    } };
+  } catch (error) {
+    releaseResources();
+    if (hasIndexResources(index)) await disposeIndexResources(index);
+    else disposeProjectQueryStore(index.projectQueryStore);
+    throw error;
+  }
 }
 
 module.exports = { createHistoryService };

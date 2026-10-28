@@ -6,6 +6,8 @@ const {
 } = require('./materialized-session-owner');
 const { cancelBoundedSessionPrewarm } = require('./session-prewarm');
 const { disposeProjectQueryStore } = require('./project-query-store');
+const { hasIndexResources, retainIndexResources, withIndexResources } = require('./index-resources');
+const resourceReleases = new WeakMap();
 
 function abortError(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
@@ -37,6 +39,7 @@ function createIndexRevisionLease(index, indexRevision, scheduler = createMateri
     retirementController: lease.retirementController,
     scheduler,
   });
+  resourceReleases.set(lease, retainIndexResources(index));
   return lease;
 }
 
@@ -55,6 +58,7 @@ function retireLease(lease) {
     cancelBoundedSessionPrewarm(lease);
     lease.materializedSessionOwner?.retire(error);
     lease.retirementController.abort(error);
+    resourceReleases.get(lease)?.();
   }
 }
 
@@ -67,7 +71,9 @@ function installIndexRevision(state, index) {
   state.indexRevision = nextRevision;
   state.revisionLease = lease;
   retireLease(previous);
-  if (previous?.index.projectQueryStore !== index.projectQueryStore) disposeProjectQueryStore(previous?.index.projectQueryStore);
+  if (previous?.index.projectQueryStore !== index.projectQueryStore && !hasIndexResources(previous?.index)) {
+    disposeProjectQueryStore(previous?.index.projectQueryStore);
+  }
   return lease;
 }
 
@@ -76,7 +82,7 @@ function clearIndexRevision(state, { dispose = true } = {}) {
   const previous = state.revisionLease;
   const nextRevision = (state.indexRevision || 0) + 1;
   retireLease(previous);
-  if (dispose) disposeProjectQueryStore(previous?.index.projectQueryStore);
+  if (dispose && !hasIndexResources(previous?.index)) disposeProjectQueryStore(previous?.index.projectQueryStore);
   state.index = null;
   state.indexRevision = nextRevision;
   state.revisionLease = null;
@@ -145,12 +151,12 @@ async function withIndexRevisionLease(state, callerSignal, operation) {
   const lease = captureIndexRevisionLease(state);
   const signal = joinedAbortSignal(callerSignal, lease.retirementController.signal);
   try {
-    const value = await operation({
+    const value = await withIndexResources(lease.index, () => operation({
       index: lease.index,
       indexRevision: lease.indexRevision,
       lease,
       signal,
-    });
+    }));
     assertIndexRevisionCurrent(state, lease, callerSignal);
     return { value, lease };
   } catch (error) {

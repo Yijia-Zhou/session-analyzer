@@ -94,6 +94,7 @@ function createDiskBuilder(helpers, options = {}) {
   const shareTextRanges = options.shareTextRanges === true;
   const cacheEntries = shareTextRanges ? cacheLimit('textRangeCacheEntries', TEXT_RANGE_CACHE_ENTRIES) : 0;
   const cacheBytes = shareTextRanges ? cacheLimit('textRangeCacheBytes', TEXT_RANGE_CACHE_BYTES) : 0;
+  const maxBytes = cacheLimit('maxBytes', Number.MAX_SAFE_INTEGER);
   let directory;
   let fd;
   try {
@@ -118,6 +119,11 @@ function createDiskBuilder(helpers, options = {}) {
   function checkpoint() { options.signal?.throwIfAborted(); stateFor(store); }
   function write(buffer) {
     checkpoint();
+    if (buffer.length > maxBytes - state.bytes) {
+      const error = new Error(`Query storage exceeds its byte budget (${maxBytes}); the candidate Index was not published.`);
+      error.code = 'PROJECT_QUERY_STORAGE_LIMIT';
+      throw error;
+    }
     const start = state.bytes;
     let done = 0;
     while (done < buffer.length) {

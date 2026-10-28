@@ -1,0 +1,533 @@
+{
+  "fixtureVersion": 1,
+  "kind": "minimized-sanitized-recorded-messages",
+  "producer": {
+    "package": "@opencode/cli",
+    "version": "2.1.4",
+    "repository": "https://github.com/anomalyco/opencode",
+    "sourceSha": "68bc26b7da1990ce10ffecfbc1e09eb13aa5d824"
+  },
+  "captureContext": "Controlled synthetic-project research using the real OpenCode 2.1.4 client and free models; no personal transcript.",
+  "sources": [
+    {
+      "artifact": "case07-after-compaction.json",
+      "sha256": "d93518196ee0c1f1e65313e092ffcff240c26078fc0e2288982cbbdcd6c67ab2",
+      "selector": "$[0,3,4,5,6,7,8,9]"
+    }
+  ],
+  "sanitization": [
+    "Message/tool/session IDs replaced with fixed fixture IDs.",
+    "All prompt, reasoning, response, summary, command, output and file-content strings replaced with fixed test text.",
+    "All file paths replaced; source session/project metadata omitted.",
+    "Opaque provider reasoning native payloads omitted; recorded block ordering and other field presence retained.",
+    "Timestamps shifted by a fixed offset per source session, preserving durations and relative ordering.",
+    "Only selected messages retained; source array indexes identify omissions."
+  ],
+  "reconstruction": "Reconstruct session_message from native message objects: id/type are relational columns; remaining fields become JSON data. seq is the original one-based array position. Session and project rows are synthetic helper scaffolding, not captured SQL.",
+  "cases": [
+    {
+      "name": "tools_compaction",
+      "sessionID": "ses_recorded_tools",
+      "messages": [
+        {
+          "sourceIndex": 0,
+          "message": {
+            "id": "msg_tools_0",
+            "time": {
+              "created": 1790848800000
+            },
+            "text": "RECORDED_TOOLS_REQUEST",
+            "files": [],
+            "type": "user"
+          }
+        },
+        {
+          "sourceIndex": 3,
+          "message": {
+            "id": "msg_tools_3",
+            "time": {
+              "created": 1790848803492,
+              "streamed": 1790848805501,
+              "completed": 1790848805619
+            },
+            "type": "assistant",
+            "agent": "build",
+            "model": {
+              "id": "cohere/north-mini-code:free",
+              "providerID": "openrouter",
+              "variant": "default"
+            },
+            "content": [
+              {
+                "type": "reasoning",
+                "text": "RECORDED_TOOLS_REASONING_3",
+                "time": {
+                  "created": 1790848804842,
+                  "completed": 1790848805495
+                }
+              },
+              {
+                "type": "tool",
+                "id": "call_tools_3_1",
+                "name": "shell",
+                "executed": false,
+                "state": {
+                  "status": "completed",
+                  "input": {
+                    "command": "python -m unittest"
+                  },
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "RECORDED_TOOLS_FAILED_3_0"
+                    },
+                    {
+                      "type": "text",
+                      "text": "RECORDED_TOOLS_FAILED_3_1"
+                    }
+                  ],
+                  "metadata": {
+                    "status": "completed",
+                    "truncated": false,
+                    "exit": 1
+                  }
+                },
+                "time": {
+                  "created": 1790848805445,
+                  "ran": 1790848805500,
+                  "completed": 1790848805616
+                }
+              }
+            ],
+            "finish": "tool-calls",
+            "rawFinish": "tool_call",
+            "cost": 0,
+            "tokens": {
+              "input": 4579,
+              "output": 24,
+              "reasoning": 96,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        },
+        {
+          "sourceIndex": 4,
+          "message": {
+            "id": "msg_tools_4",
+            "time": {
+              "created": 1790848805643,
+              "streamed": 1790848810136,
+              "completed": 1790848810144
+            },
+            "type": "assistant",
+            "agent": "build",
+            "model": {
+              "id": "cohere/north-mini-code:free",
+              "providerID": "openrouter",
+              "variant": "default"
+            },
+            "content": [
+              {
+                "type": "reasoning",
+                "text": "RECORDED_TOOLS_REASONING_4",
+                "time": {
+                  "created": 1790848806127,
+                  "completed": 1790848810126
+                }
+              },
+              {
+                "type": "tool",
+                "id": "call_tools_4_1",
+                "name": "edit",
+                "executed": false,
+                "state": {
+                  "status": "completed",
+                  "input": {
+                    "path": "src/example.py",
+                    "oldString": "return left - right",
+                    "newString": "return left + right"
+                  },
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "RECORDED_TOOLS_RESULT_4_0"
+                    }
+                  ],
+                  "metadata": {
+                    "files": [
+                      {
+                        "file": "src/example.py",
+                        "patch": "@@ -1 +1 @@\n-return left - right\n+return left + right\n",
+                        "status": "modified",
+                        "additions": 1,
+                        "deletions": 1
+                      }
+                    ],
+                    "truncated": false
+                  }
+                },
+                "time": {
+                  "created": 1790848807596,
+                  "ran": 1790848810134,
+                  "completed": 1790848810142
+                }
+              }
+            ],
+            "finish": "tool-calls",
+            "rawFinish": "tool_call",
+            "cost": 0,
+            "tokens": {
+              "input": 4796,
+              "output": 43,
+              "reasoning": 50,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        },
+        {
+          "sourceIndex": 5,
+          "message": {
+            "id": "msg_tools_5",
+            "time": {
+              "created": 1790848810165,
+              "streamed": 1790848810699,
+              "completed": 1790848810780
+            },
+            "type": "assistant",
+            "agent": "build",
+            "model": {
+              "id": "cohere/north-mini-code:free",
+              "providerID": "openrouter",
+              "variant": "default"
+            },
+            "content": [
+              {
+                "type": "reasoning",
+                "text": "RECORDED_TOOLS_REASONING_5",
+                "time": {
+                  "created": 1790848810520,
+                  "completed": 1790848810693
+                }
+              },
+              {
+                "type": "tool",
+                "id": "call_tools_5_1",
+                "name": "shell",
+                "executed": false,
+                "state": {
+                  "status": "completed",
+                  "input": {
+                    "command": "python -m unittest"
+                  },
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "RECORDED_TOOLS_RESULT_5_0"
+                    }
+                  ],
+                  "metadata": {
+                    "status": "completed",
+                    "truncated": false,
+                    "exit": 0
+                  }
+                },
+                "time": {
+                  "created": 1790848810631,
+                  "ran": 1790848810697,
+                  "completed": 1790848810776
+                }
+              }
+            ],
+            "finish": "tool-calls",
+            "rawFinish": "tool_call",
+            "cost": 0,
+            "tokens": {
+              "input": 4806,
+              "output": 10,
+              "reasoning": 20,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        },
+        {
+          "sourceIndex": 6,
+          "message": {
+            "id": "msg_tools_6",
+            "time": {
+              "created": 1790848810813,
+              "streamed": 1790848811649,
+              "completed": 1790848811651
+            },
+            "type": "assistant",
+            "agent": "build",
+            "model": {
+              "id": "cohere/north-mini-code:free",
+              "providerID": "openrouter",
+              "variant": "default"
+            },
+            "content": [
+              {
+                "type": "reasoning",
+                "text": "RECORDED_TOOLS_REASONING_6",
+                "time": {
+                  "created": 1790848811199,
+                  "completed": 1790848811644
+                }
+              },
+              {
+                "type": "text",
+                "text": "RECORDED_TOOLS_ANSWER"
+              }
+            ],
+            "finish": "stop",
+            "rawFinish": "complete",
+            "cost": 0,
+            "tokens": {
+              "input": 4850,
+              "output": 55,
+              "reasoning": 24,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        },
+        {
+          "sourceIndex": 7,
+          "message": {
+            "id": "msg_tools_7",
+            "time": {
+              "created": 1790848811654
+            },
+            "type": "idle",
+            "outcome": "succeeded"
+          }
+        },
+        {
+          "sourceIndex": 8,
+          "message": {
+            "type": "compaction",
+            "id": "msg_tools_8",
+            "time": {
+              "created": 1790849064622
+            },
+            "status": "completed",
+            "reason": "manual",
+            "model": {
+              "id": "cohere/north-mini-code:free",
+              "providerID": "openrouter",
+              "variant": "default"
+            },
+            "summary": "RECORDED_COMPACTION_SUMMARY",
+            "cost": 0,
+            "tokens": {
+              "input": 5458,
+              "output": 243,
+              "reasoning": 183,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        },
+        {
+          "sourceIndex": 9,
+          "message": {
+            "id": "msg_tools_9",
+            "time": {
+              "created": 1790849068000
+            },
+            "type": "idle",
+            "outcome": "succeeded"
+          }
+        }
+      ],
+      "sourceArtifact": "case07-after-compaction.json",
+      "expected": {
+        "main": [
+          [
+            "msg_tools_0",
+            "",
+            "user_message",
+            "",
+            ""
+          ],
+          [
+            "msg_tools_3",
+            "/content/0",
+            "reasoning",
+            "success",
+            ""
+          ],
+          [
+            "msg_tools_3",
+            "/content/1",
+            "command",
+            "failed",
+            "shell"
+          ],
+          [
+            "msg_tools_4",
+            "/content/0",
+            "reasoning",
+            "success",
+            ""
+          ],
+          [
+            "msg_tools_4",
+            "/content/1",
+            "patch",
+            "success",
+            "edit"
+          ],
+          [
+            "msg_tools_5",
+            "/content/0",
+            "reasoning",
+            "success",
+            ""
+          ],
+          [
+            "msg_tools_5",
+            "/content/1",
+            "command",
+            "success",
+            "shell"
+          ],
+          [
+            "msg_tools_6",
+            "/content/0",
+            "reasoning",
+            "success",
+            ""
+          ],
+          [
+            "msg_tools_6",
+            "/content/1",
+            "assistant_message",
+            "success",
+            ""
+          ],
+          [
+            "msg_tools_8",
+            "",
+            "compaction",
+            "success",
+            ""
+          ]
+        ],
+        "protocol": [
+          [
+            "",
+            "opencode_session",
+            ""
+          ],
+          [
+            "msg_tools_3",
+            "opencode_step_usage",
+            ""
+          ],
+          [
+            "msg_tools_4",
+            "opencode_step_usage",
+            ""
+          ],
+          [
+            "msg_tools_5",
+            "opencode_step_usage",
+            ""
+          ],
+          [
+            "msg_tools_6",
+            "opencode_step_usage",
+            ""
+          ],
+          [
+            "msg_tools_7",
+            "opencode_idle",
+            "success"
+          ],
+          [
+            "msg_tools_9",
+            "opencode_idle",
+            "success"
+          ]
+        ],
+        "counts": {
+          "turns": 2,
+          "messages": 2,
+          "reasoning": 4,
+          "toolCalls": 3,
+          "failedCommands": 1,
+          "patches": 1,
+          "compactions": 1,
+          "aborts": 0,
+          "errors": 0,
+          "protocol": 7
+        },
+        "queries": [
+          {
+            "q": "RECORDED_TOOLS_FAILED_3_0",
+            "layer": "main",
+            "eventCount": 1,
+            "messageID": "msg_tools_3",
+            "kind": "command"
+          },
+          {
+            "q": "RECORDED_COMPACTION_SUMMARY",
+            "layer": "main",
+            "eventCount": 1,
+            "messageID": "msg_tools_8",
+            "kind": "compaction"
+          }
+        ],
+        "tools": [
+          {
+            "messageID": "msg_tools_3",
+            "status": "failed",
+            "toolStatus": "completed",
+            "executed": false,
+            "exitCode": 1,
+            "durationMs": 116,
+            "output": "RECORDED_TOOLS_FAILED_3_0\nRECORDED_TOOLS_FAILED_3_1",
+            "files": []
+          },
+          {
+            "messageID": "msg_tools_4",
+            "status": "success",
+            "toolStatus": "completed",
+            "executed": false,
+            "exitCode": null,
+            "durationMs": 8,
+            "output": "RECORDED_TOOLS_RESULT_4_0",
+            "files": [
+              "src/example.py"
+            ]
+          },
+          {
+            "messageID": "msg_tools_5",
+            "status": "success",
+            "toolStatus": "completed",
+            "executed": false,
+            "exitCode": 0,
+            "durationMs": 79,
+            "output": "RECORDED_TOOLS_RESULT_5_0",
+            "files": []
+          }
+        ]
+      }
+    }
+  ],
+  "expectationOrigin": "Hand-authored canonical projection and query/detail facts, independent of the mapper; never generated from Analyzer output."
+}

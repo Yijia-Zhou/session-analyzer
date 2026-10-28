@@ -13,6 +13,7 @@ const {
   validateIndexOwnership,
 } = require('../src/source-adapters');
 const { strictClaudeIndexFromComplete } = require('./strict-claude-fixture');
+const { defaultOpenCodeHome } = require('../src/opencode-storage');
 
 const codexFixtureHome = path.join(__dirname, 'fixtures', 'codex-home');
 const codexFixtureRepo = 'G:\\vibe\\term-agent';
@@ -127,6 +128,8 @@ test('POST /api/source validates source, homes, body shape, and payload size', a
     JSON.stringify({ source: 'codex', codexHome: 123 }),
     JSON.stringify({ source: 'codex', claudeHome: '   ' }),
     JSON.stringify({ source: 'pi', piHome: '   ' }),
+    JSON.stringify({ source: 'opencode', opencodeHome: '   ' }),
+    JSON.stringify({ source: 'opencode', sourceConfigs: { opencode: { home: '' } } }),
     JSON.stringify({ source: 'pi', sourceConfigs: { pi: { home: '' } } }),
     JSON.stringify({ source: 'codex', sourceConfigs: { codex: '/not-an-object' } }),
     JSON.stringify({ source: 'codex', sourceConfigs: { codex: { home: '' } } }),
@@ -158,14 +161,16 @@ test('POST /api/source validates source, homes, body shape, and payload size', a
     'claude-code': { home: path.resolve(fixture.claudeHome, 'unused') },
     'deepseek-harness': { home: path.join(os.homedir(), '.dsh', 'sessions') },
     pi: { home: path.resolve(process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), '.pi', 'agent')) },
+    opencode: { home: path.resolve(defaultOpenCodeHome()) },
   });
   assert.deepEqual(state.json.details.sourceOptions, [
     { kind: 'codex', label: 'Codex', homeOption: 'codexHome', homeLabel: 'Codex home' },
     { kind: 'claude-code', label: 'Claude Code', homeOption: 'claudeHome', homeLabel: 'Claude home' },
     { kind: 'deepseek-harness', label: 'DeepSeek Harness', homeOption: 'dshHome', homeLabel: 'DeepSeek sessions root' },
     { kind: 'pi', label: 'pi', homeOption: 'piHome', homeLabel: 'pi agent directory' },
+    { kind: 'opencode', label: 'OpenCode', homeOption: 'opencodeHome', homeLabel: 'OpenCode data directory or SQLite database' },
   ]);
-  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi']);
+  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode']);
 });
 
 test('POST /api/source switches source and exposes unified configuration payloads', async (t) => {
@@ -183,7 +188,7 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(initialProjects.json.claudeHome, path.resolve(fixture.claudeHome, 'unused'));
   assert.equal(initialProjects.json.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
   assert.equal(initialProjects.json.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome, 'unused'));
-  assert.deepEqual(initialProjects.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi']);
+  assert.deepEqual(initialProjects.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode']);
   assert.ok(initialProjects.json.projects.some((project) => project.repoRoot === codexFixtureRepo));
 
   const switched = await requestJson(
@@ -198,7 +203,7 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(switched.json.claudeHome, path.resolve(fixture.claudeHome));
   assert.equal(switched.json.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
   assert.equal(switched.json.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome));
-  assert.deepEqual(switched.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi']);
+  assert.deepEqual(switched.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode']);
   assert.equal(switched.json.projectSelected, false);
 
   const state = await requestJson(base, '/api/state');
@@ -209,7 +214,7 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(state.json.details.claudeHome, path.resolve(fixture.claudeHome));
   assert.equal(state.json.details.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
   assert.equal(state.json.details.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome));
-  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi']);
+  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode']);
 
   const projects = await requestJson(base, '/api/projects');
   assert.equal(projects.status, 200);
@@ -689,7 +694,7 @@ test('source switch cancels the active job and never commits a stale index', asy
   assert.equal(runningState.json.sourceKind, 'codex');
   assert.equal(runningState.json.projectSelected, false);
   assert.equal(runningState.json.job.status, 'running');
-  assert.deepEqual(runningState.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi']);
+  assert.deepEqual(runningState.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode']);
 
   const switched = await requestJson(
     base,
