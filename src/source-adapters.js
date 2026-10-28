@@ -861,6 +861,7 @@ const claudeAdapter = {
       return claude.discoverClaudeProjects({
         claudeHome: context.sourceHome,
         signal: context.signal,
+        onDiagnostic: context.onDiagnostic,
       });
     },
     async buildIndex(context) {
