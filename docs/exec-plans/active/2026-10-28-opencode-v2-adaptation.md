@@ -198,6 +198,7 @@ M1／M2 已加入 `test/helpers/opencode-fixture.js`、固定 DDL、`test/fixtur
 - 2026-10-28，浏览器本地证据：Linux、Node 24.19.0、系统 Chromium 154；Playwright 自带 Chromium 下载受网络策略阻止，未修改产品依赖或绕过策略。全量执行 421 项，414 通过、7 失败；其中 4 项新增来源／文案预期已修正，最终受影响组合（4 项既有测试及 OpenCode 双视口）6／6 通过。余下 3 项在未修改的研究 HEAD 同样复现：系统策略拒绝 `data:` 导航、两项 native select 顶部几何断言差异；不能表述为全量浏览器通过。
 - OpenCode 浏览器覆盖 1440／390：来源选择、搜索、Timeline 内容、Detail、SQLite Raw locator；同 ID／seq／时间戳正文更新；失败刷新不发布候选、旧数据提示跨页面 reload 保留；成功刷新读新正文；整会话删除；旧持有 history revision 的 Raw 仍可读，跨 revision 引用明确拒绝。一次既有 home identity 测试中间复跑出现不同等待点的偶发超时；增加现有诊断 recorder 后，当前版及基线各 4 次单独执行、最终组合均通过，未声称已定位该偶发根因。
 - M3 的远程 CI、Windows 验证及 Playwright 标准浏览器矩阵仍待执行；本地执行记录不能替代这些门槛。M4 的上游兼容任务、HTTP／SSE、长期归档及性能扩展保持后续范围；计划继续保留在 active，尚无 OpenCode 支持版本发布。
+- 2026-10-28：已创建面向 `v0.3.0-development` 的 [Draft PR #101](https://github.com/Yijia-Zhou/session-analyzer/pull/101)。初次推送被 GitHub 邮箱隐私保护拒绝后，仅以账户 noreply 邮箱重建四个提交的元数据；文件树、消息及时间保持一致，原提交本地保留。远端实现 HEAD 为 `a16af6f878f593280800f295836d2d87e1afbd75`，内容等同原本地 `5cff4ad`。首次 [CI 40692422034](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/40692422034) 的浏览器任务在安装阶段报告 Ubuntu 26.04 不受 Playwright 1.60.0 支持，测试未启动；浏览器 runner 改为受支持的 Ubuntu 24.04，保留完整门槛，结果待新一轮 CI 验证。
 
 固定源码入口：
 
