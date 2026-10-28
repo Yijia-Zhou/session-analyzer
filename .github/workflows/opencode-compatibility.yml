@@ -1,0 +1,85 @@
+name: OpenCode compatibility
+
+# Deliberately separate from PR CI. Add scheduling only after manual evidence
+# has been reviewed; discovering a release never changes supported profiles.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_version:
+        description: 'Optional exact stable OpenCode version to compare with 2.1.4 (no latest/ranges)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Validate candidate version
+        env:
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+        run: node -e 'if (process.env.CANDIDATE_VERSION) require("./scripts/lib/opencode-compatibility").version(process.env.CANDIDATE_VERSION)'
+      - name: Pin npm release toolchain
+        working-directory: ${{ runner.temp }}
+        run: npm install --global npm@12.0.2 --ignore-scripts --registry=https://registry.npmjs.org/
+      - run: npm ci --strict-allow-scripts
+      - name: Check fixed baseline and optional candidate
+        env:
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          REPORT_ROOT: ${{ github.workspace }}/output/opencode-compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$REPORT_ROOT"
+          probe_version() {
+            local probe_version="$1"
+            local report_name="$2"
+            local producer_root="$RUNNER_TEMP/opencode-producer-$report_name"
+            local source_root="$RUNNER_TEMP/opencode-source-$report_name"
+            git init "$source_root"
+            git -C "$source_root" fetch --depth=1 https://github.com/anomalyco/opencode.git "refs/tags/v$probe_version:refs/tags/v$probe_version"
+            # The platform package contains the executable. No installer scripts
+            # or provider credentials are needed to run this bounded probe.
+            (cd "$RUNNER_TEMP" && npm install --prefix "$producer_root" --ignore-scripts --no-audit --no-fund --package-lock=false --registry=https://registry.npmjs.org/ "@opencode/cli-linux-x64-baseline@$probe_version")
+            local baseline_args=()
+            if [ "$report_name" = candidate ]; then
+              baseline_args=(--baseline-report "$REPORT_ROOT/baseline/report.json")
+            fi
+            node scripts/opencode-compatibility.js --version "$probe_version" \
+              --binary "$producer_root/node_modules/@opencode/cli-linux-x64-baseline/bin/opencode" \
+              --source-checkout "$source_root" --output "$REPORT_ROOT/$report_name" "${baseline_args[@]}"
+          }
+          probe_version 2.1.4 baseline
+          if [ -n "$CANDIDATE_VERSION" ]; then
+            probe_version "$CANDIDATE_VERSION" candidate
+          fi
+      - name: Publish bounded report summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          for report in output/opencode-compatibility/baseline/report.md output/opencode-compatibility/candidate/report.md; do
+            if [ -f "$report" ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+          done
+      - name: Upload reports only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: opencode-compatibility-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            output/opencode-compatibility/baseline/report.json
+            output/opencode-compatibility/baseline/report.md
+            output/opencode-compatibility/candidate/report.json
+            output/opencode-compatibility/candidate/report.md
+          if-no-files-found: warn
+          retention-days: 14

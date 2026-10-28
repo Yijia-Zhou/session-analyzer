@@ -4,7 +4,7 @@
 
 - Owner: repository maintainers / 负责人：仓库维护者
 - Status: accepted / 状态：已接受
-- Last updated: 2026-08-11 / 最近更新：2026-08-11
+- Last updated: 2026-10-28 / 最近更新：2026-10-28
 - Related design docs: / 相关设计文档：
   - `docs/design-docs/logical-event-timeline.md`
   - `docs/design-docs/codex-protocol-event-coverage.md`
@@ -44,18 +44,30 @@ Observed Codex transcript fixtures should default to repo-local synthetic fixtur
 
 ## Review workflow / 审查流程
 
+Route by source family before choosing a schema or coverage matrix. This is the common decision process; source-specific probes supply evidence to it. / 先按来源选择 schema 与覆盖矩阵。本手册是共用决策流程，来源专属探针向它提供证据。
+
+| Source / 来源 | Authority and coverage / 依据与覆盖 |
+| --- | --- |
+| Codex | [Protocol coverage](codex-protocol-event-coverage.md), pinned producer/serde/persistence policy and qualified fixtures / 协议覆盖、固定 producer／serde／持久化策略与合格 fixture |
+| OpenCode | [Compatibility maintenance](opencode-compatibility-maintenance.md), pinned SQL/migrations/projector/message types and isolated producer probes / 兼容维护、固定 SQL／迁移／projector／消息类型与隔离 producer 探针 |
+| Other accepted adapters / 其他已接纳 adapter | Source-specific evidence linked from [adapter design](transcript-source-adapters.md); another source's schema is not authority / 按 adapter 设计关联的来源专属依据；其他来源的 schema 不构成权威 |
+
 1. Identify the source family and trust level before reading fields. For v0.1 parser decisions, keep Codex sources separate from adapter-reference sources, and keep an explicitly accepted Claude target separate from both the local observation that motivated it and the committed synthetic proof. / 先识别 source family 和信任等级，再阅读字段。对于 v0.1 parser 决策，要把 Codex 来源与 adapter 参考来源分开；明确接受的 Claude target 还必须与触发实现的本地观察、以及提交的合成证明相互区分。
-2. Compare the source against `docs/design-docs/codex-protocol-event-coverage.md`, including its coverage matrix. / 将来源与 `docs/design-docs/codex-protocol-event-coverage.md` 对比，包括其中的覆盖矩阵。
+2. Compare the pinned source against its routed coverage matrix. Separate source review, synthetic reader tests, imported synthetic messages and actual writer captures; runtime/API visibility alone does not prove persistence. / 将固定来源与对应覆盖矩阵比较。区分源码审查、合成 reader 测试、导入合成消息与真实 writer 采集；runtime／API 可见本身不证明持久化。
 3. Classify the result using the decision tiers below. / 使用下面的决策分层对结果分类。
 4. Record fixture gaps as TODOs unless a minimized, sanitized fixture is already available. / 除非已有最小化、脱敏后的 fixture，否则将 fixture 缺口记录为 TODO。
 5. Propose parser behavior only when the product semantics justify it. Add focused fixtures before parser changes in the follow-up implementation. / 只有产品语义足以证明需要时，才提出 parser 行为变更。后续实现 parser 变更前应先添加聚焦 fixture。
 6. Update bilingual docs together. Protocol coverage belongs in `codex-protocol-event-coverage.md`; model changes belong in `logical-event-timeline.md`; user-visible behavior changes belong in the product spec; intentional gaps belong in `tech-debt-tracker.md`. / 双语文档要同步更新。协议覆盖写入 `codex-protocol-event-coverage.md`；模型变化写入 `logical-event-timeline.md`；用户可见行为变化写入产品规格；有意保留的缺口写入 `tech-debt-tracker.md`。
 
+For native databases, review storage compatibility before message semantics: table/column/key/index layout, migrations and external payload dependencies, ordering and update/delete behavior, project/session membership, concurrent reads, and snapshot-bound Raw locators. Unknown messages inside a readable profile may retain Protocol/Raw fallback; an unknown storage layout must produce an unsupported-source diagnostic, never a successful empty index. / 原生数据库先审查存储兼容，再审查消息语义：表／列／键／索引、迁移与外部正文依赖、排序及更新／删除、项目／会话成员、并发读取与绑定快照的 Raw locator。可读 profile 中的未知消息可保留 Protocol／Raw；未知存储布局必须明确诊断不支持，不能返回成功的空索引。
+
+A fixed-version replay proves the baseline remains reproducible. Upgrade detection requires a separately pinned candidate and a baseline/candidate comparison with the same Analyzer and probe. A mutable `latest` label is only a discovery hint. Source/hash drift requests review; it does not by itself prove a behavior regression or authorize accepting the candidate. Ordinary PR CI uses fixed fixtures; upstream installation belongs to an explicitly invoked compatibility task. / 固定版本复跑证明基线仍可复现。升级探测需要另行固定候选版本，并使用同一 Analyzer 与探针比较基线／候选；可变 `latest` 标签仅用于发现。源码／hash 变化要求审查，本身不证明行为回归，也不授权接纳候选。普通 PR CI 使用固定 fixture，上游安装归属显式运行的兼容任务。
+
 ## Decision tiers / 决策分层
 
-- `docs-only`: Source wording, comments, or documentation changed, but observed Codex transcripts and parser output are unaffected. Update docs if the change clarifies maintenance guidance. / `docs-only`：来源措辞、注释或文档发生变化，但已观察 Codex transcript 和 parser 输出不受影响。如变更能澄清维护指导，则更新文档。
+- `docs-only`: Source wording, comments, or documentation changed, but observed source records and adapter output are unaffected. Update docs if the change clarifies maintenance guidance. / `docs-only`：来源措辞、注释或文档发生变化，但已观察来源记录和 adapter 输出不受影响。如变更能澄清维护指导，则更新文档。
 - `fixture TODO / coverage update`: A new event shape, field, or storage shape is observed or suspected, but sample quality, frequency, or product semantics are insufficient for parser behavior. Record the gap and desired fixture shape. / `fixture TODO / coverage update`：观察到或怀疑存在新的 event shape、字段或存储形态，但样本质量、出现频率或产品语义不足以支持 parser 行为。记录缺口和期望 fixture 形态。
-- `parser behavior change proposal`: A trusted Codex source and fixture-quality evidence show that behavior should change for layer placement, kind/subtype, severity, grouping, detail rendering, search/filter, metrics, or raw traceability. This is a proposal for follow-up implementation, not an automatic edit. / `parser behavior change proposal`：可信 Codex 来源和达到 fixture 质量的依据表明，layer 归属、kind/subtype、severity、grouping、detail rendering、search/filter、metrics 或 raw traceability 应该改变。这是后续实现提案，不是自动编辑。
+- `parser behavior change proposal`: Trusted evidence for the selected source family and fixture-quality examples justify changes to storage reading, layer placement, kind/subtype, severity, grouping, detail rendering, search/filter, metrics, or raw traceability. This is a proposal for follow-up implementation, not an automatic edit. / `parser behavior change proposal`：所选来源的可信依据和达到 fixture 质量的样例证明，需要改变存储读取、layer 归属、kind/subtype、severity、grouping、detail rendering、search/filter、metrics 或 raw traceability。这是后续实现提案，不是自动编辑。
 
 ## Review output template / 审查输出模板
 
@@ -70,6 +82,9 @@ Source reviewed:
 - Source URL or local path:
 - Trust level:
 - Schema area:
+- Evidence type: source review / synthetic reader / imported synthetic / actual writer:
+- Baseline and candidate identities; Analyzer/probe revision:
+- Executed checks, unrun checks and coverage gaps:
 
 Observed change:
 - New / changed / removed field:
@@ -78,6 +93,7 @@ Observed change:
 
 Impact assessment:
 - Raw event:
+- Storage layout / ordering / updates / deletion / snapshot identity:
 - Logical event:
 - Detail panel:
 - Folding:
@@ -98,7 +114,7 @@ Before proposing parser behavior, confirm:
 提出 parser 行为前，确认：
 
 - The source is a current Codex authority or an explicitly accepted adapter implementation target. / 该来源是当前 Codex 权威来源，或是已明确接受的 adapter 实现目标。
-- Unknown rows would remain visible through protocol/raw fallback if no behavior change is made. / 如果不改变行为，未知行仍会通过 protocol/raw fallback 可见。
+- Unknown messages in a readable storage profile remain visible through Protocol/Raw fallback; unsupported storage has an explicit diagnostic. / 可读存储 profile 中的未知消息经 Protocol／Raw 保留；不支持的存储布局有明确诊断。
 - The change preserves raw refs and source locators. / 该变更保留 raw refs 和 source locator。
 - Machine identifiers remain stable and unlocalized. / 机器标识保持稳定且不被本地化。
 - Fixture data is synthetic or strongly minimized and sanitized. / fixture 数据为合成数据，或经过强最小化与脱敏。

@@ -89,6 +89,8 @@ Temporary snapshots are not a permanent archive. Quota pressure must not remove 
 
 ## Validation and deferred work / 验证与后续范围
 
+The [compatibility maintenance matrix and probe](opencode-compatibility-maintenance.md) provides isolated real-producer checks and pinned candidate comparisons under the common schema runbook. It is a maintenance tool outside the runtime/package dependency path. / 兼容维护矩阵与探针按共用 schema 手册提供隔离真实 producer 检查及固定候选比较，属于运行时／安装包依赖路径之外的维护工具。
+
 The implementation plan records executed checks separately from planned acceptance. The target suite covers pure mapping, synthetic SQLite/WAL and mutation cases, snapshot lifecycle, browser reading and installed-package use without OpenCode. Platform/runtime compatibility is claimed only for executed combinations; a Linux Node 24 pass does not prove Windows or all Node 22 releases. / 实施计划区分已执行检查与计划验收。目标测试覆盖纯映射、合成 SQLite／WAL 与变更场景、快照生命周期、浏览器阅读和未安装 OpenCode 时的安装包使用。仅对实际执行的组合声明平台／运行时兼容；Linux Node 24 通过不证明 Windows 或所有 Node 22 版本通过。
 
 HTTP/SDK, SSE, complete export-import UI, dev blob layouts, long-term historical archives and incremental performance optimization remain separate follow-ups. Export is useful fixture evidence but filters some unfinished and interrupted messages; daily CI does not generate it by running upstream. The direct history.read.source file/line API remains Codex-specific; OpenCode uses returned evidence references and typed Raw locators. / HTTP／SDK、SSE、完整 export 导入 UI、dev blob 布局、长期历史归档及增量性能优化保持独立后续工作。Export 可作为 fixture 依据，但会过滤部分未完成及中断消息；日常 CI 不运行上游来生成它。history.read.source 文件／行接口继续限定 Codex；OpenCode 使用返回的依据引用和类型化 Raw locator。

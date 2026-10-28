@@ -200,6 +200,9 @@ M1／M2 已加入 `test/helpers/opencode-fixture.js`、固定 DDL、`test/fixtur
 - M3 的远程 CI、Windows 验证及 Playwright 标准浏览器矩阵仍待执行；本地执行记录不能替代这些门槛。M4 的上游兼容任务、HTTP／SSE、长期归档及性能扩展保持后续范围；计划继续保留在 active，尚无 OpenCode 支持版本发布。
 - 2026-10-28：已创建面向 `v0.3.0-development` 的 [Draft PR #101](https://github.com/Yijia-Zhou/session-analyzer/pull/101)。初次推送被 GitHub 邮箱隐私保护拒绝后，仅以账户 noreply 邮箱重建四个提交的元数据；文件树、消息及时间保持一致，原提交本地保留。远端实现 HEAD 为 `a16af6f878f593280800f295836d2d87e1afbd75`，内容等同原本地 `5cff4ad`。首次 [CI 40692422034](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/40692422034) 的浏览器任务在安装阶段报告 Ubuntu 26.04 不受 Playwright 1.60.0 支持，测试未启动；浏览器 runner 改为受支持的 Ubuntu 24.04，保留完整门槛，结果待新一轮 CI 验证。
 - 首轮远程结果：Linux Node 22／24 各 2089／2089 通过，Node 24 顺序阶段覆盖量测通过；Linux／Windows 安装包覆盖五种来源通过。Windows Node 24 为 2083 通过、1 失败、5 项平台跳过：数据库替换测试的 replacement 连接在 fixture 删除临时目录之后才关闭，触发 `EBUSY`。测试改用局部 `try/finally` 在目录清理前关闭连接，保持数据库身份断言；修复后的 Windows 结果仍需 CI 确认。
+- M3 后续结果：提交 `3ab1c85b000566fe2073eb286185f691b52450dc` 的 [CI 40693487532](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/40693487532) 全部通过。Ubuntu Node 22.23.3／24.22.1 各 2089 项通过；Windows Node 24.22.1 为 2084 通过、5 项有意平台跳过；双平台五来源安装包通过；Ubuntu 24.04 的 Playwright Chromium 148.0.7778.96 浏览器 421／421 通过。此前待执行及失败条目为历史检查点，现已补齐该矩阵的 M3 门槛；未扩展为 Windows ACL、macOS 或其他浏览器的兼容声明。
+- M4 维护部分开始实施：独立分支 `feat/opencode-compatibility` 基于上述 M3 提交，复用 schema runbook，补充 [OpenCode 兼容矩阵与运行说明](../../design-docs/opencode-compatibility-maintenance.md)、独立手动 workflow、隔离 producer 探针和离线契约测试。普通 PR CI 不安装上游；定时调度、产品 API／SSE、导入 UI、长期归档及性能扩展保持后续范围。
+- M4 维护实测：固定 2.1.4 的真实进程十项检查通过，独立重复运行比较一致；候选 2.2.0 固定到 `1097e2668b1e08ad63bdf0b1c4860b9bc01e420c`，在新建库中发现 `blob`／`blob_ref` 布局，adapter 明确返回 `OPENCODE_SCHEMA_UNSUPPORTED`，后续检查未运行。该结果触发独立存储适配评审，不扩大支持声明。本轮交付维护工具与手动入口，M4 的可选产品扩展和定时维护仍保留后续范围。
 
 固定源码入口：
 
