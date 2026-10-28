@@ -134,10 +134,11 @@ test('database replacement changes source identity even for identical rows', asy
   f.close();
   await fsp.rename(f.dbPath, f.dbPath + '.old');
   const replacement = createOpenCodeFixture({ dbPath: f.dbPath, repoRoot: f.repoRoot });
-  t.after(() => replacement.close());
-  const second = await capture(t, f);
-  assert.notEqual(first.source.identity, second.source.identity);
-  assert.notEqual(first.sessions[0].snapshotId, second.sessions[0].snapshotId);
+  try {
+    const second = await capture(t, f);
+    assert.notEqual(first.source.identity, second.source.identity);
+    assert.notEqual(first.sessions[0].snapshotId, second.sessions[0].snapshotId);
+  } finally { replacement.close(); }
 });
 
 test('unknown or incomplete schemas are diagnosed and leave no candidate snapshot', async t => {
