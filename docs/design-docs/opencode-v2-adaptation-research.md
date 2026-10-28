@@ -1,14 +1,16 @@
 # OpenCode v2 接入 Session Analyzer：源码与实测研究
 
-研究日期：2026-10-27（Asia/Shanghai）。本文是适配可行性研究与独立只读 PoC，**不是已完成的第五个 source adapter**，不包含产品接线、PR 或发布；只在研究分支归档文档。
+研究日期：2026-10-27；计划修订：2026-10-28（Asia/Shanghai）。本文是适配可行性研究与独立只读 PoC，**不是已完成的第五个 source adapter**，不包含产品接线、PR 或发布；只在研究分支归档文档。
 
 ## 结论
 
-**可行，而且不用把 SQLite 伪装成 JSONL。推荐本地只读 SQLite 作为主要入口，统一 OpenCode v2 消息映射；官方 export 用于第一条导入验证路径，HTTP/SDK 作为已有 server/远程场景的第二读取后端，SSE 作为可选实时补充。**
+**可行，而且不用把 SQLite 伪装成 JSONL。推荐本地只读 SQLite 作为主要入口，先用多来源、版本化样本验证统一 mapper；export 只作为其中一种证据及可选导入功能，HTTP/SDK 用于后续已有 server/远程场景，SSE 作为可选实时补充。产品读取和日常 CI 不依赖运行 OpenCode。**
 
 SQLite 并非最难的部分。真正需要设计的是：可变消息行的快照一致性、索引与详情之间的版本绑定、回退删除、fork 的复制前缀，以及没有保存下来的历史状态。Session Analyzer 已有只读 SQLite 使用经验，Raw 与 Logical 的主要接口也已和 JSONL 解耦；需要补齐的是数据库来源的 materialization dependency。
 
 成熟 UI 更偏向 API，是因为它们本身就是运行中 OpenCode server 的客户端；Analyzer 的离线、只读、本地历史分析定位，使 SQLite 更适合默认入口。这两种结论并不矛盾。
+
+配套整体实施计划：docs/exec-plans/active/2026-10-28-opencode-v2-adaptation.md（交付包内为 implementation-plan.md）。本轮修订把一致性、删除和快照生命周期前移为首版交付条件，并明确日常 CI 与上游兼容任务的边界；尚未实施产品 adapter。
 
 ## 1. 固定研究基线：避免选错“v2”
 
@@ -102,7 +104,7 @@ SQLite 并非最难的部分。真正需要设计的是：可变消息行的快�
 | --- | --- | --- | --- |
 | 原生 SQLite 只读 adapter | 离线、自动发现历史、不要求 server；保留投影和数据库关系 | schema/legacy 兼容、WAL、原地更新/删除、一致性快照 | **主要方案** |
 | HTTP / `@opencode/client` | 官方解码；兼容转换、媒体 hydrate 由上游负责；支持远程 | 需要已有认证 server；分页不是固定快照；版本协议仍要 pin | 第二读取后端 |
-| 官方 export JSON | `{info,messages}` 易导入、可复现、很适合验证 mapper | 过滤未完成 assistant/shell/compaction；手工导出不能自动索引全库；experimental 路由 | 第一个垂直切片与手工入口 |
+| 官方 export JSON | `{info,messages}` 易保存为固定版本样本，可验证部分 mapper 语义 | 过滤未完成 assistant/shell/compaction；中断停止后也可能缺失；现场生成依赖 OpenCode；experimental 路由 | 多来源 fixture 之一；完整导入功能按需增加 |
 | durable event log | 已启用 persist 时提供事件和 seq，可 replay | 默认 CLI 不持久化 payload；序号 gap 可合法；delta/progress 仍是 ephemeral | 仅明确支持的实例增强 |
 | 插件/sidecar 自记 JSONL | 可记录从安装后发生的细粒度事件 | 无历史回填、writer/插件耦合、丢包恢复与去重复杂，隐私/磁盘开销 | 暂不作为默认方案 |
 
@@ -115,9 +117,9 @@ SQLite 并非最难的部分。真正需要设计的是：可变消息行的快�
 - `/api/experimental/session/:id/log?after=N&follow=true` 是另一条 durable log API。只有确证实例启用持久化才讨论历史 replay；不能因存在此路由就假设默认可用。
 - text/reasoning/tool-input delta、tool progress 等是 ephemeral。SQLite 只反映 durable 边界，最终文本从 ended 事件写入。即便启用 event persist，也不能保证逐 token 重放。
 - 默认 `Bus.configured` 的 persist=false；普通 CLI 未传 events.persist。本次 DB 的 event=0 实测与源码一致。
-- 官方 export 会过滤运行中的消息；本次 running API=2、export=1 已复现。export 的 API 外层有 `{data:{info,messages}}`，应明确解包层级，不猜旧版格式。
+- 官方 export 按 isSettled 过滤：assistant 要求 time.completed 存在；shell/compaction 排除 running。过滤不限于当前仍在运行的会话：case01 最终已 interrupted/idle，assistant 仍缺 completed。本次 running API=2、export=1 已实测；不能假设停止后导出就一定完整。export 的 API 外层有 `{data:{info,messages}}`，应明确解包层级。
 
-源码：[Bus](https://github.com/anomalyco/opencode/blob/68bc26b7da1990ce10ffecfbc1e09eb13aa5d824/packages/core/src/bus.ts#L208)、[SSE 契约](https://github.com/anomalyco/opencode/blob/68bc26b7da1990ce10ffecfbc1e09eb13aa5d824/packages/protocol/src/groups/event.ts#L72)、[message 分页](https://github.com/anomalyco/opencode/blob/68bc26b7da1990ce10ffecfbc1e09eb13aa5d824/packages/server/src/handlers/message.ts#L30)、[export 过滤](https://github.com/anomalyco/opencode/blob/68bc26b7da1990ce10ffecfbc1e09eb13aa5d824/packages/core/src/session/transfer.ts#L56)。
+源码：[Bus](https://github.com/anomalyco/opencode/blob/68bc26b7da1990ce10ffecfbc1e09eb13aa5d824/packages/core/src/bus.ts#L208)、[SSE 契约](https://github.com/anomalyco/opencode/blob/68bc26b7da1990ce10ffecfbc1e09eb13aa5d824/packages/protocol/src/groups/event.ts#L44)、[message 分页](https://github.com/anomalyco/opencode/blob/68bc26b7da1990ce10ffecfbc1e09eb13aa5d824/packages/server/src/handlers/message.ts#L30)、[export 过滤](https://github.com/anomalyco/opencode/blob/68bc26b7da1990ce10ffecfbc1e09eb13aa5d824/packages/core/src/session/transfer.ts#L56)。
 
 ## 5. 成熟自定义 UI：可以借鉴什么
 
@@ -143,10 +145,10 @@ OpenCodeUI 在 SSE 重连成功后触发 HTTP 补偿读取；text.ended/reasonin
 | `src/codex-current-rollout.js:58` | 已用 node:sqlite 只读、query_only、busy_timeout、BEGIN 读取 Codex 元数据 | 复用安全模式，不加 better-sqlite3 依赖；OpenCode 正文另做 reader |
 | `src/source-adapter-contract.js:3`、`src/pi.js:96` | source adapter 与 indexed-materialized-v1 生命周期已存在 | 新增 opencode adapter，复用 discovery/index/materialize/detail/raw/query 边界 |
 | `src/canonical-contract.js:758`、`:974` | Raw/rawRefs/sourceLocator 与 Logical 大体来源中立 | typed SQLite locator：DB identity、table allowlist、session/message PK、JSON pointer、snapshotId；不造行号 |
-| `src/canonical-contract.js:550` | dependency 只支持 file/directory 及文件策略 | MVP 用真正不可变的选中会话快照文件 + file/exact；长期加 database/row-set snapshot 类型 |
+| `src/canonical-contract.js:550` | dependency 只支持 file/directory 及文件策略 | MVP 为选定项目中已索引的会话封存原生快照，复用 file/exact；按需物化；数据库 dependency 类型以后按需评估 |
 | `src/source-adapters.js:1392` | 物化会验证 snapshot 与 queryProjectionDigest | 固定快照物化，或源变化时报 stale；不把新正文塞进旧索引 |
 | `src/project-query-store.js:473`、`src/session-query.js:885` | 紧凑索引、共享查询及结构筛选分页可复用 | 来源分页仅负责读取；不要替代 Analyzer 的语义分页；按会话瞬态映射 |
-| `src/index-revision-lease.js:25`、`src/history-service.js:97` | revision lease、旧引用边界已存在 | 安装新 index revision；旧 evidence ref 不指向新对象 |
+| `src/index-revision-lease.js:25`、`src/history-service.js:97` | revision lease、旧引用边界已存在；没有通用快照释放钩子 | 新增快照 owner，退役后等待实际 reader/I/O 释放再清理；旧 evidence ref 不指向新对象 |
 | `src/canonical-contract.js:31` | indexed metadata 仍有 sourceFile/bytes/lineCount | 明确存储类型和显示含义；message count 不冒充文件行数 |
 | `src/source-adapters.js:50`、`src/cli.js:29`、`src/history-cli.js:6` | source 注册和 CLI roots | 加 OpenCode data root / 显式 DB 选择、诊断、标签及打包清单 |
 | `src/history-source-locator.js:25` | history.read.source 故意仅支持 Codex JSONL | 初期保持不支持；正常 evidence refs 可用，不开放自由 SQL/任意路径 |
@@ -173,24 +175,47 @@ Session Analyzer
 
 只把数据库 path 放进现有 file dependency 并使用 accepted_prefix 是错误方案：WAL、原位更新和删除都不遵守前缀不变。把整个 transcript 偷塞 copied_value 也违背有界元数据与按需物化目标。
 
-## 7. 推荐实现顺序与验收边界
+## 7. 修订后的实现顺序与验收边界
 
-1. **统一 mapper + export 导入。** 用本次脱敏 fixture 验证 user、assistant content、reasoning、tool、idle、retry、switch、fork、subagent、compaction 的映射；保留未知类型于 Protocol/Raw。证明 Main/Detail/Raw/搜索完整链路。
-2. **原生 SQLite 发现、索引、物化。** XDG root、channel DB 与 OPENCODE_DB 显式选择；schema fingerprint/兼容门禁；短只读事务得到一套 session/rows/relations/revision。第一版可保存按会话不可变快照，复用 file/exact，同时设置磁盘配额、淘汰与敏感数据管理。
-3. **更新与删除一致性。** event_sequence 是候选按会话失效水位，配合 session metadata、行集合/正文 digest；seq 不是行变更游标，PRAGMA data_version 只作同一连接变化提示。考虑 import、metadata 更新、恢复/替换 DB、schema 改变、归档/删除和跨会话关系依赖。产品版需要明确快照依赖闭包，不能把本次简易 hash 直接当完整契约。
-4. **按需求增加 API 后端。** 固定 API/SDK 版本，server 身份隔离、认证、全量分页与重连补拉；不为只读目的自动启动 OpenCode 去迁移用户数据库。SSE 增强只在已有稳定快照基础上做。
+详细里程碑、依赖闭包、所有权状态及评审问题见配套整体实施计划。本节取代初版“先做 export 导入、后补更新与删除一致性”的安排。
 
-关键验收：同 ID 更新、回退删除、并发 WAL、旧 ref stale、未知 schema、fork 前缀重复计费、subagent 完整发现、长文本/深 JSON/大工具输出、取消与资源预算。以后再覆盖跨平台、附件/dev blob、权限拒绝、工具 error 状态、崩溃恢复、断线/慢消费者、真实大库和长会话。Linux 小样本成功不代表这些边界已完成。
+1. **M0：契约定稿。** 明确支持版本/schema、来源身份、项目成员与关系 manifest、会话内容摘要、Raw locator、预算、诊断，以及快照的构建/发布/退役/清理。对照届时开发分支，更新正式规格和设计。
+2. **M1：统一 mapper 与多来源 fixture。** 固定 export、API/数据库源对象及合成边界样本，覆盖已完成、进行中、中断和未知类型；不以完整 export 导入 UI/CLI 为前置，不让测试现场运行 OpenCode。
+3. **M2：SQLite 与最低一致性、生命周期一并交付。** 首选在有界项目读事务内捕获成员/关系和会话源行到 staging，关闭 DB 后构建索引，封存不可变文件并原子发布 revision。每个纳入索引的会话有快照，完整对象按需物化。更新、删除、metadata 变更、取消、旧 ref 和资源回收必须在这个阶段成立。
+4. **M3：首版产品验收。** 补齐边界、来源诊断、浏览器/安装包、声明支持的平台和 Node 能力矩阵，以及用户文档。性能优化可后置；声明范围内的正确性与跨平台验收不能后置。
+5. **M4：兼容任务和按需扩展。** 独立固定版本 OpenCode 探针验证真实 schema/API/export；支持新版本前完成核验。HTTP、完整 export 导入、SSE、增量优化和长期归档分别评估，不扩大首版完成声明。
 
-数据库读取规则：readOnly + allowExtension:false + query_only + 短 busy timeout；固定表/列、参数绑定；不加载上游 Database service、不 migration/checkpoint/设 journal_mode；活动库不用 immutable=true、不单独 cp .db 丢失 WAL；不为一次浏览长期钉住读事务。
+### 快照与版本判断
+
+必须区分一次 SQLite 事务内的一致性，以及索引建立后到详情/Raw 读取之间的一致性。首选不可变快照；备选“物化前重读并验证”也可行，但必须比较完整输入依赖，变化就 stale，不能把新正文拼入旧索引。file/exact 只校验真正封存的快照文件，不自动提供资源生命周期。
+
+session 的 event_sequence 与 time_updated 不构成完整版本。除已经实测的同 ID 原位更新外，固定源码的 worktree.resolved 按 project aggregate 推进序号；projector 可更新 session.project_id/path，且显式保持 time_updated。这个反例针对项目归属及相关 metadata，不能扩大为正文更新绕过 session 水位。实际依赖闭包需要覆盖项目成员、相关 metadata、parent/fork/child 事实和有序消息行；不必把无关全库数据纳入每个会话。
+
+参考：[项目归属 projector](https://github.com/anomalyco/opencode/blob/68bc26b7da1990ce10ffecfbc1e09eb13aa5d824/packages/core/src/session/projector.ts#L498)、[上游静态测试依据](https://github.com/anomalyco/opencode/blob/68bc26b7da1990ce10ffecfbc1e09eb13aa5d824/packages/core/test/session-create.test.ts#L134)。本轮未执行该上游测试。
+
+现有 revision retirement 会发出取消并释放 queryStore，不等于实际 I/O 已完成，也不自动释放 adapter 新增文件。需要构建 scope 到 revision owner 的所有权转交、reader lease、退役后 drain、幂等清理、额度限制及受控崩溃残留回收。不能在 abort 的瞬间删除仍被读取的快照。
+
+### 日常 CI 不依赖 OpenCode
+
+普通 PR 使用固定版本化样本、Node 创建的临时 SQLite DB，以及启动 Analyzer 自身的浏览器/安装包测试。数据库测试必须实际经过 reader，覆盖 WAL、更新、删除、metadata、旧引用和清理；export 样本不能代替它。上游兼容任务独立运行固定版本 OpenCode；真实模型采样是可选证据工作，不进入每个 PR 的必需门槛。export 本身不需要模型请求或 OpenRouter key。
+
+既有 CI 覆盖 Linux Node 22/24、Windows Node 24；已有 Codex SQLite 测试直接创建临时库。OpenCode 正文入口仍需独立检查所需 node:sqlite 能力：仅 engines >=22 不保证所有早期补丁版本可用，不能把现有 Codex metadata reader 的可降级行为当作正文 reader 的完整兼容保证。能力不足应给出来源级诊断，让其他来源继续工作。
+
+### 只读的准确含义
+
+读取规则：readOnly + allowExtension:false + query_only + 短 busy timeout；固定表/列、参数绑定；不加载上游 Database service、不 migration/checkpoint/设 journal_mode；活动库不用 immutable=true、不单独复制主 DB 丢失 WAL。
+
+补充合成实验中，读取前缺少 SHM，PoC query_only=true、total_changes=0，主 DB/WAL 哈希不变，但创建了 -shm。因此这里只承诺不执行 SQL 数据修改，不承诺绝对零文件系统写入；只读权限与 WAL 侧文件访问失败需要明确诊断。原生产实验的 hash 观察也不能替代这一边界。
 
 ## 8. 本次交付与验证范围
 
-- 研究报告及固定 commit 的来源链接。
+- 更新研究报告、整体实施计划及固定 commit 的来源链接。
 - `sqlite-probe.mjs`：独立 Node 只读诊断 PoC；只输出计数、类型、ID、hash/revision，不输出正文或工具输入输出。不注册到 Analyzer。
 - `fixtures/`：本次真实模型/官方 API 操作形成的脱敏投影，保留与来源版本相关的 shape；不是手工捏造成功结果。
-- `evidence/`：会话摘要、实时采样、SSE 类型计数、分页与 API/SQL 比对、只读检查。
+- `evidence/`：原实验的会话摘要、实时采样、SSE 类型计数、分页与 API/SQL 比对、只读检查；新版补充合成 WAL/SHM 观察记录。
 
-PoC 对最多 1000 会话、每会话 10000 message 设置数量上限；它仍不是生产流式 reader，不保证大型单字段/全库内存安全，也未包含 legacy decoder。只用于本次小语料研究，不建议直接对任意庞大用户库扫描。
+PoC 对最多 1000 会话、每会话 10000 message 设置数量上限；它仍不是生产流式 reader，不保证大型单字段/全库内存安全，也未包含完整 schema 门禁或 legacy decoder。它保存计数、ID/hash 和水位，不保留旧 payload；mutation 汇总不完整覆盖整会话删除/纯 metadata 变更，不能直接承担旧 Raw 引用或生产失效契约。只用于小语料研究。
+
+现有包的脱敏投影可复核部分计数与语义；原 API/SQL 比对和 DB/WAL 哈希结论由原实验摘要记录。因未交付完整原始 DB、逐页响应及比较器，不能声称仅凭此包可独立重跑原实验。后续补充最小 DDL、脱敏采集/比较流程及固定版本的新实验，使用独立运行记录，不追写为旧实验已完整留档。
 
 已执行 CLI 安装/版本验证、真实免费模型工具链、7 个会话 API/SQL 对照、运行中 export 差异验证、SSE 捕获和只读动态观测；完成示例项目 unittest 与 PoC 语法/只读检查。未修改 Analyzer 产品行为，因此未运行其全量 Node/browser/release 测试；没有声称第五 adapter 或浏览器接入验收通过。
