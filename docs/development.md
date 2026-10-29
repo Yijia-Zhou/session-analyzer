@@ -4,12 +4,14 @@ The installed CLI supports Node.js 22 or newer on a supported LTS line (Node.js 
 
 ## Toolchain and dependencies / 工具链与依赖
 
-Reproduce the 0.2.1 release source from its immutable `v0.2.1` tag. These commands leave the terminal outside the checkout so the toolchain bootstrap below runs in the correct place. / 从不可变的 `v0.2.1` tag 复现 0.2.1 release source。以下命令不会进入 checkout，使后续工具链 bootstrap 在正确位置运行。
+For current unreleased source work, clone `v0.3.0-development` and record its exact commit. These commands leave the terminal outside the checkout so the toolchain bootstrap below runs in the correct place. / 当前未发布功能的源码开发克隆 v0.3.0-development，并记录精确提交。以下命令不会进入 checkout，使后续工具链 bootstrap 在正确位置运行。
 
 ```sh
-git clone --branch v0.2.1 https://github.com/Yijia-Zhou/session-analyzer.git
+git clone --branch v0.3.0-development https://github.com/Yijia-Zhou/session-analyzer.git
 git -C session-analyzer rev-parse HEAD
 ```
+
+For historical 0.2.1 reproduction, choose `--branch v0.2.1` and follow [that immutable tag's guide](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/development.md). That tag has no `dev` script: after its setup, use `npm run build` followed by `npm start`. / 复现历史 0.2.1 时选择 v0.2.1 分支参数，并遵循[该不可变 tag 的指南](https://github.com/Yijia-Zhou/session-analyzer/blob/v0.2.1/docs/development.md)。该 tag 没有 dev 脚本：完成其配置后先构建，再运行 npm start。
 
 Before any repository-local `npm install`, `npm ci`, or `npm run`, select supported Node.js and bootstrap the exact npm CLI globally **from a directory outside this checkout**. This first npm command updates the toolchain without installing project dependencies: / 执行仓库内任何 `npm install`、`npm ci` 或 `npm run` 前，先选择受支持 Node.js，并**从 checkout 之外的目录**全局 bootstrap 精确版本 npm。第一条 npm 命令只更新工具链，不安装项目依赖：
 
@@ -32,17 +34,17 @@ The final command must report no pending install scripts. `package.json#allowScr
 
 ## Build, start, and verify / 构建、启动与核验
 
-Build the browser bundle, then start the local server: / 构建浏览器 bundle，再启动本地服务：
+For source previews, build and start in one command; server arguments follow `--`: / 源码预览使用同一命令构建并启动；服务参数放在 `--` 后：
 
 ```sh
-npm run build
-npm start
+npm run dev -- --repo /path/to/project
 ```
 
-Or run the server directly with an explicit target project; record the checkout commit when verifying branch features: / 或直接运行 server 并指定目标项目；核验分支能力时记录 checkout commit：
+Direct server startup requires a separate fresh build, including after branch switches; record the checkout commit when verifying branch features. `npm start` and the installed CLI continue to use existing assets. / 直接启动服务须先单独构建，切换分支后也一样；核验分支能力时记录 checkout commit。npm start 与已安装 CLI 仍使用已有资产。
 
 ```powershell
 git rev-parse HEAD
+npm run build
 node server.js --repo 'C:\projects\target-project'
 ```
 
@@ -56,6 +58,8 @@ Open `http://127.0.0.1:17890/`. Without `--repo`, select a project in the browse
 | Browser coverage / 浏览器覆盖 | `npm run test:browser` |
 | Installed-package smoke / 安装包 smoke | `npm run test:package` |
 | Repeatable non-browser release gate / 可重复非浏览器发布门槛 | `npm run release:check` |
+
+Ordinary development PRs omit the two generated asset changes; see [asset workflow](design-docs/browser-asset-workflow.md) for build/test/restore order and release exceptions. Rebuild before local browser or package tests. / 普通开发 PR 不提交两份生成资产的变更；构建／测试／恢复顺序与发布例外见[资产流程](design-docs/browser-asset-workflow.md)。本地浏览器或安装包测试前重新构建。
 
 Package smoke packs the project, installs the tarball into a fresh temporary project, checks CLI help, and starts the packaged server. `release:check` checks generated assets, runs the full Node suite, and repeats package smoke; browser coverage remains a separate CI/local release requirement. Follow the release runbook for the remaining release gates. / Package smoke 打包项目，将 tarball 安装到全新临时项目，检查 CLI help 并启动包内服务。`release:check` 检查生成资产、运行全部 Node 测试并重复 package smoke；浏览器覆盖仍是独立的 CI／本地发布要求。其余发布门槛遵循发布运行手册。
 
@@ -87,11 +91,17 @@ Inspect failures and fix regressions introduced by the change. Once the relevant
 
 ### CI execution scope / CI 执行范围
 
+The browser job uses `ubuntu-24.04`, which the locked Playwright 1.60 supports. Review the runner image and Playwright support together before upgrading; `ubuntu-latest` can advance to an unsupported OS before the browser dependencies do. Node and package jobs continue using their existing OS matrix. / 浏览器 job 固定使用锁定的 Playwright 1.60 支持的 `ubuntu-24.04`。升级时共同核对 runner 镜像与 Playwright 支持范围；`ubuntu-latest` 可能先于浏览器依赖切换到尚不支持的操作系统。Node 与安装包 job 继续使用原有操作系统矩阵。
+
 Every CI run keeps the three Node jobs, both installed-package smoke jobs and the final `ci` result. A separate, dependency-free `scope` job reads the complete Git merge-base diff for pull requests. Only changes to ordinary Markdown files at `README.md`, `README.zh-CN.md`, `docs/development.md` and `docs/exec-plans/**/*.md` qualify to skip the browser job. Documentation contract tests still run in the Node suites; packaged README changes still receive package smoke. / 每次 CI 保留三项 Node job、双平台安装包 smoke 与最终 `ci` 结果。独立且无需安装依赖的 `scope` job 读取 PR 完整 Git merge-base diff。仅上述路径的普通 Markdown 文件变更可跳过 browser job；文档契约测试仍由 Node 套件执行，打包 README 变更仍接受 package smoke。
 
 The classifier checks both paths of moves and rejects binary documents, executable files, symlinks, submodules and other file-type changes from this exception. Mixed or unknown paths, empty/incomplete diffs and unavailable history require full coverage. Main/development pushes and manual dispatches always require browser coverage. The final `ci` gate accepts `skipped` only for an explicitly classified documentation PR; failed, cancelled or missing classification/required checks cannot grant success. No workflow-level path filter suppresses the required check. / 分类器检查移动前后路径，例外不适用于二进制文档、可执行文件、软链接、submodule 或其他文件类型变化。混合／未知路径、空／不完整 diff 或历史不可用时要求全量覆盖。Main／开发分支 push 和手动 dispatch 始终要求 browser 覆盖。最终 `ci` 仅对明确分类的文档 PR 接受 `skipped`；分类或必需检查失败、取消、缺失时不能放行。不会用 workflow 级路径过滤抑制必需检查。
 
+The scope job also enforces [generated-asset policy](design-docs/browser-asset-workflow.md) with `scripts/ci-assets.js`. Every dependency-installing Node/package/browser job waits for this policy and prepares its own assets: ordinary development builds current source; main/release paths check committed assets without overwriting them. / Scope job 还通过资产策略脚本执行[生成文件规则](design-docs/browser-asset-workflow.md)。每个安装依赖的 Node／安装包／浏览器 job 等待策略结果并独立准备资产：普通开发构建当前源码；main／发布路径检查提交中的资产且不覆盖它们。
+
 The implementation is `scripts/ci-scope.js`; its tests exercise real Git history and the actual aggregate shell, including failed and cancelled dependencies. The scope job uses Node directly without npm installation; all dependency-installing jobs retain the pinned npm bootstrap and strict policy above. / 实现位于 `scripts/ci-scope.js`；测试覆盖真实 Git 历史和实际聚合 shell，包括依赖失败／取消。Scope job 直接使用 Node，不执行 npm 安装；所有安装依赖的 job 保留上文固定 npm bootstrap 与 strict 策略。
+
+OpenCode upstream checks use the separate manual [compatibility workflow and probe](design-docs/opencode-compatibility-maintenance.md). Ordinary CI tests only the probe's offline contracts; producer installation and an optional pinned candidate comparison require explicitly running that maintenance task. Its report feeds the shared schema runbook and does not automatically expand support. / OpenCode 上游检查使用独立的手动兼容 workflow 与探针。普通 CI 仅测试探针的离线契约；安装 producer 和比较可选固定候选需要显式运行维护任务。报告交回共用 schema 手册，不自动扩大支持范围。
 
 The collaboration keyboard-navigation and mobile Timeline return tests record bounded focus/input events, collaboration DOM removal, scroll positions, API request completion and named checkpoints. On failure, `e2e/browser-diagnostics.js` writes `diagnostics.json`, a viewport screenshot and a Playwright `trace.zip` under `output/playwright/browser-failures/`; CI uploads this directory as `browser-navigation-failures-<attempt>` with seven-day retention. Successful tests discard their traces. All captured pages and API payloads come from synthetic fixtures; do not use this capture helper against real transcripts. Inspect the actual input target and departure/return geometry before changing a timeout or assertion. / 协作键盘导航与移动端 Timeline 返回测试记录有界的焦点／输入事件、协作 DOM 移除、滚动位置、API 请求完成情况与具名检查点。失败时，所列 helper 在上述目录保存 JSON、视口截图与 Playwright trace；CI 按上述名称上传，保留七天。成功测试丢弃 trace。捕获页面与 API 载荷均来自合成 fixture；不要对真实转录使用此 helper。调整超时或断言前，先核对实际输入目标及离开／返回时的几何位置。
 

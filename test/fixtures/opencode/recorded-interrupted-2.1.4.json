@@ -1,0 +1,128 @@
+{
+  "fixtureVersion": 1,
+  "kind": "minimized-sanitized-recorded-messages",
+  "producer": {
+    "package": "@opencode/cli",
+    "version": "2.1.4",
+    "repository": "https://github.com/anomalyco/opencode",
+    "sourceSha": "68bc26b7da1990ce10ffecfbc1e09eb13aa5d824"
+  },
+  "captureContext": "Controlled synthetic-project research using the real OpenCode 2.1.4 client and free models; no personal transcript.",
+  "sources": [
+    {
+      "artifact": "final-ses_e86ec2bb5ffeupDldOM4zQUtQv.json",
+      "sha256": "871008917fcd6607ae511867e522eba4e873283e1d5196fe2975e999fbc9bea2",
+      "selector": "$.messages"
+    }
+  ],
+  "sanitization": [
+    "Message/tool/session IDs replaced with fixed fixture IDs.",
+    "All prompt, reasoning, response, summary, command, output and file-content strings replaced with fixed test text.",
+    "All file paths replaced; source session/project metadata omitted.",
+    "Opaque provider reasoning native payloads omitted; recorded block ordering and other field presence retained.",
+    "Timestamps shifted by a fixed offset per source session, preserving durations and relative ordering.",
+    "Only selected messages retained; source array indexes identify omissions."
+  ],
+  "reconstruction": "Reconstruct session_message from native message objects: id/type are relational columns; remaining fields become JSON data. seq is the original one-based array position. Session and project rows are synthetic helper scaffolding, not captured SQL.",
+  "cases": [
+    {
+      "name": "interrupted",
+      "sessionID": "ses_recorded_interrupted",
+      "messages": [
+        {
+          "sourceIndex": 0,
+          "message": {
+            "id": "msg_interrupted_0",
+            "time": {
+              "created": 1790848800000
+            },
+            "text": "RECORDED_INTERRUPTED_REQUEST",
+            "files": [],
+            "type": "user"
+          }
+        },
+        {
+          "sourceIndex": 1,
+          "message": {
+            "id": "msg_interrupted_1",
+            "time": {
+              "created": 1790848867790
+            },
+            "type": "assistant",
+            "agent": "build",
+            "model": {
+              "id": "google/gemma-4-31b-it:free",
+              "providerID": "openrouter",
+              "variant": "default"
+            },
+            "content": []
+          }
+        },
+        {
+          "sourceIndex": 2,
+          "message": {
+            "id": "msg_interrupted_2",
+            "time": {
+              "created": 1790848870638
+            },
+            "type": "idle",
+            "outcome": "interrupted"
+          }
+        }
+      ],
+      "sourceArtifact": "final-ses_e86ec2bb5ffeupDldOM4zQUtQv.json",
+      "expected": {
+        "main": [
+          [
+            "msg_interrupted_0",
+            "",
+            "user_message",
+            "",
+            ""
+          ],
+          [
+            "msg_interrupted_2",
+            "",
+            "abort",
+            "interrupted",
+            ""
+          ]
+        ],
+        "protocol": [
+          [
+            "",
+            "opencode_session",
+            ""
+          ],
+          [
+            "msg_interrupted_1",
+            "opencode_empty_assistant",
+            "incomplete"
+          ]
+        ],
+        "counts": {
+          "turns": 1,
+          "messages": 1,
+          "reasoning": 0,
+          "toolCalls": 0,
+          "failedCommands": 0,
+          "compactions": 0,
+          "aborts": 1,
+          "errors": 0,
+          "protocol": 2
+        },
+        "queries": [
+          {
+            "q": "Execution interrupted",
+            "layer": "main",
+            "eventCount": 1,
+            "messageID": "msg_interrupted_2",
+            "kind": "abort"
+          }
+        ],
+        "tools": []
+      }
+    }
+  ],
+  "expectationOrigin": "Hand-authored canonical projection and query/detail facts, independent of the mapper; never generated from Analyzer output."
+}

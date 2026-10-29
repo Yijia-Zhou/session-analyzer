@@ -1,0 +1,694 @@
+{
+  "fixtureVersion": 1,
+  "kind": "minimized-sanitized-recorded-messages",
+  "producer": {
+    "package": "@opencode/cli",
+    "version": "2.1.4",
+    "repository": "https://github.com/anomalyco/opencode",
+    "sourceSha": "68bc26b7da1990ce10ffecfbc1e09eb13aa5d824"
+  },
+  "captureContext": "Controlled synthetic-project research using the real OpenCode 2.1.4 client and free models; no personal transcript.",
+  "sources": [
+    {
+      "artifact": "case05-running-api.json",
+      "sha256": "63d04c3ec254752c1235e3271ec1d54a0a587f2bad8a68a0d389f244da9380c7",
+      "selector": "$"
+    },
+    {
+      "artifact": "case05-running-export.json",
+      "sha256": "a439242aa17c327ce2cffcd71d20d5863730c88a2edfc4519c86c4eaadccffa4",
+      "selector": "$.data.messages"
+    },
+    {
+      "artifact": "case05-completed-api.json",
+      "sha256": "aab40abfc0e56e04cc618c30604a6c04310f4c386d4ccd12bb466162755745a0",
+      "selector": "$"
+    },
+    {
+      "artifact": "case05-completed-export.json",
+      "sha256": "187e9799abdba9c8075136aaa92a707da39c68607ade75499245935b41fadcc8",
+      "selector": "$.data.messages"
+    }
+  ],
+  "sanitization": [
+    "Message/tool/session IDs replaced with fixed fixture IDs.",
+    "All prompt, reasoning, response, summary, command, output and file-content strings replaced with fixed test text.",
+    "All file paths replaced; source session/project metadata omitted.",
+    "Opaque provider reasoning native payloads omitted; recorded block ordering and other field presence retained.",
+    "Timestamps shifted by a fixed offset per source session, preserving durations and relative ordering.",
+    "Only selected messages retained; source array indexes identify omissions."
+  ],
+  "reconstruction": "Reconstruct session_message from native message objects: id/type are relational columns; remaining fields become JSON data. seq is the original one-based array position. Session and project rows are synthetic helper scaffolding, not captured SQL.",
+  "cases": [
+    {
+      "name": "running_api",
+      "sessionID": "ses_recorded_live",
+      "messages": [
+        {
+          "sourceIndex": 0,
+          "message": {
+            "id": "msg_live_0",
+            "time": {
+              "created": 1790848800000
+            },
+            "text": "RECORDED_LIVE_REQUEST",
+            "files": [],
+            "type": "user"
+          }
+        },
+        {
+          "sourceIndex": 1,
+          "message": {
+            "id": "msg_live_1",
+            "time": {
+              "created": 1790848800015,
+              "streamed": 1790848801892
+            },
+            "type": "assistant",
+            "agent": "build",
+            "model": {
+              "id": "cohere/north-mini-code:free",
+              "providerID": "openrouter",
+              "variant": "default"
+            },
+            "content": [
+              {
+                "type": "reasoning",
+                "text": "RECORDED_LIVE_REASONING_1",
+                "time": {
+                  "created": 1790848800498,
+                  "completed": 1790848801888
+                }
+              },
+              {
+                "type": "tool",
+                "id": "call_live_1_1",
+                "name": "shell",
+                "executed": false,
+                "state": {
+                  "status": "running",
+                  "input": {
+                    "command": "sleep 5; printf LIVE_COMPLETED"
+                  },
+                  "metadata": {}
+                },
+                "time": {
+                  "created": 1790848801744,
+                  "ran": 1790848801891
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "sourceArtifact": "case05-running-api.json",
+      "expected": {
+        "main": [
+          [
+            "msg_live_0",
+            "",
+            "user_message",
+            "",
+            ""
+          ],
+          [
+            "msg_live_1",
+            "/content/0",
+            "reasoning",
+            "incomplete",
+            ""
+          ],
+          [
+            "msg_live_1",
+            "/content/1",
+            "command",
+            "incomplete",
+            "shell"
+          ]
+        ],
+        "protocol": [
+          [
+            "",
+            "opencode_session",
+            ""
+          ]
+        ],
+        "counts": {
+          "turns": 1,
+          "messages": 1,
+          "reasoning": 1,
+          "toolCalls": 1,
+          "failedCommands": 0,
+          "compactions": 0,
+          "aborts": 0,
+          "protocol": 1
+        },
+        "queries": [
+          {
+            "q": "sleep 5",
+            "layer": "main",
+            "eventCount": 1,
+            "messageID": "msg_live_1",
+            "kind": "command"
+          }
+        ],
+        "tools": [
+          {
+            "messageID": "msg_live_1",
+            "status": "incomplete",
+            "toolStatus": "running",
+            "executed": false,
+            "exitCode": null,
+            "durationMs": 0,
+            "output": "",
+            "files": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "running_export",
+      "sessionID": "ses_recorded_live",
+      "messages": [
+        {
+          "sourceIndex": 0,
+          "message": {
+            "id": "msg_live_0",
+            "time": {
+              "created": 1790848800000
+            },
+            "text": "RECORDED_LIVE_REQUEST",
+            "files": [],
+            "type": "user"
+          }
+        }
+      ],
+      "sourceArtifact": "case05-running-export.json",
+      "expected": {
+        "main": [
+          [
+            "msg_live_0",
+            "",
+            "user_message",
+            "",
+            ""
+          ]
+        ],
+        "protocol": [
+          [
+            "",
+            "opencode_session",
+            ""
+          ]
+        ],
+        "counts": {
+          "turns": 1,
+          "messages": 1,
+          "reasoning": 0,
+          "toolCalls": 0,
+          "failedCommands": 0,
+          "compactions": 0,
+          "aborts": 0,
+          "protocol": 1
+        },
+        "queries": [
+          {
+            "q": "sleep 5",
+            "layer": "main",
+            "eventCount": 0
+          }
+        ],
+        "tools": []
+      }
+    },
+    {
+      "name": "completed_api",
+      "sessionID": "ses_recorded_live",
+      "messages": [
+        {
+          "sourceIndex": 0,
+          "message": {
+            "id": "msg_live_0",
+            "time": {
+              "created": 1790848800000
+            },
+            "text": "RECORDED_LIVE_REQUEST",
+            "files": [],
+            "type": "user"
+          }
+        },
+        {
+          "sourceIndex": 1,
+          "message": {
+            "id": "msg_live_1",
+            "time": {
+              "created": 1790848800015,
+              "streamed": 1790848801892,
+              "completed": 1790848806916
+            },
+            "type": "assistant",
+            "agent": "build",
+            "model": {
+              "id": "cohere/north-mini-code:free",
+              "providerID": "openrouter",
+              "variant": "default"
+            },
+            "content": [
+              {
+                "type": "reasoning",
+                "text": "RECORDED_LIVE_REASONING_1",
+                "time": {
+                  "created": 1790848800498,
+                  "completed": 1790848801888
+                }
+              },
+              {
+                "type": "tool",
+                "id": "call_live_1_1",
+                "name": "shell",
+                "executed": false,
+                "state": {
+                  "status": "completed",
+                  "input": {
+                    "command": "sleep 5; printf LIVE_COMPLETED"
+                  },
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "RECORDED_LIVE_RESULT_1_0"
+                    }
+                  ],
+                  "metadata": {
+                    "status": "completed",
+                    "truncated": false,
+                    "exit": 0
+                  }
+                },
+                "time": {
+                  "created": 1790848801744,
+                  "ran": 1790848801891,
+                  "completed": 1790848806914
+                }
+              }
+            ],
+            "finish": "tool-calls",
+            "rawFinish": "tool_call",
+            "cost": 0,
+            "tokens": {
+              "input": 4390,
+              "output": 12,
+              "reasoning": 130,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        },
+        {
+          "sourceIndex": 2,
+          "message": {
+            "id": "msg_live_2",
+            "time": {
+              "created": 1790848806934,
+              "streamed": 1790848809073,
+              "completed": 1790848809076
+            },
+            "type": "assistant",
+            "agent": "build",
+            "model": {
+              "id": "cohere/north-mini-code:free",
+              "providerID": "openrouter",
+              "variant": "default"
+            },
+            "content": [
+              {
+                "type": "reasoning",
+                "text": "RECORDED_LIVE_REASONING_2",
+                "time": {
+                  "created": 1790848808367,
+                  "completed": 1790848809066
+                }
+              },
+              {
+                "type": "text",
+                "text": "RECORDED_LIVE_ANSWER"
+              }
+            ],
+            "finish": "stop",
+            "rawFinish": "complete",
+            "cost": 0,
+            "tokens": {
+              "input": 4396,
+              "output": 8,
+              "reasoning": 47,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        },
+        {
+          "sourceIndex": 3,
+          "message": {
+            "id": "msg_live_3",
+            "time": {
+              "created": 1790848809079
+            },
+            "type": "idle",
+            "outcome": "succeeded"
+          }
+        }
+      ],
+      "sourceArtifact": "case05-completed-api.json",
+      "expected": {
+        "main": [
+          [
+            "msg_live_0",
+            "",
+            "user_message",
+            "",
+            ""
+          ],
+          [
+            "msg_live_1",
+            "/content/0",
+            "reasoning",
+            "success",
+            ""
+          ],
+          [
+            "msg_live_1",
+            "/content/1",
+            "command",
+            "success",
+            "shell"
+          ],
+          [
+            "msg_live_2",
+            "/content/0",
+            "reasoning",
+            "success",
+            ""
+          ],
+          [
+            "msg_live_2",
+            "/content/1",
+            "assistant_message",
+            "success",
+            ""
+          ]
+        ],
+        "protocol": [
+          [
+            "",
+            "opencode_session",
+            ""
+          ],
+          [
+            "msg_live_1",
+            "opencode_step_usage",
+            ""
+          ],
+          [
+            "msg_live_2",
+            "opencode_step_usage",
+            ""
+          ],
+          [
+            "msg_live_3",
+            "opencode_idle",
+            "success"
+          ]
+        ],
+        "counts": {
+          "turns": 1,
+          "messages": 2,
+          "reasoning": 2,
+          "toolCalls": 1,
+          "failedCommands": 0,
+          "compactions": 0,
+          "aborts": 0,
+          "protocol": 4
+        },
+        "queries": [
+          {
+            "q": "RECORDED_LIVE_RESULT_1_0",
+            "layer": "main",
+            "eventCount": 1,
+            "messageID": "msg_live_1",
+            "kind": "command"
+          }
+        ],
+        "tools": [
+          {
+            "messageID": "msg_live_1",
+            "status": "success",
+            "toolStatus": "completed",
+            "executed": false,
+            "exitCode": 0,
+            "durationMs": 5023,
+            "output": "RECORDED_LIVE_RESULT_1_0",
+            "files": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "completed_export",
+      "sessionID": "ses_recorded_live",
+      "messages": [
+        {
+          "sourceIndex": 0,
+          "message": {
+            "id": "msg_live_0",
+            "time": {
+              "created": 1790848800000
+            },
+            "text": "RECORDED_LIVE_REQUEST",
+            "files": [],
+            "type": "user"
+          }
+        },
+        {
+          "sourceIndex": 1,
+          "message": {
+            "id": "msg_live_1",
+            "time": {
+              "created": 1790848800015,
+              "streamed": 1790848801892,
+              "completed": 1790848806916
+            },
+            "type": "assistant",
+            "agent": "build",
+            "model": {
+              "id": "cohere/north-mini-code:free",
+              "providerID": "openrouter",
+              "variant": "default"
+            },
+            "content": [
+              {
+                "type": "reasoning",
+                "text": "RECORDED_LIVE_REASONING_1",
+                "time": {
+                  "created": 1790848800498,
+                  "completed": 1790848801888
+                }
+              },
+              {
+                "type": "tool",
+                "id": "call_live_1_1",
+                "name": "shell",
+                "executed": false,
+                "state": {
+                  "status": "completed",
+                  "input": {
+                    "command": "sleep 5; printf LIVE_COMPLETED"
+                  },
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "RECORDED_LIVE_RESULT_1_0"
+                    }
+                  ],
+                  "metadata": {
+                    "status": "completed",
+                    "truncated": false,
+                    "exit": 0
+                  }
+                },
+                "time": {
+                  "created": 1790848801744,
+                  "ran": 1790848801891,
+                  "completed": 1790848806914
+                }
+              }
+            ],
+            "finish": "tool-calls",
+            "rawFinish": "tool_call",
+            "cost": 0,
+            "tokens": {
+              "input": 4390,
+              "output": 12,
+              "reasoning": 130,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        },
+        {
+          "sourceIndex": 2,
+          "message": {
+            "id": "msg_live_2",
+            "time": {
+              "created": 1790848806934,
+              "streamed": 1790848809073,
+              "completed": 1790848809076
+            },
+            "type": "assistant",
+            "agent": "build",
+            "model": {
+              "id": "cohere/north-mini-code:free",
+              "providerID": "openrouter",
+              "variant": "default"
+            },
+            "content": [
+              {
+                "type": "reasoning",
+                "text": "RECORDED_LIVE_REASONING_2",
+                "time": {
+                  "created": 1790848808367,
+                  "completed": 1790848809066
+                }
+              },
+              {
+                "type": "text",
+                "text": "RECORDED_LIVE_ANSWER"
+              }
+            ],
+            "finish": "stop",
+            "rawFinish": "complete",
+            "cost": 0,
+            "tokens": {
+              "input": 4396,
+              "output": 8,
+              "reasoning": 47,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        },
+        {
+          "sourceIndex": 3,
+          "message": {
+            "id": "msg_live_3",
+            "time": {
+              "created": 1790848809079
+            },
+            "type": "idle",
+            "outcome": "succeeded"
+          }
+        }
+      ],
+      "sourceArtifact": "case05-completed-export.json",
+      "expected": {
+        "main": [
+          [
+            "msg_live_0",
+            "",
+            "user_message",
+            "",
+            ""
+          ],
+          [
+            "msg_live_1",
+            "/content/0",
+            "reasoning",
+            "success",
+            ""
+          ],
+          [
+            "msg_live_1",
+            "/content/1",
+            "command",
+            "success",
+            "shell"
+          ],
+          [
+            "msg_live_2",
+            "/content/0",
+            "reasoning",
+            "success",
+            ""
+          ],
+          [
+            "msg_live_2",
+            "/content/1",
+            "assistant_message",
+            "success",
+            ""
+          ]
+        ],
+        "protocol": [
+          [
+            "",
+            "opencode_session",
+            ""
+          ],
+          [
+            "msg_live_1",
+            "opencode_step_usage",
+            ""
+          ],
+          [
+            "msg_live_2",
+            "opencode_step_usage",
+            ""
+          ],
+          [
+            "msg_live_3",
+            "opencode_idle",
+            "success"
+          ]
+        ],
+        "counts": {
+          "turns": 1,
+          "messages": 2,
+          "reasoning": 2,
+          "toolCalls": 1,
+          "failedCommands": 0,
+          "compactions": 0,
+          "aborts": 0,
+          "protocol": 4
+        },
+        "queries": [
+          {
+            "q": "RECORDED_LIVE_RESULT_1_0",
+            "layer": "main",
+            "eventCount": 1,
+            "messageID": "msg_live_1",
+            "kind": "command"
+          }
+        ],
+        "tools": [
+          {
+            "messageID": "msg_live_1",
+            "status": "success",
+            "toolStatus": "completed",
+            "executed": false,
+            "exitCode": 0,
+            "durationMs": 5023,
+            "output": "RECORDED_LIVE_RESULT_1_0",
+            "files": []
+          }
+        ]
+      }
+    }
+  ],
+  "expectationOrigin": "Hand-authored canonical projection and query/detail facts, independent of the mapper; never generated from Analyzer output."
+}

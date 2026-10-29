@@ -4,6 +4,10 @@
 
 ### English
 
+- Polish browser display details: use singular count labels such as `1 tool` and `1 event` in English, show ellipses for long project status lines and session source paths, keep event times of day on one line on narrow screens, and use red text for nonzero failed-command counts on session cards.
+
+- Add native OpenCode 2.1.4 SQLite history with immutable revision snapshots, project search, Detail, typed Raw references and history retrieval. Read without OpenCode or export; bounded capture and failed refresh preserve previous evidence, with explicit schema, permission and capacity diagnostics.
+
 - Add explicit Codex history source observation with bounded physical metadata checks, caller-associated change counts, partial-coverage reporting and fixed snapshot preservation; keep content verification and deliberate refresh separate.
 
 - Enforce the uncompressed Codex primary-source contract for history path/line locators using indexed source identity, including compressed artifacts with canonical `.jsonl` paths; preserve search and Raw evidence access to admitted compressed and historical records.
@@ -19,6 +23,10 @@
 - Skip browser CI for narrowly classified documentation-only pull requests while retaining Node and package checks; execute publish-workflow release checks once through the guarded directory dry-run.
 
 ### 中文
+
+- 优化浏览器显示细节：英文计数标签使用 `1 tool`、`1 event` 等单数形式，项目状态行和会话来源路径过长时显示省略号，窄屏上事件的时刻保持在同一行，并在会话卡片中用红色文字显示非零失败命令数。
+
+- 新增 OpenCode 2.1.4 原生 SQLite 历史读取，支持不可变 revision 快照、项目搜索、Detail、类型化 Raw 引用和历史检索。读取不依赖 OpenCode 或 export；有界捕获与失败刷新保留原有依据，明确报告 schema、权限和容量问题。
 
 - 新增显式 Codex 历史来源观察，提供有界物理 metadata 检查、调用方关联变化计数及部分覆盖报告，保留固定快照；内容核验与主动刷新仍分别处理。
 

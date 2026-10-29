@@ -850,23 +850,33 @@ test('manual search retires a delayed detail on query change and exposes failed 
   await page.screenshot({ path: path.join(__dirname, '../output/history-open-validation/manual-search-mobile.png') });
 });
 
-test('project search drilldown places the missing hit beside the exact event and retires it on return', async (t) => {
-  const { page, url, hit } = await fixture(t);
+test('project search drilldown places the missing hit beside the exact event and retires it on return', { timeout: 45000 }, withNavigationDiagnostics(async (t, diagnostics) => {
+  const { page, url, hit } = await fixture(t, { diagnostics });
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await page.locator('#searchHudScope').click();
   await page.locator('#searchAssist').getByRole('button', { name: 'Entire project' }).click();
   await page.locator('#searchInput').fill('DEEP_OUTPUT_HIT');
   await page.locator('#sessionList .projectResultCard').click();
-  await selected(page, hit.eventId);
-  const card = await expandSearchCard(page, hit.eventId);
+  await readableSelectedCard(page, hit.eventId);
+  const card = page.locator(`#timeline article[data-event-id="${hit.eventId}"]`);
+  await diagnostics.checkpoint('project-drilldown-selected-ready', {
+    eventId: hit.eventId, toggle: await card.locator('.eventToggle').boundingBox(),
+  });
+  // A hit in the collapsed preview need not auto-expand. With 480 preceding
+  // expanded messages, real detail loading and scroll settlement can exceed
+  // the fixture's 10-second action default under the full concurrent suite.
+  if (!(await card.getAttribute('class')).includes('expanded')) {
+    await card.locator('.eventToggle').click({ timeout: 30000 });
+  }
   const supplement = card.locator('.searchSupplement');
   await supplement.waitFor({ state: 'visible' });
+  await diagnostics.checkpoint('project-drilldown-match-ready', { eventId: hit.eventId });
   await supplement.locator('summary').click();
   assert.match(await supplement.locator('pre').innerText(), /DEEP_OUTPUT_HIT/);
   await page.locator('[data-search-back-to-project]').click();
   await page.waitForFunction(() => document.body.dataset.searchScope === 'project');
   assert.equal(await page.locator('.searchSupplement:not([hidden])').count(), 0);
-});
+}));
 
 test('Trajectory navigation retains an excerpt when the detail has no readable sections', async (t) => {
   const { page, url, hit } = await fixture(t);
@@ -893,7 +903,7 @@ test('context cards preserve exact gaps, local folds and selection while prefix 
     .map((node) => ({ before: node.previousElementSibling.dataset.eventId,
       after: node.nextElementSibling.dataset.eventId, text: node.textContent })));
   assert.deepEqual(gaps.map(({ before, after }) => [before, after]), context.gaps.map((gap) => [gap.beforeEventId, gap.afterEventId]));
-  gaps.forEach((gap, index) => assert.match(gap.text, new RegExp(`${context.gaps[index].count} records omitted`)));
+  gaps.forEach((gap, index) => assert.match(gap.text, new RegExp(`${context.gaps[index].count} records? omitted`)));
   const near = context.events.find((event) => event.excerpt.text.includes('NEARBY_REPLY'));
   const card = page.locator(`#timeline article[data-event-id="${near.eventId}"]`);
   const stored = await page.evaluate(() => localStorage.getItem('sessionAnalyzer.overrides'));

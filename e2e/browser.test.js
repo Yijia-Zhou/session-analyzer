@@ -7478,13 +7478,14 @@ test('browser last-selected repo is scoped per source and migrates legacy Codex 
   assert.equal(await page.evaluate(() => localStorage.getItem('sessionAnalyzer.repoRoot.claude-code')), null);
 });
 
-test('browser home directory edits preserve or drop Return by active identity', async (t) => {
+test('browser home directory edits preserve or drop Return by active identity', withNavigationDiagnostics(async (t, diagnostics) => {
   const fixture = await makeClaudeSwitchFixture(t);
   let sourcePosts = 0;
   const { page } = await openSourceSwitchChooser(t, {
     server: { claudeHome: fixture.claudeHome },
     localStorage: { 'sessionAnalyzer.repoRoot.codex': repoRoot },
     beforeGoto: async (p) => {
+      await diagnostics.attach(p);
       p.on('request', (request) => {
         const url = new URL(request.url());
         if (url.pathname === '/api/source' && request.method() === 'POST') sourcePosts += 1;
@@ -7505,23 +7506,25 @@ test('browser home directory edits preserve or drop Return by active identity', 
   await page.waitForFunction(() => document.querySelector('#projectHomeApplyBtn')?.disabled === false);
   assert.ok(sourcePosts > sourcePostsBeforeInactiveEdit);
   assert.equal(await page.locator('.projectSwitchHint').textContent(), 'Return');
+  await diagnostics.checkpoint('inactive-home-applied');
 
   const emptyCodexHome = path.join(fixture.claudeHome, 'empty-codex');
   await page.locator('#projectCodexHomeInput').fill(emptyCodexHome);
+  await diagnostics.checkpoint('active-home-draft');
   await page.locator('#projectHomeApplyBtn').click();
   await page.waitForFunction(() => document.querySelector('#projectSourceConfirm')?.hidden === false);
   assert.match(await page.locator('#projectSourceConfirm').textContent(), /current project/);
   const sourcePostsBeforeConfirm = sourcePosts;
   await page.locator('#projectCodexHomeInput').fill('relative-codex-home');
   await page.locator('#projectSourceAction').click();
-  await page.waitForFunction(() => document.querySelector('#projectSourceError')?.textContent.includes('Home paths must be absolute'));
+  await page.waitForFunction(() => document.querySelector('#projectSourceError')?.textContent.includes('Source paths must be absolute'));
   assert.equal(sourcePosts, sourcePostsBeforeConfirm);
 
   await page.locator('#projectCodexHomeInput').fill(emptyCodexHome);
   await page.locator('#projectSourceAction').click();
   await page.waitForFunction(() => document.querySelector('.projectSwitchHint')?.textContent === 'Select project');
   await page.waitForFunction(() => document.querySelectorAll('.projectItem').length === 0);
-});
+}));
 
 test('browser re-enables source controls and reconciles discovery after a failed source commit', async (t) => {
   let releaseFirstFull;
@@ -8049,12 +8052,12 @@ test('browser keeps discovery alive when source confirmation fails empty or rela
   await page.locator('#projectClaudeHomeInput').fill('');
   await page.locator('[data-source-choice="claude-code"]').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
-  await page.waitForFunction(() => document.querySelector('#projectSourceError')?.textContent.includes('Home paths must not be empty'));
+  await page.waitForFunction(() => document.querySelector('#projectSourceError')?.textContent.includes('Source paths must not be empty'));
   assert.equal(sourcePosts, 0);
 
   await page.locator('#projectClaudeHomeInput').fill('relative-claude-home');
   await page.locator('#projectSourceAction').click();
-  await page.waitForFunction(() => document.querySelector('#projectSourceError')?.textContent.includes('Home paths must be absolute'));
+  await page.waitForFunction(() => document.querySelector('#projectSourceError')?.textContent.includes('Source paths must be absolute'));
   assert.equal(sourcePosts, 0);
 
   releaseFirstFull();
@@ -8124,7 +8127,7 @@ test('browser project scope renders cards, aggregate summary, and filter-only re
   assert.equal(await page.locator('.searchMark').count(), 0, 'project cards must not enter the session jump-target registry');
   assert.equal(await page.locator('[data-search-match-controls]').first().getAttribute('hidden'), null);
   assert.equal(await page.locator('[data-search-match-nav]').first().isHidden(), true);
-  assert.match((await page.locator('.searchInlineCount').textContent()).trim(), /^\d+ sessions$/);
+  assert.match((await page.locator('.searchInlineCount').textContent()).trim(), /^\d+ sessions?$/);
 
   const summary = await page.locator('#resultSummary').textContent();
   assert.match(summary, /^\d+ matching sessions · \d+ matching events$/);
@@ -9860,7 +9863,7 @@ test('browser project query transitions clear stale cards and counts before the 
   await waitForProjectCards(page);
   await page.waitForFunction(() => document.querySelector('#resultSummary')?.textContent.includes('matching sessions'));
   assert.doesNotMatch((await page.locator('#searchMetricsPanel').textContent()).trim(), /Searching/);
-  assert.match((await page.locator('.searchInlineCount').textContent()).trim(), /^\d+ sessions$/);
+  assert.match((await page.locator('.searchInlineCount').textContent()).trim(), /^\d+ sessions?$/);
 });
 
 test('browser superseded project results abort and an immediate retry settles Searching state', async (t) => {
@@ -16047,7 +16050,7 @@ test('browser onboarding selects DeepSeek directly from an empty Codex source', 
     },
   });
   await page.waitForFunction(() => document.querySelector('#projectList')?.textContent.includes('No transcript projects'));
-  assert.deepEqual(await page.locator('[data-source-choice]').allTextContents(), ['Codex', 'Claude Code', 'DeepSeek Harness', 'pi']);
+  assert.deepEqual(await page.locator('[data-source-choice]').allTextContents(), ['Codex', 'Claude Code', 'DeepSeek Harness', 'pi', 'OpenCode']);
   await page.locator('[data-source-choice="deepseek-harness"]').click();
   await page.waitForFunction(() => document.querySelector('#projectSourceSwitch')?.dataset.source === 'deepseek-harness' && !document.querySelector('[data-source-choice]')?.disabled);
   assert.deepEqual(posts, ['deepseek-harness']);
@@ -16073,7 +16076,7 @@ test('browser onboarding source confirmation cancel preserves project and direct
   const draft = path.join(fixture.claudeHome, 'edited');
   await page.locator('#projectClaudeHomeInput').fill(draft);
   await page.locator('[data-source-choice="deepseek-harness"]').click();
-  assert.match(await page.locator('#projectSourceConfirm').textContent(), /close the current project.*also apply the edited directories/);
+  assert.match(await page.locator('#projectSourceConfirm').textContent(), /close the current project.*also apply the edited source paths/);
   assert.match(await page.locator('#projectSourceAction').textContent(), /DeepSeek Harness/);
   await page.locator('#projectSourceCancel').click();
   assert.deepEqual(posts, []);
