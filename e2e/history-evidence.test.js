@@ -893,7 +893,7 @@ test('context cards preserve exact gaps, local folds and selection while prefix 
     .map((node) => ({ before: node.previousElementSibling.dataset.eventId,
       after: node.nextElementSibling.dataset.eventId, text: node.textContent })));
   assert.deepEqual(gaps.map(({ before, after }) => [before, after]), context.gaps.map((gap) => [gap.beforeEventId, gap.afterEventId]));
-  gaps.forEach((gap, index) => assert.match(gap.text, new RegExp(`${context.gaps[index].count} records omitted`)));
+  gaps.forEach((gap, index) => assert.match(gap.text, new RegExp(`${context.gaps[index].count} records? omitted`)));
   const near = context.events.find((event) => event.excerpt.text.includes('NEARBY_REPLY'));
   const card = page.locator(`#timeline article[data-event-id="${near.eventId}"]`);
   const stored = await page.evaluate(() => localStorage.getItem('sessionAnalyzer.overrides'));

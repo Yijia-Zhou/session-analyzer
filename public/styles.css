@@ -233,12 +233,10 @@ button:hover,
 }
 
 .projectStateLine {
-  align-items: center;
-  display: flex;
+  display: block;
   font-family: var(--mono);
   font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
-  gap: 0.42rem;
   margin-top: 0.18rem !important;
   min-width: 0;
   overflow: hidden;
@@ -251,8 +249,10 @@ button:hover,
   background: #748288;
   border-radius: 999px;
   content: '';
-  flex: 0 0 6px;
+  display: inline-block;
   height: 6px;
+  margin-right: 0.42rem;
+  vertical-align: 0.08em;
   width: 6px;
 }
 
@@ -2101,6 +2101,10 @@ body[data-project-mode='selecting'] .searchAssist {
   padding: 0.12rem 0.35rem;
 }
 
+.chip.failedChip {
+  color: #b23b3b;
+}
+
 .secondarySession .meta,
 .secondarySession .chips {
   max-height: 1.35rem;
@@ -2194,6 +2198,7 @@ body[data-project-mode='selecting'] .searchAssist {
 }
 
 .sessionSource {
+  display: block;
   flex: 1 1 260px;
   font-family: var(--mono);
   overflow: hidden;
@@ -3859,6 +3864,10 @@ body[data-project-mode='selecting'] .searchAssist {
   font-family: var(--mono);
   font-size: 0.76rem;
   justify-self: end;
+}
+
+.timeOfDay {
+  white-space: nowrap;
 }
 
 .eventPreview {
