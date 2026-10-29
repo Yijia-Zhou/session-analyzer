@@ -70,7 +70,7 @@ test('package metadata exposes the session-analyzer CLI', () => {
     assert.match(keyword, /^[a-z0-9]+(?:-[a-z0-9]+)*$/u);
   }
   assert.equal(new Set(pkg.keywords).size, pkg.keywords.length);
-  for (const source of ['codex', 'claude-code', 'deepseek-harness', 'pi']) {
+  for (const source of ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode']) {
     assert.ok(pkg.keywords.includes(source), `keywords should include ${source}`);
   }
   assert.equal(lock.name, pkg.name);
@@ -291,7 +291,7 @@ test('CLI parse errors print ordered stderr and help without starting the server
   assert.equal(result.stdout, `${require('../src/cli').formatHelp()}\n`);
   assert.equal(result.stderr, [
     'Error: Invalid value for --port: "0". Expected an integer between 1 and 65535.',
-    'Error: Invalid value for --source: "invalid-value". Expected one of: codex, claude-code, deepseek-harness, pi.',
+    'Error: Invalid value for --source: "invalid-value". Expected one of: codex, claude-code, deepseek-harness, pi, opencode.',
     '',
   ].join('\n'));
 });
@@ -389,6 +389,11 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'src/codex-turn-lineage.js',
     'src/codex-configuration.js',
     'src/deepseek-harness.js',
+    'src/opencode.js',
+    'src/opencode-storage.js',
+    'src/opencode-logical.js',
+    'src/opencode-detail.js',
+    'src/index-resources.js',
     'src/pi.js',
     'src/pi-navigation.js',
     'src/pi-images.js',
@@ -452,6 +457,7 @@ test('npm pack manifest contains only approved runtime and documentation files',
     'src/shared/plan-facet.js',
     'src/shared/project-root.js',
     'src/shared/query-pagination.js',
+    'src/shared/source-reference-presentation.js',
     'src/shared/terminal-text.js',
     'src/source-adapter-contract.js',
   ].sort();
@@ -483,6 +489,10 @@ test('npm pack manifest contains only approved runtime and documentation files',
 });
 
 test('package smoke state predicate requires final app state payload', () => {
+  assert.equal(isPackageStatePayload({ statusCode: 200, json: { sourceKind: 'opencode',
+    totals: {}, supportedLocales: ['en', 'zh-CN'], eventKinds: {}, projectSelected: true }, body: '{}' }), true);
+  assert.equal(isPackageStatePayload({ statusCode: 200, json: { sourceKind: 'opencode',
+    totals: {}, supportedLocales: ['en', 'zh-CN'], eventKinds: {}, codeModeRequests: [], projectSelected: true }, body: '{}' }), false);
   assert.equal(isPackageStatePayload({
     statusCode: 202,
     json: { job: { id: '1', status: 'running' } },

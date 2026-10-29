@@ -1,6 +1,7 @@
 'use strict';
 
 const { backgroundTerminalLabel } = require('../shared/background-terminal-presentation');
+const { sourceReferenceLabel } = require('../shared/source-reference-presentation');
 
 const { referenceFromHash, createEvidenceNavigation, createHistoryTraversalGuard } = require('./history-evidence');
 const searchExcerpt = require('./search-excerpt');
@@ -957,14 +958,19 @@ function renderSourceDiagnostics() {
     DEEPSEEK_FORMAT_VERSION_UNSUPPORTED: 'sourceFormatUnsupported',
     DEEPSEEK_ZSTD_UNAVAILABLE: 'sourceZstdUnavailable',
     DEEPSEEK_SOURCE_BUSY: 'sourceBusy',
+    OPENCODE_PERMISSION_DENIED: 'sourceDatabasePermission',
+    OPENCODE_SCHEMA_UNSUPPORTED: 'sourceDatabaseSchema',
+    OPENCODE_DATABASE_BUSY: 'sourceDatabaseBusy',
+    OPENCODE_CAPTURE_LIMIT: 'sourceCaptureLimit',
+    OPENCODE_BUDGET_EXCEEDED: 'sourceCaptureLimit',
   };
   const counts = Object.entries(diagnostics.counts || {}).map(([code, count]) => (
-    `<li>${escapeHtml(t(explanations[code] || 'sourceUnreadable'))} (${escapeHtml(count)})</li>`
+    `<li>${escapeHtml(t(explanations[code] || (state.sourceKind === 'opencode' ? 'sourceDatabaseUnreadable' : 'sourceUnreadable')))} (${escapeHtml(count)})</li>`
   )).join('');
   const samples = (diagnostics.samples || []).slice(0, 20).map((sample) => (
     `<li><code>${escapeHtml(sample.path || '')}</code><p>${escapeHtml(sample.message || sample.code || '')}</p></li>`
   )).join('');
-  el.sourceDiagnostics.innerHTML = `<details><summary><strong>${escapeHtml(t('sourceDiagnosticsTitle', { count: diagnostics.totalCount }))}</strong> · ${escapeHtml(t('sourceDiagnosticsCompact'))}</summary><p>${escapeHtml(t('sourceDiagnosticsPartial'))}</p><ul>${counts}</ul><h4>${escapeHtml(t('sourceDiagnosticsDetails'))}</h4><ul>${samples}</ul>${diagnostics.truncatedCount ? `<p>${escapeHtml(t('sourceDiagnosticsTruncated', { count: diagnostics.truncatedCount }))}</p>` : ''}</details>`;
+  el.sourceDiagnostics.innerHTML = `<details><summary><strong>${escapeHtml(t('sourceDiagnosticsTitle', { count: diagnostics.totalCount }))}</strong> · ${escapeHtml(t('sourceDiagnosticsCompact'))}</summary><p>${escapeHtml(t(state.sourceKind === 'opencode' ? 'sourceDatabaseUnreadable' : 'sourceDiagnosticsPartial'))}</p><ul>${counts}</ul><h4>${escapeHtml(t('sourceDiagnosticsDetails'))}</h4><ul>${samples}</ul>${diagnostics.truncatedCount ? `<p>${escapeHtml(t('sourceDiagnosticsTruncated', { count: diagnostics.truncatedCount }))}</p>` : ''}</details>`;
 }
 
 function renderLegacyRawNotice() {
@@ -1470,13 +1476,15 @@ function projectJobStatusText(job) {
   const phase = progress.phase || job?.status || 'queued';
   const parts = [];
   if (phase === 'selecting') {
-    parts.push(t('scanningFiles', { done: progress.filesScanned || 0, total: progress.filesTotal || 0 }));
+    parts.push(t((job?.sourceKind || state.sourceKind) === 'opencode' ? 'scanningSessions' : 'scanningFiles', { done: progress.filesScanned || 0, total: progress.filesTotal || 0 }));
     parts.push(t('candidates', { count: progress.candidateFileCount || 0 }));
     parts.push(t('skipped', { count: progress.skippedFileCount || 0 }));
   } else if (phase === 'parsing') {
-    parts.push(t('parsingFiles', { done: progress.indexedFileCount || 0, total: progress.candidateFileCount || 0 }));
+    parts.push(t((job?.sourceKind || state.sourceKind) === 'opencode' ? 'parsingSessions' : 'parsingFiles', { done: progress.indexedFileCount || 0, total: progress.candidateFileCount || 0 }));
     parts.push(sessionCountLabel(progress.sessionCount || 0, job?.sourceKind || state.sourceKind));
     parts.push(fmtBytes(progress.indexedBytes || 0));
+  } else if (phase === 'capturing') {
+    parts.push(t('capturingSessions', { count: progress.capturedSessionCount || progress.sessionCount || 0 }));
   } else if (job?.status === 'cancelled') {
     parts.push(t('indexingCancelled'));
   } else if (job?.status === 'failed') {
@@ -1577,9 +1585,11 @@ function handleProjectRefreshError(error) {
   state.projectRefreshJobId = '';
   state.projectRefreshRetryCount = 0;
   clearProjectRefreshPollTimer();
-  setProjectRefreshStatus(t('projectRefreshFailed', {
+  const failure = t('projectRefreshFailed', {
     message: error?.message || t('indexingFailed'),
-  }), 'error');
+  });
+  setProjectRefreshStatus(state.sourceKind === 'opencode'
+    ? `${failure} ${t('projectRefreshSnapshotStale')}` : failure, 'error');
   updateProjectChrome();
 }
 
@@ -3155,10 +3165,7 @@ function sourceRefs(event) {
 }
 
 function sourceLabel(ref) {
-  const file = ref?.file || ref?.sourceLocator?.file || '';
-  const line = ref?.line ?? ref?.sourceLocator?.line;
-  if (file && line != null) return `${file}:${line}`;
-  return String(ref?.rawId || '');
+  return sourceReferenceLabel(ref);
 }
 
 function rawReferenceUrl(ref) {
@@ -3250,7 +3257,7 @@ function sourceHomeFromPayload(payload, kind) {
 }
 
 function sourceHomeLabel(kind) {
-  return t('sourceHomeLabel', { source: sourceKindLabel(kind) });
+  return t(kind === 'opencode' ? 'sourceDatabaseHomeLabel' : 'sourceHomeLabel', { source: sourceKindLabel(kind) });
 }
 
 function sourceHomeInputId(kind) {
@@ -3549,7 +3556,7 @@ function renderCacheMainContextAction(event) {
 
 function renderInspectorSource(event, detail = null) {
   const meta = detail?.meta || event;
-  const source = sourceLabel(meta.source || event.source);
+  const source = sourceLabel({ source: meta.source || event.source, sourceLocator: meta.sourceLocator || event.sourceLocator });
   if (!source) return '';
   return `<section class="inspectorSection">
     <h3>${escapeHtml(t('source'))}</h3>
@@ -4661,6 +4668,9 @@ async function applyAppState(appState) {
   el.layerSelect.value = state.layerId;
   syncSearchAssistControls();
   resetDetailPane();
+  if (appState.refreshFailure?.dataMayBeStale) {
+    handleProjectRefreshError(new Error(appState.refreshFailure.error || t('indexingFailed')));
+  }
 }
 
 async function finishProjectSelection(appState, options = {}) {

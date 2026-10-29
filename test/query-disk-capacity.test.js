@@ -180,3 +180,20 @@ test('disk resource exhaustion removes failed replacement storage and preserves 
   const query = createSessionQuery();
   assert.equal((await query.filterSessions(capacityIndex(query, [oldSession], store), { q: 'needle', layer: 'main' })).total, 1);
 });
+
+test('disk byte budget includes encoded metadata and rejects a replacement before exceeding the limit', async (t) => {
+  const directory = tempRoot(t);
+  const session = capacitySession('byte-budget');
+  const store = buildProjectQueryStore([session], { memoryRows: 0, tempRoot: directory });
+  t.after(() => disposeProjectQueryStore(store));
+  const maxBytes = store.accountedBytes;
+  const exact = buildProjectQueryStore([session], { memoryRows: 0, maxBytes, tempRoot: directory });
+  assert.equal(exact.accountedBytes, maxBytes);
+  disposeProjectQueryStore(exact);
+  assert.throws(() => buildProjectQueryStore([session], {
+    memoryRows: 0, maxBytes: maxBytes - 1, tempRoot: directory,
+  }), { code: 'PROJECT_QUERY_STORAGE_LIMIT' });
+  assert.equal(fs.readdirSync(directory).length, 1, 'failed candidate storage is removed');
+  const query = createSessionQuery();
+  assert.equal((await query.filterSessions(capacityIndex(query, [session], store), { q: 'needle', layer: 'main' })).total, 1);
+});

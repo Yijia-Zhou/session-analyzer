@@ -20,6 +20,8 @@ const {
   validateStructuredLogicalDetailDto,
 } = require('../src/shared/logical-detail-contract');
 const { CANONICAL_SCHEMA_VERSION } = require('../src/shared/canonical-schema');
+const { disposeIndexResources } = require('../src/index-resources');
+const { createOpenCodeFixture, messageRow, TIME } = require('./helpers/opencode-fixture');
 
 const CODEX_FIXTURE_HOME = path.join(__dirname, 'fixtures', 'codex-home');
 const CODEX_FIXTURE_REPO = 'G:\\vibe\\term-agent';
@@ -85,6 +87,36 @@ async function buildPiFixtureIndex(t) {
   ];
   await fsp.writeFile(path.join(directory, 'session.jsonl'), records.map((record) => JSON.stringify(record)).join('\n') + '\n');
   return getSourceAdapter('pi').buildIndex({ repoRoot, sourceHome: home });
+}
+
+async function buildOpenCodeFixtureIndex(t) {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-conformance-opencode-'));
+  let index;
+  t.after(async () => {
+    if (index) await disposeIndexResources(index);
+    await fsp.rm(home, { recursive: true, force: true });
+  });
+  const repoRoot = path.join(home, 'repo');
+  const dbPath = path.join(home, 'opencode.db');
+  const fixture = createOpenCodeFixture({ dbPath, repoRoot, messages: [
+    messageRow({ data: JSON.stringify({ time: { created: TIME }, text: 'OPENCODE_USER_PRIMARY_SENTINEL', files: [] }) }),
+    messageRow({ id: 'msg_assistant', type: 'assistant', seq: 2, data: JSON.stringify({
+      time: { created: TIME + 1, completed: TIME + 5 }, content: [
+        { type: 'tool', id: 'shell_conformance', name: 'shell',
+          time: { created: TIME + 1, ran: TIME + 2, completed: TIME + 4 },
+          state: { status: 'completed', input: { command: 'printf opencode-conformance', timeout: 15 },
+            content: [{ type: 'text', text: 'opencode-conformance' }], metadata: { status: 'exited', exit: 0 } } },
+        { type: 'text', text: 'OPENCODE_ASSISTANT_PRIMARY_SENTINEL' },
+      ],
+    }) }),
+    messageRow({ id: 'msg_future', type: 'future-message', seq: 3,
+      data: JSON.stringify({ time: { created: TIME + 6 }, text: 'OPENCODE_FALLBACK_SENTINEL' }) }),
+    messageRow({ id: 'msg_idle', type: 'idle', seq: 4,
+      data: JSON.stringify({ time: { created: TIME + 7 }, outcome: 'succeeded' }) }),
+  ] });
+  fixture.close();
+  index = await getSourceAdapter('opencode').buildIndex({ repoRoot, sourceHome: dbPath });
+  return index;
 }
 
 async function buildCodeModeFixtureIndex(t) {
@@ -378,8 +410,25 @@ async function assertResponsibilityFixture(fixture) {
 }
 
 test('all registered adapters satisfy one source-neutral detail and Raw readback suite', async (t) => {
-  assert.deepEqual(supportedSourceKinds(), ['codex', 'claude-code', 'deepseek-harness', 'pi']);
+  assert.deepEqual(supportedSourceKinds(), ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode']);
   const fixtures = [
+    {
+      kind: 'opencode',
+      index: await buildOpenCodeFixtureIndex(t),
+      expectedPurposes: ['content', 'request', 'result', 'context', 'fallback'],
+      expectedArchetypes: {
+        'readable-user-message': {
+          matchOwner: ({ event }) => event.preview === 'OPENCODE_USER_PRIMARY_SENTINEL',
+        },
+        'readable-assistant-message': {
+          matchOwner: ({ event }) => event.preview === 'OPENCODE_ASSISTANT_PRIMARY_SENTINEL',
+        },
+        'completed-command': {
+          matchOwner: ({ event }) => event.kind === 'command' && event.preview === 'printf opencode-conformance',
+          fullRequestEvidence: (section) => section?.value?.timeout === 15,
+        },
+      },
+    },
     {
       kind: 'pi',
       index: await buildPiFixtureIndex(t),

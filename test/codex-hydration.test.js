@@ -187,12 +187,14 @@ test('all Codex hydration entry points share one index coordinator without seria
   const preview = imageRaw.embeddedImages[0];
   const secondRaw = secondSession.rawEvents.at(-1);
   const sameIndexOrder = [];
-  let releaseGate;
-  const gate = new Promise((resolve) => { releaseGate = resolve; });
+  let releaseDetail;
+  const detailGate = new Promise((resolve) => { releaseDetail = resolve; });
+  let releaseRaw;
+  const rawGate = new Promise((resolve) => { releaseRaw = resolve; });
   let markTwoStarted;
   const twoStarted = new Promise((resolve) => { markTwoStarted = resolve; });
   let started = 0;
-  const hold = (name) => async () => {
+  const hold = (name, gate) => async () => {
     sameIndexOrder.push(name);
     started += 1;
     if (started === 2) markTwoStarted();
@@ -200,19 +202,27 @@ test('all Codex hydration entry points share one index coordinator without seria
   };
 
   const detail = buildHydratedEventDetail(firstFixture.index, firstSession, command.id, command.layer, {
-    onFileOpen: hold('detail'),
+    onFileOpen: hold('detail', detailGate),
   });
   const raw = readIndexedCodexRawRecord(firstFixture.index, firstSession, commandRaw, {
-    onFileOpen: hold('raw'),
+    onFileOpen: hold('raw', rawGate),
   });
   await twoStarted;
 
+  let markImageStarted;
+  const imageStarted = new Promise((resolve) => { markImageStarted = resolve; });
+  let releaseImage;
+  const imageGate = new Promise((resolve) => { releaseImage = resolve; });
   const image = readImagePreview(
     firstFixture.index,
     firstFixture.id,
     imageEvent.id,
     preview.previewId,
-    { onFileOpen: () => { sameIndexOrder.push('image'); } },
+    { onFileOpen: async () => {
+      sameIndexOrder.push('image');
+      markImageStarted();
+      await imageGate;
+    } },
   );
   const legacyOwner = resolveLegacyRawOwnerForIndex(
     firstFixture.index,
@@ -226,7 +236,9 @@ test('all Codex hydration entry points share one index coordinator without seria
     legacyOwner.adapter,
     { requestedFile: imageRaw.source.file, onFileOpen: () => { sameIndexOrder.push('legacy'); } },
   );
-  assert.deepEqual(sameIndexOrder, ['detail', 'raw']);
+  // Both slots are active; asynchronous source stat completion need not follow
+  // admission order. Only queued admission is FIFO.
+  assert.deepEqual([...sameIndexOrder].sort(), ['detail', 'raw']);
 
   let markIndependentStarted;
   const independentStarted = new Promise((resolve) => { markIndependentStarted = resolve; });
@@ -236,7 +248,16 @@ test('all Codex hydration entry points share one index coordinator without seria
   await independentStarted;
   assert.equal((await independent).line, secondRaw.source.line);
 
-  releaseGate();
+  // Release one slot while keeping Raw active, then hold Image in that slot.
+  // This verifies queued FIFO without confusing it with file-open completion
+  // order when two queued readers are admitted concurrently.
+  releaseDetail();
+  await imageStarted;
+  assert.deepEqual(sameIndexOrder.slice(2), ['image']);
+  releaseImage();
+  await image;
+  await legacy;
+  releaseRaw();
   const [hydratedDetail, hydratedRaw, hydratedImage, hydratedLegacy] = await Promise.all([
     detail,
     raw,
@@ -247,7 +268,8 @@ test('all Codex hydration entry points share one index coordinator without seria
   assert.equal(hydratedRaw.line, commandRaw.source.line);
   assert.equal(hydratedImage.bytes.toString('utf8'), 'hello');
   assert.equal(hydratedLegacy.line, imageRaw.source.line);
-  assert.deepEqual(sameIndexOrder, ['detail', 'raw', 'image', 'legacy']);
+  assert.deepEqual(sameIndexOrder.slice(0, 2).sort(), ['detail', 'raw']);
+  assert.deepEqual(sameIndexOrder.slice(2), ['image', 'legacy']);
 });
 
 test('active hydration abort stops a late scan without corrupting an independent request or the index', async (t) => {

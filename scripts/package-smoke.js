@@ -11,6 +11,7 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const packageMetadata = require('../package.json');
+const { createOpenCodeFixture } = require('../test/helpers/opencode-fixture');
 
 const repoRoot = path.join(__dirname, '..');
 const packageRegistry = packageMetadata.publishConfig?.registry;
@@ -237,11 +238,11 @@ function isPackageStatePayload(response) {
   const sourceKind = response?.json?.sourceKind;
   const sourcePresentationShape = sourceKind === 'codex'
     ? Array.isArray(response.json.codeModeRequests)
-    : (sourceKind === 'claude-code' || sourceKind === 'deepseek-harness' || sourceKind === 'pi')
+    : (sourceKind === 'claude-code' || sourceKind === 'deepseek-harness' || sourceKind === 'pi' || sourceKind === 'opencode')
       && !Object.hasOwn(response.json, 'codeModeRequests');
   return response.statusCode === 200
     && response.json
-    && ['codex', 'claude-code', 'deepseek-harness', 'pi'].includes(sourceKind)
+    && ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode'].includes(sourceKind)
     && response.json.totals
     && Array.isArray(response.json.supportedLocales)
     && response.json.eventKinds
@@ -380,9 +381,17 @@ async function main() {
     const claudeHome = path.join(smokeRoot, 'claude-home');
     const dshHome = path.join(smokeRoot, 'dsh-sessions');
     const piHome = path.join(smokeRoot, 'pi-agent');
+    const opencodeHome = path.join(smokeRoot, 'opencode-data');
+    const opencodeDbPath = path.join(opencodeHome, 'opencode.db');
+    const opencodeSessionId = 'ses_package_smoke';
+    const opencodeText = 'Verify the installed OpenCode adapter without its CLI.';
     const claudeContainer = path.join(claudeHome, 'projects', '-package-smoke');
     const claudeSessionId = '11111111-1111-4111-8111-111111111111';
     await fsp.mkdir(projectDir, { recursive: true });
+    const opencodeFixture = createOpenCodeFixture({ dbPath: opencodeDbPath, repoRoot: projectDir,
+      sessionId: opencodeSessionId, userText: opencodeText });
+    const opencodeUser = JSON.parse(JSON.stringify(opencodeFixture.db.prepare('SELECT * FROM session_message WHERE id = ?').get(opencodeFixture.messageId)));
+    opencodeFixture.close();
     await fsp.mkdir(path.join(codexHome, 'sessions'), { recursive: true });
     await fsp.mkdir(claudeContainer, { recursive: true });
     const piSessionDir = path.join(piHome, 'sessions', '--package-smoke-project--');
@@ -540,6 +549,7 @@ async function main() {
       throw new Error('Installed CLI help did not include transcript source selection');
     }
     assert.ok(help.stdout.includes('--pi-home <path>'), 'Installed CLI must expose the pi agent directory option');
+    assert.ok(help.stdout.includes('--opencode-home <path>'), 'Installed CLI must expose OpenCode directory/database selection');
 
     const packagedServer = path.join(smokeRoot, 'node_modules', 'session-analyzer', 'server.js');
     const packageRoot = path.dirname(packagedServer);
@@ -630,11 +640,24 @@ async function main() {
       'Installed pi root HTML must reference the generated browser bundle');
     await stopChild(child);
     child = null;
+    launched = await launchPackagedServer(packagedServer, smokeRoot, [
+      '--source', 'opencode', '--repo', projectDir, '--opencode-home', opencodeDbPath,
+    ]);
+    child = launched.child;
+    baseUrl = `http://127.0.0.1:${launched.port}`;
+    const opencodeState = await waitForPackageState(baseUrl);
+    await verifyPackageReading(baseUrl, opencodeState.json, {
+      sourceKind: 'opencode', repoRoot: projectDir, sourceHome: opencodeDbPath,
+      sessions: [{ id: opencodeSessionId, text: opencodeText, record: opencodeUser }],
+    });
+    await stopChild(child);
+    child = null;
     for (const fixture of [
       { source: 'codex', rootOption: '--codex-home', home: codexHome, text: codexText, count: codexSessions.length },
       { source: 'claude-code', rootOption: '--claude-home', home: claudeHome, text: claudeRecords[1].message.content, count: 1 },
       { source: 'deepseek-harness', rootOption: '--dsh-home', home: dshHome, text: dshSessions[0].text, count: dshSessions.length },
       { source: 'pi', rootOption: '--pi-home', home: piHome, text: piText, count: 1 },
+      { source: 'opencode', rootOption: '--opencode-home', home: opencodeHome, text: opencodeText, count: 1 },
     ]) {
       launched = await launchPackagedServer(packagedServer, smokeRoot, [
         'history', 'serve', '--source', fixture.source, '--repo', projectDir, fixture.rootOption, fixture.home,
@@ -738,7 +761,7 @@ async function main() {
       child = null;
       console.log(fixture.source + ': packaged history status -> search -> context -> read -> raw -> open passed.');
     }
-    console.log('Codex, Claude Code, DeepSeek Harness, and pi UI and history package smoke passed.');
+    console.log('Codex, Claude Code, DeepSeek Harness, pi, and OpenCode UI and history package smoke passed.');
   } finally {
     await stopChild(child);
     if (tarballPath) {
