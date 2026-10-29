@@ -244,15 +244,78 @@ test('rolled-back same-cycle spill frames do not invalidate a later healthy comm
   }
 });
 
-test('corrupt uncommitted-looking frames cannot hide a following commit marker', async t => {
+for (const mode of ['TRUNCATE', 'RESTART']) for (const recover of [false, true]) {
+  test(`${mode} checkpoint followed only by rollback remains readable (${recover ? 'recover without SHM' : 'live connection'})`, async t => {
+    const f = await fixture(t, { userText: 'durable' });
+    const update = f.db.prepare('UPDATE session_message SET data=? WHERE id=?');
+    if (mode === 'RESTART') {
+      // Retain an older allocation with commit markers beyond the next spill.
+      update.run(JSON.stringify({ text: 'x'.repeat(1000000) }), f.messageId);
+      update.run(JSON.stringify({ text: 'durable' }), f.messageId);
+    }
+    assert.equal(f.db.prepare(`PRAGMA wal_checkpoint(${mode})`).get().busy, 0);
+    f.db.exec('PRAGMA cache_size=5');
+    // Different bytes and lengths make the shorter second spill overwrite only
+    // a prefix of the first, leaving a same-cycle checksum discontinuity.
+    for (const [size, character] of mode === 'TRUNCATE' ? [[200000, 'a'], [100000, 'b']] : [[100000, 'b']]) {
+      f.db.exec('BEGIN');
+      update.run(JSON.stringify({ text: character.repeat(size) }), f.messageId);
+      f.db.exec('ROLLBACK');
+    }
+    assert.equal(f.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+    assert.equal(JSON.parse(f.db.prepare('SELECT data FROM session_message WHERE id=?').get(f.messageId).data).text, 'durable');
+    const wal = await fsp.readFile(f.dbPath + '-wal'); const stride = 24 + wal.readUInt32BE(8);
+    let currentFrames = 0; let olderCommits = 0;
+    for (let offset = 32; offset + stride <= wal.length; offset += stride) {
+      if (wal.subarray(offset + 8, offset + 16).equals(wal.subarray(16, 24))) {
+        currentFrames++; assert.equal(wal.readUInt32BE(offset + 4), 0, 'no new commit after checkpoint');
+      } else if (wal.readUInt32BE(offset + 4)) olderCommits++;
+    }
+    assert.ok(currentFrames > 1, 'real SQLite cache spill occurred');
+    if (mode === 'RESTART') assert.ok(olderCommits > 0, 'old-cycle committed allocation remains');
+    const sourceHome = recover ? path.join(f.root, 'rollback-only.db') : f.dbPath;
+    if (recover) {
+      await fsp.copyFile(f.dbPath, sourceHome); await fsp.copyFile(f.dbPath + '-wal', sourceHome + '-wal');
+      assert.equal(fs.existsSync(sourceHome + '-shm'), false);
+    }
+    const before = storage.hash(await fsp.readFile(sourceHome)); const beforeWal = storage.hash(wal);
+    const projects = await storage.discoverOpenCodeProjects({ sourceHome });
+    assert.equal(projects.length, 1); assert.equal(projects[0].repoRoot, f.repoRoot); assert.equal(projects[0].sessionCount, 1);
+    const cap = await capture(t, f, { sourceHome });
+    const snapshot = await storage.readOpenCodeSnapshot(cap.snapshotRoot, cap.sessions[0]);
+    assert.equal(snapshot.messages.length, 3); assert.equal(JSON.parse(snapshot.messages[0].data).text, 'durable');
+    assert.equal(storage.hash(await fsp.readFile(sourceHome)), before);
+    assert.equal(storage.hash(await fsp.readFile(sourceHome + '-wal')), beforeWal);
+  });
+}
+
+for (const damage of ['checksum', 'salt']) test(`rollback-only WAL still requires a verified current-cycle prefix (${damage})`, async t => {
+  const f = await fixture(t, { userText: 'durable' });
+  f.db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA cache_size=5; BEGIN');
+  f.db.prepare('UPDATE session_message SET data=? WHERE id=?').run(JSON.stringify({ text: 'x'.repeat(200000) }), f.messageId);
+  f.db.exec('ROLLBACK');
+  const copy = path.join(f.root, 'damaged-rollback.db'); await fsp.copyFile(f.dbPath, copy);
+  const wal = await fsp.readFile(f.dbPath + '-wal');
+  wal[damage === 'salt' ? 32 + 8 : 32 + 24 + 2] ^= 1;
+  await fsp.writeFile(copy + '-wal', wal);
+  await assert.rejects(storage.discoverOpenCodeProjects({ sourceHome: copy }), { code: 'OPENCODE_DATABASE_INVALID' });
+  await assert.rejects(storage.captureOpenCodeProject({ ...f.options, sourceHome: copy }), { code: 'OPENCODE_DATABASE_INVALID' });
+  await assertEmptyCandidates(f.options.snapshotBase);
+});
+
+for (const priorCommit of [false, true]) test(`corrupt uncommitted-looking frames cannot hide a following commit marker (prior commit: ${priorCommit})`, async t => {
   const f = await fixture(t); f.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-  f.db.prepare('UPDATE session_message SET data=? WHERE id=?').run(JSON.stringify({ text: 'first commit' }), 'msg_fixture_user');
-  const firstBytes = (await fsp.stat(f.dbPath + '-wal')).size;
+  if (priorCommit) f.db.prepare('UPDATE session_message SET data=? WHERE id=?').run(JSON.stringify({ text: 'first commit' }), 'msg_fixture_user');
+  const firstBytes = priorCommit ? (await fsp.stat(f.dbPath + '-wal')).size : 32;
   f.db.prepare('UPDATE session_message SET data=? WHERE id=?').run(JSON.stringify({ text: 'second commit ' + 'x'.repeat(200000) }), 'msg_fixture_user');
   const copy = path.join(f.root, 'damaged-prefix.db'); await fsp.copyFile(f.dbPath, copy);
   const wal = await fsp.readFile(f.dbPath + '-wal');
-  assert.equal(wal.readUInt32BE(firstBytes + 4), 0, 'the corrupted frame precedes the second commit marker');
-  wal[firstBytes + 30] ^= 1; await fsp.writeFile(copy + '-wal', wal);
+  // With no prior commit, keep the first frame valid so rejection must inspect
+  // the suffix after a damaged frame rather than only require a valid prefix.
+  const damagedOffset = priorCommit ? firstBytes : firstBytes + wal.readUInt32BE(8) + 24;
+  assert.equal(wal.readUInt32BE(damagedOffset + 4), 0, 'the corrupted frame precedes a commit marker');
+  wal[damagedOffset + 30] ^= 1; await fsp.writeFile(copy + '-wal', wal);
+  await assert.rejects(storage.discoverOpenCodeProjects({ sourceHome: copy }), { code: 'OPENCODE_DATABASE_INVALID' });
   await assert.rejects(storage.captureOpenCodeProject({ ...f.options, sourceHome: copy }), { code: 'OPENCODE_DATABASE_INVALID' });
 });
 

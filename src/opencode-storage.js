@@ -145,9 +145,10 @@ async function checkWal(databasePath, context, frames = false) {
     // SQLite deliberately ignores an invalid WAL suffix. That recovery behavior
     // must not make an Analyzer refresh silently serve only older main-file rows.
     // This scan runs with SQLite's read transaction already established: normal
-    // writers may append, but cannot reset the WAL containing our read view.
+    // writers may append. A view using only checkpointed main-file pages does
+    // not pin a WAL cycle; the final header/identity check detects a restart.
     const frame = Buffer.alloc(pageSize + 24);
-    let committed = false;
+    let verifiedFrames = 0;
     let tail = null;
     for (let position = 32; position < stat.size; position += frame.length) {
       checkpoint(context);
@@ -161,31 +162,35 @@ async function checkWal(databasePath, context, frames = false) {
       const sameCycle = frame.subarray(8, 16).equals(header.subarray(16, 24));
       if (!sameCycle) {
         // A normal restart increments salt1 and randomizes salt2. Arbitrary
-        // mismatches, especially before the first valid commit, must not hide
-        // a damaged committed frame. Retained allocations may span old cycles.
+        // mismatches must not hide a damaged committed frame. A verified
+        // current-cycle prefix is required, but it need not contain a commit:
+        // checkpoint + rollback can leave only uncommitted current frames.
+        // Retained allocations may span old cycles and contain old commits.
         const age = (header.readUInt32BE(16) - frame.readUInt32BE(8)) >>> 0;
-        if (!committed || !age || age >= 0x80000000 || frame.readUInt32BE(12) === header.readUInt32BE(20)) {
+        if (!verifiedFrames || !age || age >= 0x80000000 || frame.readUInt32BE(12) === header.readUInt32BE(20)) {
           throw error('OPENCODE_DATABASE_INVALID', 'The OpenCode WAL frame salt is invalid or ambiguous');
         }
         tail = 'older-cycle';
         continue;
       }
       if (tail === 'older-cycle') throw error('OPENCODE_DATABASE_INVALID', 'The OpenCode WAL returns to current frames after an invalid salt');
+      if (!frame.readUInt32BE(0)) throw error('OPENCODE_DATABASE_INVALID', 'The OpenCode WAL frame page number is invalid');
       if (tail === 'uncommitted') {
         if (frame.readUInt32BE(4)) throw error('OPENCODE_DATABASE_INVALID', 'The OpenCode WAL contains a commit after a damaged frame');
         continue;
       }
       checksum = walChecksum(frame.subarray(0, 8), littleEndian, checksum);
       checksum = walChecksum(frame.subarray(24), littleEndian, checksum);
-      if (!frame.readUInt32BE(0) || checksum[0] !== frame.readUInt32BE(16) || checksum[1] !== frame.readUInt32BE(20)) {
-        // Rolled-back transactions can leave same-cycle spill frames at EOF.
-        // They are harmless only after a verified commit and without a commit
-        // marker anywhere in the remaining same-cycle suffix. Check every frame
-        // header rather than treating physical EOF as the committed boundary.
-        if (!committed || frame.readUInt32BE(4)) throw error('OPENCODE_DATABASE_INVALID', 'The OpenCode WAL frame checksum is invalid; retry after its writer settles');
+      if (checksum[0] !== frame.readUInt32BE(16) || checksum[1] !== frame.readUInt32BE(20)) {
+        // A shorter second rollback can overwrite only a prefix of an earlier
+        // spill, breaking the checksum chain with no commit in this WAL cycle.
+        // Require a verified prefix and examine ALL remaining frame headers:
+        // a commit on/after a broken current-cycle frame still fails, whether
+        // or not a valid commit preceded it. Never ignore the suffix at EOF.
+        if (!verifiedFrames || frame.readUInt32BE(4)) throw error('OPENCODE_DATABASE_INVALID', 'The OpenCode WAL frame checksum is invalid; retry after its writer settles');
         tail = 'uncommitted';
-      } else if (frame.readUInt32BE(4)) {
-        committed = true;
+      } else {
+        verifiedFrames++;
       }
     }
     const current = Buffer.alloc(32);
