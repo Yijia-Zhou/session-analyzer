@@ -134,6 +134,7 @@
   ],
   "scripts": {
     "start": "node server.js",
+    "dev": "npm run build && node server.js",
     "build": "npm run build:client",
     "build:check": "node scripts/build-client.js --check",
     "build:client": "node scripts/build-client.js",

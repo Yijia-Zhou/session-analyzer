@@ -7,6 +7,7 @@ const os = require('node:os');
 const { chromium } = require('playwright');
 const { createHistoryService } = require('../src/history-service');
 const { createServer } = require('../server');
+const { withNavigationDiagnostics } = require('./browser-diagnostics');
 
 async function fixture(t, extraBranches = 0, statistics = false) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-navigation-'));
@@ -560,7 +561,7 @@ async function excerptSnapshot(page) {
   }));
 }
 
-async function preparedExcerpt(t, detailView) {
+async function preparedExcerpt(t, detailView, diagnostics) {
   const data = await fixture(t);
   const rows = (await fs.readFile(data.file, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
   rows.find((row) => row.id === 'summary-b').summary += '\n\n' + Array.from({ length: 24 }, (_, i) => `Synthetic recovery paragraph ${i}: retain the reader viewport and disclosure choices.`).join('\n\n');
@@ -570,6 +571,7 @@ async function preparedExcerpt(t, detailView) {
   assert.ok(hit?.ref);
   const browser = await chromium.launch(); t.after(() => browser.close());
   const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } });
+  await diagnostics?.attach(page);
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
   await observeExcerptNavigation(page);
   const original = `${server.origin}/#ref=${encodeURIComponent(hit.ref)}`;
@@ -667,12 +669,16 @@ for (const view of ['inspector', 'rawRefs']) test(`pi browser Back restores the 
 
 for (const simulatedCompanion of [false, true]) test(simulatedCompanion
   ? 'pi excerpt simulated companion hashchange preserves the gated Back owner and later Forward'
-  : 'pi excerpt browser Forward retires a gated Back before its real response arrives', { timeout: 45000 }, async (t) => {
-  const { page, selected, snapshot, errors } = await preparedExcerpt(t, 'rawRefs');
+  : 'pi excerpt browser Forward retires a gated Back before its real response arrives', { timeout: 45000 }, withNavigationDiagnostics(async (t, diagnostics) => {
+  const { page, selected, snapshot, errors } = await preparedExcerpt(t, 'rawRefs', diagnostics);
   await page.getByRole('button', { name: 'Read referenced entry', exact: true }).evaluate((node) => node.click());
   await page.waitForFunction(() => new URL(location.href).searchParams.has('piEntry') && window.__piExcerptTrace.pending === 0);
+  // The fetch observer sees headers before the entry-action JSON updates Detail.
+  // Capture the completed target surface, including its native-entry actions.
+  await page.locator('#detail [data-pi-copy-entry]').waitFor();
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const target = await excerptSnapshot(page);
+  await diagnostics.checkpoint('native-entry-target-ready', { eventId: target.selected });
   const length = await page.evaluate(() => history.length);
   let release; const gate = new Promise((resolve) => { release = resolve; });
   let started; const pending = new Promise((resolve) => { started = resolve; });
@@ -713,6 +719,7 @@ for (const simulatedCompanion of [false, true]) test(simulatedCompanion
     && document.querySelector('#timeline .event.selected')?.dataset.eventId === id
     && document.body.dataset.detailView === view && window.__piExcerptTrace.pending <= 1
     && document.querySelector('#detail').textContent.includes('B_SUCCEEDED_EVIDENCE'), { url: target.url, id: target.selected, view: target.view });
+  await page.locator('#detail [data-pi-copy-entry]').waitFor();
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const forwarded = await excerptSnapshot(page);
   assert.deepEqual({ ...forwarded, scroll: target.scroll }, target, 'Forward restores the target reading surface');
@@ -728,7 +735,7 @@ for (const simulatedCompanion of [false, true]) test(simulatedCompanion
   await excerptSettled(page, selected, 'rawRefs');
   assert.deepEqual(await excerptSnapshot(page), snapshot, 'a later Back still restores the unconsumed excerpt');
   assert.deepEqual(errors, []);
-});
+}));
 
 test('pi excerpt manual reference changes still resolve after snapshot-owned browser Back', { timeout: 45000 }, async (t) => {
   const { page, server, selected, errors } = await preparedExcerpt(t, 'inspector');

@@ -41,12 +41,13 @@ When changing product behavior or repository structure:
 ## Repository invariants / 仓库不变量
 
 - Do not commit real transcript data or unsanitized exports/fixtures; use minimized synthetic or sanitized fixtures. / 不提交真实转录数据或未脱敏导出／fixture；使用最小化合成或脱敏 fixture。
-- `public/assets/app.js` is generated: edit `src/browser/` or `src/shared/`, rebuild, and check generated assets. / `public/assets/app.js` 是生成文件：修改 `src/browser/` 或 `src/shared/`，重新构建并检查生成资产。
+- Browser assets are generated: edit source, rebuild and test locally, but omit `public/assets/app.js` and `public/vendor/highlightjs/highlight.min.js` changes from ordinary development PRs. Restore only these paths before committing; rebuild before the next preview. Release PRs to `main` and same-repository `main` backmerges commit matching assets. See [asset workflow](docs/design-docs/browser-asset-workflow.md). / 浏览器资产为生成文件：修改源码后在本地构建并测试，但普通开发 PR 不提交上述两个文件的变更。提交前仅恢复这两个路径，下次预览前重新构建。面向 `main` 的发布 PR 与同仓库 `main` 回灌提交匹配资产。详见[资产流程](docs/design-docs/browser-asset-workflow.md)。
 - Keep machine identifiers such as `kind`, `status`, `layer`, `rawRefs`, and `sourceLocator` stable and untranslated. / 保持 `kind`、`status`、`layer`、`rawRefs`、`sourceLocator` 等机器标识稳定，不翻译。
 
 ## Local server startup
 
-- Start: `$repo = (git rev-parse --show-toplevel); $node = (Get-Command 'node.exe' -ErrorAction Stop).Source; $process = Start-Process -FilePath $node -ArgumentList @('server.js', '--repo', $repo) -WorkingDirectory $repo -WindowStyle Hidden -PassThru; $process.Id`
+- Source preview: use `npm run dev -- --repo <project>` after the pinned toolchain/dependency setup. It builds this checkout before starting. Direct `node server.js` and `npm start` serve existing assets; after a branch switch, build first. / 源码预览：完成固定工具链与依赖设置后，用 `npm run dev -- --repo <project>`，启动前先构建当前 checkout。直接运行 `node server.js` 或 `npm start` 使用已有资产；切换分支后须先构建。
+- Manual start: `$repo = (git rev-parse --show-toplevel); npm run build; if ($LASTEXITCODE -ne 0) { throw 'Browser build failed' }; $node = (Get-Command 'node.exe' -ErrorAction Stop).Source; $process = Start-Process -FilePath $node -ArgumentList @('server.js', '--repo', $repo) -WorkingDirectory $repo -WindowStyle Hidden -PassThru; $process.Id`
 - HTTP readiness only: `Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:17890/' -TimeoutSec 10`. This does not verify indexing. / 此检查只证明 HTTP 就绪，不证明索引完成。
 - Project acceptance: use the bounded checks and result contract in [agent quickstart](docs/usage/agent-quickstart.md). Verify the intended project/source/root, indexing outcome, count, diagnostics, and actual reading; report errors/codes, zero, pending, or cancellation explicitly. These are internal API checks. / 项目验收：按 [agent 快速开始](docs/usage/agent-quickstart.md)执行有界检查与结果契约，核验预期项目／来源／根、索引结果、数量、诊断及实际阅读，明确报告错误／错误码、零会话、等待或取消；这些是内部 API 检查。
 - In Codex sandboxed tool sessions, background `Start-Process` server launches may be cleaned up when the command finishes. For a persistent browser-verification server, start this command outside the sandbox / with escalated execution.

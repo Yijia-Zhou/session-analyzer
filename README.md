@@ -116,7 +116,7 @@ The [online startup and verification guide](https://github.com/Yijia-Zhou/sessio
 Native pi support is new source-checkout functionality; the published `session-analyzer@0.2.1` command above does **not** include it. After [source setup and build](docs/development.md), run:
 
 ```sh
-node server.js --source pi --repo /path/to/project --pi-home /path/to/pi/agent
+npm run dev -- --source pi --repo /path/to/project --pi-home /path/to/pi/agent
 ```
 
 `--pi-home` is the agent directory containing `sessions/`, not the sessions directory itself. Its default is `PI_CODING_AGENT_DIR` when set, otherwise `~/.pi/agent`. Choose **pi** in the project chooser to switch sources.
@@ -128,7 +128,7 @@ The adapter reads native session version **3**, verified against pi **1.4.0**, w
 The source checkout also reads OpenCode **2.1.4** native SQLite history; the published `session-analyzer@0.2.1` command does **not** include it. After [source setup and build](docs/development.md), run:
 
 ```sh
-node server.js --source opencode --repo /path/to/project --opencode-home /path/to/opencode.db
+npm run dev -- --source opencode --repo /path/to/project --opencode-home /path/to/opencode.db
 ```
 
 `--opencode-home` accepts a database file or its data directory. Choose **OpenCode** in the project chooser to configure this source. Reading history does not require the OpenCode CLI, `export`, a model service or an API key. Each indexed revision captures immutable source data, so search, Detail and Raw read the same content even if OpenCode later updates it. Refresh captures a replacement; failed refreshes preserve a still-valid previous revision and report the failure. See [OpenCode support, runtime requirements and limitations](docs/design-docs/opencode-native-sessions.md).

@@ -116,7 +116,7 @@ Claude Code 外置的 `tool-results/*` payload 暂不加载或搜索。受支持
 原生 pi 支持是新增的源码 checkout 功能；上文已发布的 `session-analyzer@0.2.1` 命令**不包含**该功能。完成[源码配置与构建](docs/development.md)后运行：
 
 ```sh
-node server.js --source pi --repo /path/to/project --pi-home /path/to/pi/agent
+npm run dev -- --source pi --repo /path/to/project --pi-home /path/to/pi/agent
 ```
 
 `--pi-home` 指包含 `sessions/` 的 agent 目录，不是 sessions 目录本身。默认使用已设置的 `PI_CODING_AGENT_DIR`，否则使用 `~/.pi/agent`。也可以在项目选择器选择 **pi** 来切换来源。
@@ -128,7 +128,7 @@ node server.js --source pi --repo /path/to/project --pi-home /path/to/pi/agent
 源码 checkout 也可读取 OpenCode **2.1.4** 的原生 SQLite 历史；已发布的 `session-analyzer@0.2.1` 命令**不包含**该功能。完成[源码配置与构建](docs/development.md)后运行：
 
 ```sh
-node server.js --source opencode --repo /path/to/project --opencode-home /path/to/opencode.db
+npm run dev -- --source opencode --repo /path/to/project --opencode-home /path/to/opencode.db
 ```
 
 `--opencode-home` 接受数据库文件或其数据目录。可在项目选择器选择 **OpenCode** 配置此来源。读取历史不依赖 OpenCode CLI、`export`、模型服务或 API key。每个已索引 revision 捕获不可变来源数据，因此即使 OpenCode 后续更新内容，搜索、Detail 与 Raw 仍读取同一份内容。刷新捕获替换版本；刷新失败时保留仍有效的旧 revision 并报告失败。详见 [OpenCode 支持范围、运行时要求与限制](docs/design-docs/opencode-native-sessions.md)。
