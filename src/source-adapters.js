@@ -11,6 +11,8 @@ const codex = require('./codex');
 const claude = require('./claude');
 const deepseekHarness = require('./deepseek-harness');
 const pi = require('./pi');
+const opencode = require('./opencode');
+const { withIndexResources } = require('./index-resources');
 const { buildClaudeEventDetail } = require('./claude-detail');
 const { collaborationNavigation } = require('./shared/collaboration-navigation');
 const { detailNavigation } = require('./shared/detail-navigation');
@@ -52,6 +54,7 @@ const SOURCE_KIND = Object.freeze({
   CLAUDE_CODE: 'claude-code',
   DEEPSEEK_HARNESS: 'deepseek-harness',
   PI: 'pi',
+  OPENCODE: 'opencode',
 });
 
 function graphFingerprint(value, identityState = {
@@ -888,6 +891,7 @@ const adapters = createSourceAdapterRegistry([
   claudeAdapter,
   deepseekHarness.deepSeekAdapter,
   pi.piAdapter,
+  opencode.opencodeAdapter,
 ]);
 
 function getSourceAdapter(value) {
@@ -1331,6 +1335,10 @@ async function materializeSessionForIndex(index, indexedSession, options = {}) {
 }
 
 async function materializeSessionWithAdapter(index, indexedSession, adapter, options = {}) {
+  return withIndexResources(index, () => materializeSessionWithAdapterOwned(index, indexedSession, adapter, options));
+}
+
+async function materializeSessionWithAdapterOwned(index, indexedSession, adapter, options = {}) {
   const indexKind = validateCanonicalIndexFields(index);
   const trustedResidentBoundary = adapter.sessionLifecycle === SESSION_LIFECYCLE.RESIDENT_COMPLETE
     && adapter.materializeSession === materializeResidentSession;
@@ -1678,6 +1686,10 @@ function adapterForSession(session) {
 }
 
 async function buildEventDetailForSession(index, session, eventId, layer, options = {}) {
+  return withIndexResources(index, () => buildEventDetailForSessionOwned(index, session, eventId, layer, options));
+}
+
+async function buildEventDetailForSessionOwned(index, session, eventId, layer, options = {}) {
   const indexKind = requireExplicitSourceKind(index?.sourceKind, 'index');
   const sessionSourceKind = validateCanonicalSessionShape(session, indexKind);
   const requestedLayer = layer === undefined ? 'main' : layer;
@@ -1752,6 +1764,10 @@ function validateLogicalEventRawReferences(session, event, expectedSourceKind) {
 }
 
 async function readImagePreviewForSession(index, session, eventId, previewId, options = {}) {
+  return withIndexResources(index, () => readImagePreviewForSessionOwned(index, session, eventId, previewId, options));
+}
+
+async function readImagePreviewForSessionOwned(index, session, eventId, previewId, options = {}) {
   const indexKind = requireExplicitSourceKind(index?.sourceKind, 'index');
   const sessionSourceKind = validateCanonicalSessionShape(session, indexKind);
   const event = session.logicalEvents.find((candidate) => candidate.id === eventId);
@@ -1771,6 +1787,10 @@ async function readImagePreviewForSession(index, session, eventId, previewId, op
 }
 
 async function readIndexedRawRecord(index, session, rawId, options = {}) {
+  return withIndexResources(index, () => readIndexedRawRecordOwned(index, session, rawId, options));
+}
+
+async function readIndexedRawRecordOwned(index, session, rawId, options = {}) {
   const raw = session?.rawEvents?.find((candidate) => candidate.rawId === rawId);
   if (!raw) return null;
   const indexKind = requireExplicitSourceKind(index?.sourceKind, 'index');
@@ -1823,6 +1843,10 @@ function resolveLegacyRawOwnerForIndex(index, file, line) {
 }
 
 async function readLegacyRawLineForSession(index, materializedSession, owner, adapter, options = {}) {
+  return withIndexResources(index, () => readLegacyRawLineForSessionOwned(index, materializedSession, owner, adapter, options));
+}
+
+async function readLegacyRawLineForSessionOwned(index, materializedSession, owner, adapter, options = {}) {
   const indexKind = requireExplicitSourceKind(index?.sourceKind, 'index');
   const sessionSourceKind = validateCanonicalSessionShape(materializedSession, indexKind);
   if (materializedSession.id !== owner.sessionId) {
