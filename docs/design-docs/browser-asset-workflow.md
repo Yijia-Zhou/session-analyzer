@@ -40,6 +40,8 @@ Historical checkout and `git bisect` must include compatible dependencies and `n
 
 ## CI and release / CI 与发布
 
+CI explicitly subscribes to PR `opened`, `synchronize`, `reopened` and `edited` activities. Retargeting a PR therefore reruns scope and asset policy against the new base even when its head SHA is unchanged; changing the target to `main` must select `committed` before dependent jobs run. / CI 显式订阅上述四种 PR 活动。因此，即使 head SHA 不变，修改 PR 目标分支也会基于新 base 重新执行 scope 与资产策略；改为面向 main 后，后续 job 运行前必须选择 committed。
+
 `scripts/ci-assets.js policy` runs without dependency installation in the full-history scope job. Ordinary PRs compare their exact merge-base diff and fail if either generated path changed, including moves or deletion. Missing commits/history fail the gate. PRs targeting `main`, main pushes and tag dispatches select `committed`; development pushes and ordinary PRs select `rebuild`. Same-repository `main` backmerges may update the saved release assets and select `rebuild`, because the merged development source may already be newer than that release. Unknown event contexts fail. / 策略脚本在具备完整历史的 scope job 中运行，无需安装依赖。普通 PR 检查精确 merge-base diff，任一生成路径发生变化（包括移动或删除）即失败；缺少提交／历史也失败。面向 `main` 的 PR、main push 和 tag dispatch 选择 committed；开发 push 与普通 PR 选择 rebuild。同仓库 `main` 回灌可更新已保存的发布资产，但合并后的开发源码可能已领先于发布，因此选择 rebuild。未知事件上下文失败。
 
 Every Node, package and browser job prepares its own assets after strict installation. `rebuild` generates from current source; `committed` calls the existing non-mutating `--check` before testing. The final CI gate still requires scope and all required suites. / 每个 Node、安装包和浏览器 job 都在严格安装后独立准备资产。rebuild 从当前源码生成；committed 在测试前调用已有的非修改式检查。最终 CI 仍要求 scope 与所有必需套件通过。

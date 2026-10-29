@@ -102,6 +102,32 @@ test('development rebuild uses current source while committed/release check reje
   prepareAssets('committed', { root });
 });
 
+test('PR target edits trigger CI and unconditionally rerun the asset policy before dependent jobs', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8').replace(/\r\n/gu, '\n');
+  const triggers = /^on:\n([\s\S]*?)(?=^\S)/mu.exec(workflow);
+  assert.ok(triggers, 'CI event subscriptions must be explicit');
+  const pullRequest = /^  pull_request:\n((?:    [^\n]*\n)*)/mu.exec(triggers[1]);
+  assert.ok(pullRequest, 'CI must subscribe to pull_request');
+  const types = /^    types: \[([^\]]+)\]$/mu.exec(pullRequest[1]);
+  assert.ok(types, 'PR event types must explicitly include target edits');
+  const subscribed = types[1].split(',').map(type => type.trim());
+  for (const type of ['opened', 'synchronize', 'reopened', 'edited']) {
+    assert.ok(subscribed.includes(type), `Missing pull_request activity: ${type}`);
+  }
+  const scope = workflow.split('\n  scope:\n')[1].split('\n  node:\n')[0];
+  assert.doesNotMatch(scope, /^    if:/mu, 'Target edits must not skip scope classification');
+  const policy = scope.split('      - name: Check generated-asset commit policy\n')[1];
+  assert.ok(policy, 'Scope must evaluate the generated-asset policy');
+  assert.doesNotMatch(policy, /^        if:/mu, 'Target edits must not skip asset policy evaluation');
+  assert.match(policy, /run: node scripts\/ci-assets\.js policy/u);
+  assert.match(scope, /asset_mode: \$\{\{ steps\.assets\.outputs\.asset_mode \}\}/u);
+  for (const job of ['node', 'package', 'browser']) {
+    const block = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z]+:\n/u)[0];
+    assert.match(block, /^    needs: scope$/mu);
+    assert.match(block, /ASSET_MODE: \$\{\{ needs\.scope\.outputs\.asset_mode \}\}/u);
+  }
+});
+
 test('every dependency-installing CI job prepares its own assets and publication retains the non-mutating gate', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8').replace(/\r\n/gu, '\n');
   for (const job of ['node', 'package', 'browser']) {
