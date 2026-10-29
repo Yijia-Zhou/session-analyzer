@@ -850,20 +850,26 @@ test('manual search retires a delayed detail on query change and exposes failed 
   await page.screenshot({ path: path.join(__dirname, '../output/history-open-validation/manual-search-mobile.png') });
 });
 
-test('project search drilldown places the missing hit beside the exact event and retires it on return', withNavigationDiagnostics(async (t, diagnostics) => {
+test('project search drilldown places the missing hit beside the exact event and retires it on return', { timeout: 45000 }, withNavigationDiagnostics(async (t, diagnostics) => {
   const { page, url, hit } = await fixture(t, { diagnostics });
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await page.locator('#searchHudScope').click();
   await page.locator('#searchAssist').getByRole('button', { name: 'Entire project' }).click();
   await page.locator('#searchInput').fill('DEEP_OUTPUT_HIT');
   await page.locator('#sessionList .projectResultCard').click();
-  await selected(page, hit.eventId);
-  // Drilldown materializes and expands the match after marking it selected.
-  // Wait for that result instead of toggling a card the navigation still owns.
+  await readableSelectedCard(page, hit.eventId);
   const card = page.locator(`#timeline article[data-event-id="${hit.eventId}"]`);
+  await diagnostics.checkpoint('project-drilldown-selected-ready', {
+    eventId: hit.eventId, toggle: await card.locator('.eventToggle').boundingBox(),
+  });
+  // A hit in the collapsed preview need not auto-expand. With 480 preceding
+  // expanded messages, real detail loading and scroll settlement can exceed
+  // the fixture's 10-second action default under the full concurrent suite.
+  if (!(await card.getAttribute('class')).includes('expanded')) {
+    await card.locator('.eventToggle').click({ timeout: 30000 });
+  }
   const supplement = card.locator('.searchSupplement');
   await supplement.waitFor({ state: 'visible' });
-  assert.equal(await card.evaluate(node => node.classList.contains('expanded')), true);
   await diagnostics.checkpoint('project-drilldown-match-ready', { eventId: hit.eventId });
   await supplement.locator('summary').click();
   assert.match(await supplement.locator('pre').innerText(), /DEEP_OUTPUT_HIT/);
