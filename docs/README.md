@@ -30,6 +30,7 @@ This repository uses three formal intent-document classes plus one idea parking 
 - `design-docs/cross-surface-contract-consistency-tech-debt.md` / 跨表面契约一致性技术债
 - `design-docs/schema-update-runbook.md` / Schema 更新运行手册
 - `design-docs/npm-release-runbook.md` / npm 发布运行手册
+- `design-docs/browser-asset-workflow.md`: development builds, generated-file policy and release asset checks / 开发构建、生成文件提交规则与发布资产检查。
 - `design-docs/readme-visual-capture-runbook.md` / README 视觉素材与捕获运行手册
 - `design-docs/external-source-mapping-pressure-tests.md` / 外部 source 映射压力测试设计文档
 - `design-docs/pi-native-sessions.md`: native pi v3 branches, source evidence and limitations / 原生 pi v3 分支、来源依据及限制。

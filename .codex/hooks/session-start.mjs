@@ -35,6 +35,6 @@ console.log([
   statusLines.length ? `- git status:\n  ${shownStatus.join('\n  ')}${moreStatus}` : '- git status: clean',
   '- use AGENTS.md routes to read only task-relevant doc sections; for Codex parser/schema changes, include docs/design-docs/codex-protocol-event-coverage.md and docs/design-docs/schema-update-runbook.md.',
   '- do not commit real .codex/sessions data, exported transcripts, or unsanitized transcript fixtures.',
-  '- public/assets/app.js is generated; edit src/browser/ or src/shared/ and run npm run build:check.',
+  '- browser assets are generated; build/test source locally, omit both generated asset paths from ordinary development PRs, and use npm run dev for a fresh source preview. See docs/design-docs/browser-asset-workflow.md.',
   '- keep machine identifiers such as kind/status/layer/rawRefs/sourceLocator stable and untranslated.'
 ].join('\n'));
