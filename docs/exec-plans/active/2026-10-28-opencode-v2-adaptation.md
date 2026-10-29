@@ -204,6 +204,8 @@ M1／M2 已加入 `test/helpers/opencode-fixture.js`、固定 DDL、`test/fixtur
 - M4 维护部分开始实施：独立分支 `feat/opencode-compatibility` 基于上述 M3 提交，复用 schema runbook，补充 [OpenCode 兼容矩阵与运行说明](../../design-docs/opencode-compatibility-maintenance.md)、独立手动 workflow、隔离 producer 探针和离线契约测试。普通 PR CI 不安装上游；定时调度、产品 API／SSE、导入 UI、长期归档及性能扩展保持后续范围。
 - M4 维护实测：固定 2.1.4 的真实进程十项检查通过，独立重复运行比较一致；候选 2.2.0 固定到 `1097e2668b1e08ad63bdf0b1c4860b9bc01e420c`，在新建库中发现 `blob`／`blob_ref` 布局，adapter 明确返回 `OPENCODE_SCHEMA_UNSUPPORTED`，后续检查未运行。该结果触发独立存储适配评审，不扩大支持声明。本轮交付维护工具与手动入口，M4 的可选产品扩展和定时维护仍保留后续范围。
 
+- 2026-10-29，#101 外部评审修复：在 Node 22.22.2／SQLite 3.51.2 和 Node 24.19.0／SQLite 3.53.3 上，以真实 SQLite 操作复现 checkpoint 后仅回滚的误拒绝；未修改来源字节。新增 TRUNCATE 连续不同大小／内容回滚及 RESTART 回滚的项目发现与完整快照测试，各覆盖已有 SHM 和无 SHM 恢复，验证已提交正文及主 DB／WAL 哈希不变。校验改以有效 frame 前缀和完整尾部 commit 检查区分残留，不要求本周期先出现 commit；继续拒绝首 frame 损坏、歧义 salt 及损坏后仍有 commit。修复前四项回归失败；修复后 Node 24 OpenCode 聚焦套件 86／86、Node 22 存储套件 50／50 通过。该结果不代替本次远程 CI；#102 需更新读取器基线并重新执行 producer 探针。 / External-review fix: real SQLite operations reproduce rollback-only WAL false rejection on the listed runtimes. Four full discovery/capture regressions cover both checkpoint modes with and without SHM, preserved committed content and unchanged DB/WAL bytes. Admission requires a verified frame prefix and checks the entire remaining suffix for commits; it no longer requires a current-cycle commit. Corruption rejection remains covered. All four regressions failed before the fix; the listed local suites now pass. Remote CI and #102 producer revalidation remain separate gates.
+
 固定源码入口：
 
 - [OpenCode export 过滤](https://github.com/anomalyco/opencode/blob/68bc26b7da1990ce10ffecfbc1e09eb13aa5d824/packages/core/src/session/transfer.ts#L165)
