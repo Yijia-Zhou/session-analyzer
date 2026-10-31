@@ -16050,7 +16050,7 @@ test('browser onboarding selects DeepSeek directly from an empty Codex source', 
     },
   });
   await page.waitForFunction(() => document.querySelector('#projectList')?.textContent.includes('No transcript projects'));
-  assert.deepEqual(await page.locator('[data-source-choice]').allTextContents(), ['Codex', 'Claude Code', 'DeepSeek Harness', 'pi', 'OpenCode']);
+  assert.deepEqual(await page.locator('[data-source-choice]').allTextContents(), ['Codex', 'Claude Code', 'DeepSeek Harness', 'pi', 'OpenCode', 'WorkBuddy / CodeBuddy']);
   await page.locator('[data-source-choice="deepseek-harness"]').click();
   await page.waitForFunction(() => document.querySelector('#projectSourceSwitch')?.dataset.source === 'deepseek-harness' && !document.querySelector('[data-source-choice]')?.disabled);
   assert.deepEqual(posts, ['deepseek-harness']);

@@ -1,9 +1,10 @@
 'use strict';
 
 const { OPERATIONS, MAX_BODY_BYTES, MAX_RESPONSE_BYTES, historyError, errorEnvelope, validateHistoryInput, startHistoryServer } = require('./history-server');
+const { supportedSourceKinds } = require('./source-adapters');
 const { openViewerBrowser, validateViewerUrl } = require('./history-browser-open');
 
-const SERVE_OPTIONS = { '--repo': 'repo', '--source': 'source', '--codex-home': 'codexHome', '--claude-home': 'claudeHome', '--dsh-home': 'dshHome', '--pi-home': 'piHome', '--opencode-home': 'opencodeHome', '--port': 'port' };
+const SERVE_OPTIONS = { '--repo': 'repo', '--source': 'source', '--codex-home': 'codexHome', '--claude-home': 'claudeHome', '--dsh-home': 'dshHome', '--pi-home': 'piHome', '--opencode-home': 'opencodeHome', '--workbuddy-home': 'workbuddyHome', '--port': 'port' };
 const INPUT_OPTIONS = { '--context': 'contextRef', '--cursor': 'cursor', '--order': 'order', '--session': 'session', '--caller-session': 'callerSessionId', '--max-files': 'maxFiles', '--layer': 'layer', '--kind': 'kind', '--status': 'status', '--tool': 'tool', '--file': 'file', '--retrieval-artifacts': 'retrievalArtifacts', '--presentation': 'presentation', '--view': 'view', '--text-format': 'textFormat', '--from': 'from', '--to': 'to', '--limit': 'limit', '--max-bytes': 'maxBytes', '--offset': 'offset', '--length': 'length', '--parts': 'parts', '--query': 'queries', '--exclude': 'exclude', '--ref': 'refs' };
 const REPEATED = new Set(['queries', 'exclude', 'refs']);
 const LITERAL_VALUES = new Set(['queries', 'exclude', 'file', 'tool', 'kind', 'status', 'session', 'callerSessionId']);
@@ -12,8 +13,8 @@ const NUMERIC = new Set(['port', 'limit', 'maxBytes', 'maxFiles', 'offset', 'len
 function formatHistoryHelp() {
   return [
     'Session Analyzer history (read-only, JSON protocol v1)', '',
-    '  session-analyzer history serve --repo <path> --source <codex|claude-code|deepseek-harness|pi|opencode> [--port 17891]',
-    '    [--codex-home <path>] [--claude-home <path>] [--dsh-home <path>] [--pi-home <path>] [--opencode-home <path>]',
+    '  session-analyzer history serve --repo <path> --source <codex|claude-code|deepseek-harness|pi|opencode|workbuddy> [--port 17891]',
+    '    [--codex-home <path>] [--claude-home <path>] [--dsh-home <path>] [--pi-home <path>] [--opencode-home <path>] [--workbuddy-home <path>]',
     '  session-analyzer history status|search|context|read [--endpoint http://127.0.0.1:17891] [options]', '',
     '  session-analyzer history observe [--caller-session <sessionId>] [--max-files <count>]',
     '    [--endpoint http://127.0.0.1:17891] [--limit <count>] [--max-bytes <bytes>]',
@@ -116,7 +117,7 @@ function parseHistoryArgs(args) {
   }
   if (operation === 'serve') {
     if (!options.repo || !options.source) throw historyError('INVALID_OPTION', 'serve requires explicit --repo and --source.');
-    if (!['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode'].includes(options.source)) throw historyError('INVALID_OPTION', 'Unknown transcript source.');
+    if (!supportedSourceKinds().includes(options.source)) throw historyError('INVALID_OPTION', 'Unknown transcript source.');
     options.port ??= 17891;
     if (options.port < 1 || options.port > 65535) throw historyError('INVALID_OPTION', '--port must be between 1 and 65535.');
   } else {

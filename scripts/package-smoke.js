@@ -238,11 +238,11 @@ function isPackageStatePayload(response) {
   const sourceKind = response?.json?.sourceKind;
   const sourcePresentationShape = sourceKind === 'codex'
     ? Array.isArray(response.json.codeModeRequests)
-    : (sourceKind === 'claude-code' || sourceKind === 'deepseek-harness' || sourceKind === 'pi' || sourceKind === 'opencode')
+    : (sourceKind === 'claude-code' || sourceKind === 'deepseek-harness' || sourceKind === 'pi' || sourceKind === 'opencode' || sourceKind === 'workbuddy')
       && !Object.hasOwn(response.json, 'codeModeRequests');
   return response.statusCode === 200
     && response.json
-    && ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode'].includes(sourceKind)
+    && ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy'].includes(sourceKind)
     && response.json.totals
     && Array.isArray(response.json.supportedLocales)
     && response.json.eventKinds
@@ -381,6 +381,12 @@ async function main() {
     const claudeHome = path.join(smokeRoot, 'claude-home');
     const dshHome = path.join(smokeRoot, 'dsh-sessions');
     const piHome = path.join(smokeRoot, 'pi-agent');
+    const workbuddyHome = path.join(smokeRoot, 'workbuddy-config');
+    const workbuddySessionId = 'workbuddy-package-smoke';
+    const workbuddyText = 'Verify the installed WorkBuddy / CodeBuddy adapter.';
+    const workbuddyUser = { type: 'message', id: 'package-user', sessionId: workbuddySessionId,
+      cwd: projectDir, timestamp: 1793400000000, role: 'user',
+      content: [{ type: 'input_text', text: workbuddyText }] };
     const opencodeHome = path.join(smokeRoot, 'opencode-data');
     const opencodeDbPath = path.join(opencodeHome, 'opencode.db');
     const opencodeSessionId = 'ses_package_smoke';
@@ -388,6 +394,9 @@ async function main() {
     const claudeContainer = path.join(claudeHome, 'projects', '-package-smoke');
     const claudeSessionId = '11111111-1111-4111-8111-111111111111';
     await fsp.mkdir(projectDir, { recursive: true });
+    const workbuddySessionDir = path.join(workbuddyHome, 'projects', 'package-smoke-project');
+    await fsp.mkdir(workbuddySessionDir, { recursive: true });
+    await fsp.writeFile(path.join(workbuddySessionDir, workbuddySessionId + '.jsonl'), JSON.stringify(workbuddyUser) + '\n', 'utf8');
     const opencodeFixture = createOpenCodeFixture({ dbPath: opencodeDbPath, repoRoot: projectDir,
       sessionId: opencodeSessionId, userText: opencodeText });
     const opencodeUser = JSON.parse(JSON.stringify(opencodeFixture.db.prepare('SELECT * FROM session_message WHERE id = ?').get(opencodeFixture.messageId)));
@@ -549,6 +558,7 @@ async function main() {
       throw new Error('Installed CLI help did not include transcript source selection');
     }
     assert.ok(help.stdout.includes('--pi-home <path>'), 'Installed CLI must expose the pi agent directory option');
+    assert.ok(help.stdout.includes('--workbuddy-home <path>'), 'Installed CLI must expose WorkBuddy / CodeBuddy config-root selection');
     assert.ok(help.stdout.includes('--opencode-home <path>'), 'Installed CLI must expose OpenCode directory/database selection');
 
     const packagedServer = path.join(smokeRoot, 'node_modules', 'session-analyzer', 'server.js');
@@ -652,12 +662,25 @@ async function main() {
     });
     await stopChild(child);
     child = null;
+    launched = await launchPackagedServer(packagedServer, smokeRoot, [
+      '--source', 'workbuddy', '--repo', projectDir, '--workbuddy-home', workbuddyHome,
+    ]);
+    child = launched.child;
+    baseUrl = `http://127.0.0.1:${launched.port}`;
+    const workbuddyState = await waitForPackageState(baseUrl);
+    await verifyPackageReading(baseUrl, workbuddyState.json, {
+      sourceKind: 'workbuddy', repoRoot: projectDir, sourceHome: workbuddyHome,
+      sessions: [{ id: workbuddySessionId, text: workbuddyText, record: workbuddyUser }],
+    });
+    await stopChild(child);
+    child = null;
     for (const fixture of [
       { source: 'codex', rootOption: '--codex-home', home: codexHome, text: codexText, count: codexSessions.length },
       { source: 'claude-code', rootOption: '--claude-home', home: claudeHome, text: claudeRecords[1].message.content, count: 1 },
       { source: 'deepseek-harness', rootOption: '--dsh-home', home: dshHome, text: dshSessions[0].text, count: dshSessions.length },
       { source: 'pi', rootOption: '--pi-home', home: piHome, text: piText, count: 1 },
       { source: 'opencode', rootOption: '--opencode-home', home: opencodeHome, text: opencodeText, count: 1 },
+      { source: 'workbuddy', rootOption: '--workbuddy-home', home: workbuddyHome, text: workbuddyText, count: 1 },
     ]) {
       launched = await launchPackagedServer(packagedServer, smokeRoot, [
         'history', 'serve', '--source', fixture.source, '--repo', projectDir, fixture.rootOption, fixture.home,
@@ -761,7 +784,7 @@ async function main() {
       child = null;
       console.log(fixture.source + ': packaged history status -> search -> context -> read -> raw -> open passed.');
     }
-    console.log('Codex, Claude Code, DeepSeek Harness, pi, and OpenCode UI and history package smoke passed.');
+    console.log('Codex, Claude Code, DeepSeek Harness, pi, OpenCode, and WorkBuddy / CodeBuddy UI and history package smoke passed.');
   } finally {
     await stopChild(child);
     if (tarballPath) {

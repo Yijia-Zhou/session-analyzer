@@ -123,6 +123,16 @@ npm run dev -- --source pi --repo /path/to/project --pi-home /path/to/pi/agent
 
 适配器读取原生 session version **3**，已按 pi **1.4.0** 核验，不通过 pi 打开或迁移会话。每条根到叶分支作为独立可选 Session，标题显示叶节点 ID。共享历史在每条所属分支中出现，因此计数与搜索命中按分支而非文件计算。重建索引时，延长分支会改变其身份。不支持的版本跳过并报告诊断；无效树保留 Protocol／Raw 回退。详见 [pi 支持范围与限制](docs/design-docs/pi-native-sessions.md)。
 
+## 此 checkout 的原生 WorkBuddy / CodeBuddy 会话支持
+
+完成[源码配置](docs/development.md)后运行：
+
+```sh
+npm run dev -- --source workbuddy --repo /path/to/project --workbuddy-home /path/to/config-root
+```
+
+也可在项目选择器选择 **WorkBuddy / CodeBuddy** 配置相同来源。根目录包含 `projects/`；默认使用 `CODEBUDDY_CONFIG_DIR` 或 `~/.codebuddy`。本 checkout 面向 CodeBuddy **2.179.0** 随包引擎的原生 JSONL 格式，不是 `--output-format stream-json` 输出，也不代表支持所有 WorkBuddy 桌面数据库／导出。阅读已有历史不需要安装 Buddy、登录账号、API key 或模型连接。详见[覆盖范围与限制](docs/design-docs/workbuddy-native-sessions.md)。上文已发布的 `session-analyzer@0.2.1` 示例**不包含**此来源。
+
 ## 此 checkout 的原生 OpenCode 会话支持
 
 源码 checkout 也可读取 OpenCode **2.1.4** 的原生 SQLite 历史；已发布的 `session-analyzer@0.2.1` 命令**不包含**该功能。完成[源码配置与构建](docs/development.md)后运行：

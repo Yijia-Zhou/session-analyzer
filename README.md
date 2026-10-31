@@ -123,6 +123,16 @@ npm run dev -- --source pi --repo /path/to/project --pi-home /path/to/pi/agent
 
 The adapter reads native session version **3**, verified against pi **1.4.0**, without opening or migrating sessions through pi. Each root-to-leaf branch is a separate selectable Session with its tip ID in the title. Shared history appears in each containing branch, so counts and search hits are per branch, not per file. Extending a branch changes its identity when you rebuild the index. Unsupported versions are skipped with diagnostics; invalid trees retain Protocol/Raw fallback. See [pi support and limitations](docs/design-docs/pi-native-sessions.md).
 
+## Native WorkBuddy / CodeBuddy sessions in this checkout
+
+After [source setup](docs/development.md), run:
+
+```sh
+npm run dev -- --source workbuddy --repo /path/to/project --workbuddy-home /path/to/config-root
+```
+
+Select **WorkBuddy / CodeBuddy** in the project chooser to configure the same source. The root contains `projects/`; the default is `CODEBUDDY_CONFIG_DIR` or `~/.codebuddy`. This checkout targets the native JSONL engine format shipped with CodeBuddy **2.179.0**, not `--output-format stream-json` output or every WorkBuddy desktop database/export. Reading recorded history needs no Buddy installation, account, API key or model connection. See [coverage and limitations](docs/design-docs/workbuddy-native-sessions.md). The published `session-analyzer@0.2.1` examples above do **not** include this source.
+
 ## Native OpenCode sessions in this checkout
 
 The source checkout also reads OpenCode **2.1.4** native SQLite history; the published `session-analyzer@0.2.1` command does **not** include it. After [source setup and build](docs/development.md), run:
