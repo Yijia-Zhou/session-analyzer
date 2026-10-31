@@ -388,6 +388,100 @@ test('strict Claude materialization preserves forked-skill and workflow ownershi
   }
 });
 
+for (const [mode, buildIndex] of [
+  ['complete', buildClaudeIndex],
+  ['source-backed', buildClaudeSourceBackedIndex],
+]) {
+  const layouts = [
+    {
+      kind: 'ordinary subagent',
+      transcript: (fixture) => path.join(forkRoot(fixture), `agent-${NORMAL_AGENT_ID}.jsonl`),
+      rejectedIds: [NORMAL_ID],
+    },
+    {
+      kind: 'forked-skill',
+      transcript: forkTranscript,
+      rejectedIds: [FORK_ID],
+    },
+    {
+      kind: 'workflow-agent',
+      transcript: (fixture) => path.join(workflowRoot(fixture), `agent-${WORKFLOW_ONE_AGENT_ID}.jsonl`),
+      // One unsupported child invalidates the ownership evidence for the whole run.
+      rejectedIds: [WORKFLOW_ONE_ID, WORKFLOW_TWO_ID],
+    },
+  ];
+  const envelopes = [
+    {
+      label: 'SDK init',
+      record: (fixture) => ({
+        type: 'system', subtype: 'init', session_id: PARENT_SOURCE_ID,
+        cwd: fixture.repoRoot, model: 'synthetic-model', tools: ['Agent'],
+      }),
+    },
+    {
+      label: 'headerless SDK child message',
+      record: () => ({
+        type: 'user', session_id: PARENT_SOURCE_ID, uuid: 'sdk-child-prompt',
+        parent_tool_use_id: 'sdk-agent-call',
+        message: { role: 'user', content: 'Synthetic delegated task, not a human prompt.' },
+      }),
+    },
+    {
+      label: 'partial SDK message',
+      record: () => ({
+        type: 'stream_event', session_id: PARENT_SOURCE_ID, uuid: 'sdk-partial',
+        parent_tool_use_id: 'sdk-agent-call',
+        event: { type: 'content_block_delta', index: 0,
+          delta: { type: 'text_delta', text: 'Synthetic child output.' } },
+      }),
+    },
+  ];
+
+  for (const layout of layouts) {
+    for (const envelope of envelopes) {
+      test(`Claude ${mode} rejects ${envelope.label} in ${layout.kind} on cold index and reindex`, async (t) => {
+        const fixture = await makeFixture(t);
+        const options = { repoRoot: fixture.repoRoot, claudeHome: fixture.home };
+        const allIds = [PARENT_ID, NORMAL_ID, FORK_ID, WORKFLOW_ONE_ID, WORKFLOW_TWO_ID].sort();
+        const before = await buildIndex(options);
+        assert.deepEqual(retainedIds(before), allIds, 'the native bundle is admissible before adding SDK output');
+        const unchanged = await buildIndex({ ...options, previousIndex: before });
+        assert.deepEqual(retainedIds(unchanged), allIds);
+        assert.equal(unchanged.totals.reusedFileCount, before.totals.indexedFileCount);
+
+        const nativeSessions = new Map();
+        for (const value of before.sessions) {
+          nativeSessions.set(value.id, mode === 'source-backed'
+            ? await materializeSessionForIndex(before, value)
+            : value);
+        }
+
+        // Preserve native identity, agent/version records and all sidecars. Without
+        // the SDK guard, these mixed transcripts still satisfy derived admission.
+        await fsp.appendFile(layout.transcript(fixture), `${JSON.stringify(envelope.record(fixture))}\n`, 'utf8');
+        const reindexed = await buildIndex({ ...options, previousIndex: unchanged });
+        const cold = await buildIndex(options);
+        const expectedIds = allIds.filter((id) => !layout.rejectedIds.includes(id));
+        for (const [phase, index] of [['reindex', reindexed], ['cold', cold]]) {
+          assert.deepEqual(retainedIds(index), expectedIds, `${phase}: reject only the affected child or workflow run`);
+          assert.deepEqual(index.sessions.map((value) => value.id).sort(), expectedIds);
+          assert.equal(index.totals.sessionCount, expectedIds.length);
+          assert.equal(index.totals.indexedFileCount, expectedIds.length);
+          for (const value of index.sessions) {
+            const readable = mode === 'source-backed'
+              ? await materializeSessionForIndex(index, value)
+              : value;
+            const expected = nativeSessions.get(value.id);
+            assert.deepEqual(readable.rawEvents, expected.rawEvents, `${phase}: ${value.id} Raw stays readable`);
+            assert.deepEqual(readable.logicalEvents, expected.logicalEvents, `${phase}: ${value.id} projection is unchanged`);
+          }
+        }
+        assert.deepEqual(comparableTotals(reindexed), comparableTotals(cold));
+      });
+    }
+  }
+}
+
 test('Milestone 2 derived identity components remain collision-safe', () => {
   const parent = 'parent:/%/π/\ud800';
   const fork = analyzerForkedSkillSessionId(parent, 'agent:/%/ß/\udfff');

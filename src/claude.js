@@ -1,6 +1,7 @@
 'use strict';
 
 const { hashPlainValue } = require('./plain-value-stream');
+const { createSourceDiagnostics } = require('./source-diagnostics');
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -132,6 +133,7 @@ function candidateReuseEvidence(candidate) {
     relFile: String(candidate.relFile || ''),
     sourceSessionId: String(candidate.sourceSessionId || ''),
     sourceIdentityConflict: Boolean(candidate.sourceIdentityConflict),
+    unsupportedFormat: String(candidate.unsupportedFormat || ''),
     bytes: Number(candidate.bytes || 0),
     sourceUpdatedAt: String(candidate.sourceUpdatedAt || ''),
     transcriptFingerprint: String(candidate.transcriptFingerprint || ''),
@@ -369,6 +371,39 @@ async function discoverMainCandidates(claudeHome) {
   return { ...layout, candidates };
 }
 
+// SDK/CLI stream-json envelopes are not persisted project transcripts. In
+// particular, parent_tool_use_id describes inline child activity, not a human
+// turn or a native parentUuid chain. Do not partially interpret that stream.
+function isClaudeSdkStreamRecord(record) {
+  if (!isPlainObject(record) || Object.hasOwn(record, 'sessionId')
+      || !usableSourceSessionIdentity(record.session_id)) return false;
+  if (record.type === 'system' && record.subtype === 'init') {
+    return typeof record.cwd === 'string' && typeof record.model === 'string'
+      && Array.isArray(record.tools);
+  }
+  if (!Object.hasOwn(record, 'parent_tool_use_id')
+      || (record.parent_tool_use_id !== null
+        && !usableSourceSessionIdentity(record.parent_tool_use_id))) return false;
+  if (record.type === 'assistant' || record.type === 'user') {
+    return isPlainObject(record.message) && record.message.role === record.type;
+  }
+  return record.type === 'stream_event' && isPlainObject(record.event);
+}
+
+function unsupportedClaudeDiagnostics(candidates, onDiagnostic) {
+  const diagnostics = createSourceDiagnostics();
+  for (const candidate of candidates) {
+    const diagnostic = {
+      code: 'CLAUDE_SDK_STREAM_UNSUPPORTED',
+      path: candidate.relFile,
+      message: 'Claude SDK/CLI stream-json output is not a supported persisted project transcript. Use native Claude Code project JSONL; inline subagent messages cannot be read as human turns.',
+    };
+    diagnostics.add(diagnostic);
+    onDiagnostic?.(diagnostic);
+  }
+  return diagnostics.summary;
+}
+
 async function inspectClaudeSessionFile(candidate, options = {}) {
   const signal = options.signal;
   throwIfAborted(signal);
@@ -382,6 +417,7 @@ async function inspectClaudeSessionFile(candidate, options = {}) {
   const declaredSourceSessionIds = new Set();
   const referencedSessionIds = new Set();
   let invalidSourceSessionIdentity = false;
+  let unsupportedFormat = '';
   let sourceClientVersion = '';
   let lineCount = 0;
   let startedAt = '';
@@ -408,6 +444,7 @@ async function inspectClaudeSessionFile(candidate, options = {}) {
         continue;
       }
       if (!isPlainObject(record)) continue;
+      if (isClaudeSdkStreamRecord(record)) unsupportedFormat = 'claude-sdk-stream';
       const cwd = usableRecordCwd(record);
       if (cwd) cwdSet.add(cwd);
       if (Object.hasOwn(record, 'sessionId')) {
@@ -455,6 +492,7 @@ async function inspectClaudeSessionFile(candidate, options = {}) {
     cwdSet,
     sourceSessionId,
     sourceIdentityConflict,
+    unsupportedFormat,
     transcriptFingerprint: transcriptFingerprint.digest('hex'),
     sourceClientVersion,
     uuids,
@@ -473,11 +511,16 @@ function comparePrimaryIdentityCandidates(left, right) {
 
 function resolvePrimaryIdentityCandidates(inspected) {
   const accepted = [];
+  const unsupported = [];
   const duplicates = [];
   const conflicts = [];
   const bySourceIdentity = new Map();
 
   for (const candidate of inspected) {
+    if (candidate.unsupportedFormat) {
+      unsupported.push(candidate);
+      continue;
+    }
     if (candidate.sourceIdentityConflict || !candidate.sourceSessionId) {
       conflicts.push(candidate);
       continue;
@@ -499,7 +542,7 @@ function resolvePrimaryIdentityCandidates(inspected) {
   }
 
   accepted.sort((left, right) => left.relFile.localeCompare(right.relFile));
-  return { accepted, conflicts, duplicates };
+  return { accepted, conflicts, duplicates, unsupported };
 }
 
 function resolveClaudeAnalyzerIdentities(sessions) {
@@ -571,7 +614,7 @@ async function discoverClaudeConfiguredProjects() {
   return [];
 }
 
-async function discoverClaudeProjects({ claudeHome, signal }) {
+async function discoverClaudeProjects({ claudeHome, signal, onDiagnostic }) {
   const { candidates } = await discoverMainCandidates(claudeHome);
   const projects = new Map();
   const inspected = [];
@@ -580,6 +623,7 @@ async function discoverClaudeProjects({ claudeHome, signal }) {
     inspected.push(await inspectClaudeSessionFile(candidate, { signal }));
   }
   const identityResolution = resolvePrimaryIdentityCandidates(inspected);
+  unsupportedClaudeDiagnostics(identityResolution.unsupported, onDiagnostic);
   for (const candidate of identityResolution.accepted) {
     for (const repoRoot of new Set(candidate.cwdSet)) {
       const project = projectFor(projects, repoRoot);
@@ -1070,7 +1114,7 @@ function exactText(value) {
 }
 
 function derivedTranscriptMatches(inspected, parentSession, agentId, requireParentSessionIdentity) {
-  if (inspected.sourceIdentityConflict) return false;
+  if (inspected.sourceIdentityConflict || inspected.unsupportedFormat) return false;
   if (inspected.agentIds.size !== 1 || !inspected.agentIds.has(agentId)) return false;
   if (requireParentSessionIdentity && inspected.sourceSessionId !== parentSession.sourceSessionId) return false;
   if (requireParentSessionIdentity && (
@@ -2121,7 +2165,7 @@ async function buildClaudeSourceBackedIndex({
   const selectedCandidates = candidates.filter((candidate) => (
     candidate.projectAssociation !== POINTER_PROVISIONAL_ASSOCIATION
   ));
-  const skippedFileCount = identityCandidates.filter((candidate) => (
+  const skippedFileCount = identityResolution.unsupported.length + identityCandidates.filter((candidate) => (
     candidate.cwdSet.size && !candidateProjectAssociation(candidate, resolvedRepo, clusters)
   )).length;
   const relationshipEvidence = [];
@@ -2329,6 +2373,7 @@ async function buildClaudeSourceBackedIndex({
     projectsRoot: discovery.projectsRoot,
     repoRoot: resolvedRepo,
     generatedAt: new Date().toISOString(),
+    sourceDiagnostics: unsupportedClaudeDiagnostics(identityResolution.unsupported),
     sessions: committedSessions,
     sessionsById: committedSessionsById,
     projectQueryStore: committedQueryStore,
@@ -2409,7 +2454,7 @@ async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, prev
   ));
   const selectedCandidateBytes = selectedCandidates.reduce((sum, item) => sum + item.bytes, 0);
   const currentRelationshipEvidence = relationshipReuseEvidence(candidates);
-  const skippedFileCount = identityCandidates.filter((candidate) => (
+  const skippedFileCount = identityResolution.unsupported.length + identityCandidates.filter((candidate) => (
     candidate.cwdSet.size && !candidateProjectAssociation(candidate, resolvedRepo, clusters)
   )).length;
   let unknownFileCount = inspected.length - selectedCandidates.length - skippedFileCount;
@@ -2606,6 +2651,7 @@ async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, prev
     projectsRoot: discovery.projectsRoot,
     repoRoot: resolvedRepo,
     generatedAt: new Date().toISOString(),
+    sourceDiagnostics: unsupportedClaudeDiagnostics(identityResolution.unsupported),
     sessions: retainedSessions,
     sessionsById,
     eventKinds: eventKindCatalog(retainedSessions),
