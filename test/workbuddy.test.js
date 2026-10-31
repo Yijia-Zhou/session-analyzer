@@ -105,7 +105,9 @@ test('accepted prefixes survive append and reject same-length rewrite, truncatio
   await assert.rejects(readIndexedRawRecord(index, session, raw.rawId), { code: 'INDEXED_SOURCE_STALE' });
   await fs.writeFile(f.file, f.text.slice(0, 10));
   await assert.rejects(readIndexedRawRecord(index, session, raw.rawId), { code: 'INDEXED_SOURCE_STALE' });
-  await fs.unlink(f.file); await fs.writeFile(f.file, f.text);
+  // Keep the old inode allocated: unlink followed by immediate recreation can
+  // reuse it on Linux, which does not establish a distinct file replacement.
+  await fs.rename(f.file, `${f.file}.previous`); await fs.writeFile(f.file, f.text);
   await assert.rejects(readIndexedRawRecord(index, session, raw.rawId), { code: 'INDEXED_SOURCE_STALE' });
 });
 

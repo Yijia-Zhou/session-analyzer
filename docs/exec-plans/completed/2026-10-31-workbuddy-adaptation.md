@@ -44,3 +44,8 @@ Reviewed implementation SHA-256: `workbuddy-logical.js` = `46a5bcbc67cda393cfd47
 ## Deliberate boundaries / 明确边界
 
 This delivers the pinned native engine profile and a recorded-history view, not all WorkBuddy desktop storage formats or an active-lane interpreter. Earlier physical resend/rewind history remains visible with explicit notices. Media/artifact references and REPL nested calls are inspectable evidence, not automatically fetched payloads or a reconstructed nested execution tree. Cross-file forks without durable evidence remain unlinked. / 本次交付固定原生引擎 profile 与已记录历史视图，不覆盖所有桌面存储格式，也不是活动 lane 解释器。较早重发／回退历史在明确提示下保持可见。媒体／工件引用和 REPL 嵌套调用为可检查依据，不自动获取 payload 或重建嵌套执行树；缺少持久依据的跨文件 fork 不建立链接。
+
+
+## PR CI follow-up / PR CI 跟进
+
+PR #104 targets `v0.3.0-development`. Initial run `41162421978` failed the replacement subcase in both Linux Node 22 and 24: deleting then immediately recreating identical bytes allowed the filesystem to reuse the inode. The test now renames and retains the previous artifact before creating its replacement, so the existing file-identity assertion exercises a genuinely distinct file. Runtime reader behavior is unchanged. The 29 WorkBuddy core/Detail tests pass locally after the correction. / PR #104 面向所列开发分支。首轮 CI 的 Linux Node 22／24 均在替换子场景失败：删除后立即重建相同内容允许文件系统复用 inode。测试现改为重命名并保留旧工件，再创建替代文件，使既有身份断言确实检查不同文件；运行时 reader 不变。修正后本地 29 项 WorkBuddy 核心／详情测试通过。
