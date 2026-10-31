@@ -9,6 +9,7 @@ const { inspect } = require('node:util');
 
 const usage = `Usage: node scripts/browser-test-profile.js [options] [test files...]
   --concurrency=N  Native Node file concurrency (default: 2)
+  --shard=N/M      Native file shard, 1-based (default: all files)
   --output=PATH    JSON report (default: work/browser-profile.json)
   --timeout=MS     Native runner timeout (default: no added timeout)
   --help          Show this help
@@ -23,6 +24,13 @@ function parseArgs(argv, cwd = process.cwd()) {
     if (arg === '--help') return { help: true };
     if (arg.startsWith('--concurrency=')) {
       options.concurrency = positiveInteger(arg.slice('--concurrency='.length), '--concurrency');
+    } else if (arg.startsWith('--shard=')) {
+      const match = /^([1-9]\d*)\/([1-9]\d*)$/.exec(arg.slice('--shard='.length));
+      if (!match) throw new Error('--shard needs N/M with positive integers and 1 <= N <= M');
+      const index = positiveInteger(match[1], '--shard index');
+      const total = positiveInteger(match[2], '--shard total');
+      if (index > total) throw new Error('--shard index must not exceed total');
+      options.shard = { index, total };
     } else if (arg.startsWith('--timeout=')) {
       options.timeout = positiveInteger(arg.slice('--timeout='.length), '--timeout');
     } else if (arg.startsWith('--output=')) {
@@ -42,6 +50,10 @@ function parseArgs(argv, cwd = process.cwd()) {
   }
   options.files = [...new Set(options.files)];
   if (options.files.length === 0) throw new Error('No test files found');
+  if (options.shard) {
+    options.files.sort();
+    if (options.shard.total > options.files.length) throw new Error('--shard total must not exceed the test file count');
+  }
   for (const file of options.files) {
     if (!fs.statSync(file).isFile()) throw new Error(`Not a test file: ${file}`);
     if (file === options.output) throw new Error('The report cannot overwrite a test file');
@@ -73,7 +85,11 @@ function errorDetails(error) {
 }
 
 function createProfile(options, cwd = process.cwd()) {
-  const fileMap = new Map(options.files.map((file) => [path.resolve(file), {
+  // Match node:test's native round-robin selection so unassigned files are not
+  // reported as missing. Keep the complete sorted list when invoking run().
+  const expectedFiles = options.files.filter((_, index) => !options.shard
+    || index % options.shard.total === options.shard.index - 1);
+  const fileMap = new Map(expectedFiles.map((file) => [path.resolve(file), {
     file: relativeFile(file, cwd), processDurationMs: null, suiteDurationMs: null,
     topLevelTestDurationMs: 0, counts: null, success: null,
   }]));
@@ -125,6 +141,7 @@ function createProfile(options, cwd = process.cwd()) {
       schemaVersion: 1, startedAt, nodeVersion: process.version, platform: process.platform,
       architecture: process.arch, availableParallelism: os.availableParallelism(),
       concurrency: options.concurrency, timeoutMs: options.timeout ?? null,
+      shard: options.shard ?? null, inputFileCount: options.files.length,
       wallTimeMs, success: Boolean(summary?.success) && !interrupted && !runnerError && incompleteFiles.length === 0,
       interrupted, runnerError: errorDetails(runnerError), incompleteFiles, summary,
       measurement: {
@@ -181,7 +198,7 @@ function summarizePhases(measurements) {
 function formatSummary(report) {
   const counts = report.summary?.counts;
   const lines = [
-    '', `Browser profile: ${report.success ? 'PASS' : 'FAIL'}; concurrency=${report.concurrency}; wall=${(report.wallTimeMs / 1000).toFixed(2)}s`,
+    '', `Browser profile: ${report.success ? 'PASS' : 'FAIL'}; concurrency=${report.concurrency}${report.shard ? `; shard=${report.shard.index}/${report.shard.total}` : ''}; wall=${(report.wallTimeMs / 1000).toFixed(2)}s`,
     counts ? `Tests: ${counts.tests}; passed=${counts.passed}; failed=${counts.failed}; skipped=${counts.skipped}; cancelled=${counts.cancelled}; todo=${counts.todo}` : 'No complete native summary received.',
     'Files (process elapsed / top-level test sum; concurrent files overlap):',
   ];
@@ -217,7 +234,7 @@ async function profileTests(options, { stdout = process.stdout, stderr = process
   }]));
   for (const [signal, listener] of signals) process.once(signal, listener);
   try {
-    const stream = run({ files: options.files, concurrency: options.concurrency, timeout: options.timeout, signal: controller.signal });
+    const stream = run({ files: options.files, shard: options.shard, concurrency: options.concurrency, timeout: options.timeout, signal: controller.signal });
     for await (const event of stream) {
       profile.collect(event);
       const { type, data } = event;

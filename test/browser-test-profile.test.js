@@ -41,6 +41,37 @@ test('browser profile discovers only test files in the selected checkout and val
   assert.throws(() => parseArgs(['--unknown'], root), /Unknown option/);
   assert.throws(() => parseArgs(['--output='], root), /needs a path/);
   assert.throws(() => parseArgs(['--output=e2e/a.test.js'], root), /overwrite a test file/);
+  const shard = parseArgs(['--shard=2/2', 'e2e/b.test.js', 'e2e/a.test.js'], root);
+  assert.deepEqual(shard.shard, { index: 2, total: 2 });
+  assert.deepEqual(shard.files.map((file) => path.basename(file)), ['a.test.js', 'b.test.js']);
+  for (const value of ['0/2', '1/0', '3/2', '1', '1/2/3', '1.5/2', '1/9007199254740992', '1/3']) {
+    assert.throws(() => parseArgs([`--shard=${value}`], root), /--shard/);
+  }
+});
+
+test('native shards cover every discovered file exactly once and retain failures', async (t) => {
+  const root = await fixture(t, Object.fromEntries(['a', 'b', 'c', 'd', 'e'].map((name) => [
+    `${name}.test.js`, `const test = require('node:test'); test('${name}', () => { ${name === 'b' ? "throw new Error('sharded failure');" : ''} });`,
+  ])));
+  const reports = [];
+  for (const index of [1, 2]) {
+    const child = invoke(root, [`--shard=${index}/2`]);
+    assert.equal(child.error, undefined);
+    assert.equal(child.status, index === 1 ? 0 : 1, child.stdout + child.stderr);
+    const report = JSON.parse(await fs.readFile(path.join(root, 'work/result.json'), 'utf8'));
+    assert.deepEqual(report.shard, { index, total: 2 });
+    assert.equal(report.inputFileCount, 5);
+    assert.deepEqual(report.incompleteFiles, []);
+    assert.equal(report.success, index === 1);
+    assert.match(child.stdout, new RegExp(`shard=${index}/2`));
+    const expected = index === 1 ? ['a', 'c', 'e'] : ['b', 'd'];
+    assert.deepEqual(report.files.map((file) => file.file).sort(), expected.map((name) => `e2e/${name}.test.js`));
+    assert.deepEqual(report.tests.map((result) => result.name).sort(), expected);
+    reports.push(report);
+  }
+  const names = reports.flatMap((report) => report.tests.map((result) => result.name));
+  assert.equal(new Set(names).size, 5);
+  assert.equal(names.length, 5);
 });
 
 test('browser profile separates native file elapsed time from nested test duration sums', () => {
