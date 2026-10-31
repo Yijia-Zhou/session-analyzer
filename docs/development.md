@@ -56,7 +56,7 @@ Open `http://127.0.0.1:17890/`. Without `--repo`, select a project in the browse
 | Serial phase coverage measurement / 顺序阶段覆盖量测 | `npm run test:profile-coverage` |
 | Install Chromium / 安装 Chromium | `npm run browser:install` |
 | Browser coverage / 浏览器覆盖 | `npm run test:browser` |
-| Browser test timing / 浏览器测试耗时 | `npm run test:browser:profile -- --concurrency=4` |
+| Browser test timing / 浏览器测试耗时 | `npm run test:browser:profile -- --concurrency=2` |
 | Installed-package smoke / 安装包 smoke | `npm run test:package` |
 | Repeatable non-browser release gate / 可重复非浏览器发布门槛 | `npm run release:check` |
 
@@ -92,7 +92,7 @@ Inspect failures and fix regressions introduced by the change. Once the relevant
 
 ### CI execution scope / CI 执行范围
 
-Browser tests are grouped by feature and run with four native Node file workers. Use `node --test e2e/browser-search.test.js` for focused search validation; both full commands include every `e2e/*.test.js` file. The profiling command records individual/file durations and the slowest 20 tests. See [browser test execution](design-docs/browser-test-execution.md) for coverage mapping, optional phase timing and controlled 1/2/4-worker comparisons. CI uploads the full timing report on success or failure and keeps its existing full-coverage gate. / 浏览器测试按功能拆分，由四个 Node 原生文件 worker 执行。所列文件命令可聚焦搜索验证；两个全量入口均包含全部匹配文件。量测入口记录逐项、逐文件耗时及最慢 20 项。覆盖映射、可选阶段量测与受控并行对照见执行设计。CI 成功或失败均上传全量时长报告，保留原完整覆盖门槛。
+Browser tests are grouped by feature and run with two native Node file workers. Use `node --test e2e/browser-search.test.js` for focused search validation; both full commands include every `e2e/*.test.js` file. The profiling command records individual/file durations and the slowest 20 tests. See [browser test execution](design-docs/browser-test-execution.md) for coverage mapping, optional phase timing and controlled 1/2/4-worker comparisons. CI uploads the full timing report on success or failure and keeps its existing full-coverage gate. / 浏览器测试按功能拆分，由两个 Node 原生文件 worker 执行。所列文件命令可聚焦搜索验证；两个全量入口均包含全部匹配文件。量测入口记录逐项、逐文件耗时及最慢 20 项。覆盖映射、可选阶段量测与受控并行对照见执行设计。CI 成功或失败均上传全量时长报告，保留原完整覆盖门槛。
 
 The browser job uses `ubuntu-24.04`, which the locked Playwright 1.60 supports. Review the runner image and Playwright support together before upgrading; `ubuntu-latest` can advance to an unsupported OS before the browser dependencies do. Node and package jobs continue using their existing OS matrix. / 浏览器 job 固定使用锁定的 Playwright 1.60 支持的 `ubuntu-24.04`。升级时共同核对 runner 镜像与 Playwright 支持范围；`ubuntu-latest` 可能先于浏览器依赖切换到尚不支持的操作系统。Node 与安装包 job 继续使用原有操作系统矩阵。
 

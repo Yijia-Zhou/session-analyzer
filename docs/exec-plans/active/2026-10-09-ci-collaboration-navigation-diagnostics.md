@@ -26,6 +26,12 @@ The current targeted test passed on rerun. Three isolated runs serving the origi
 
 - After the instrumented change reaches CI, inspect a failing artifact's actual key/click target, removed focused action, departure checkpoints and return geometry. Distinguish lost input, late layout changes and capture-before-click differences using evidence. A passing run alone does not confirm the root cause. / 诊断变更进入 CI 后，核对失败工件中的实际按键／点击目标、被移除的焦点入口、离开检查点与返回几何位置。根据证据区分输入丢失、延迟布局变化及点击前采样差异；仅有通过运行不能确认根因。
 
+### Local parallel-suite evidence on 2026-10-31 / 2026-10-31 本地并行套件依据
+
+During Browser CI optimization, the unchanged keyboard-navigation callback failed once with two file workers on local Chromium 154 / Node 24.19.0. The target button was focused at `trajectory:before-enter`; 5 ms later the debounced parent `timeline?q=recorded+result&limit=150` request started. Its response replaced the Inspector article, recorded `removedFocusedAction=true`, and moved focus to BODY before Enter. No child navigation was initiated, so the subsequent selected-session wait timed out. The trace says the preceding `networkidle` event had already fired; that wait lasted only 0.19 ms. Capture completed without errors. / 浏览器 CI 优化期间，未修改的键盘导航回调在本地双文件 worker 下失败一次。轨迹检查点时目标按钮已聚焦；5 ms 后防抖搜索请求启动，返回后替换 Inspector 文章，记录焦点入口移除并使 BODY 获得焦点，随后 Enter 没有触发子会话导航，因此选中会话等待超时。Trace 显示此前 networkidle 已发生，等待仅 0.19 ms；诊断捕获无错误。
+
+This repeats the October 13 mechanism; it is not evidence of a newly introduced product regression or a repaired focus behavior. The original serial baseline and the [complete two-worker hosted CI](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41165859662) passed this case. A possible bounded follow-up is to await the exact query response and its rendered completion before selecting/focusing the target, while retaining keyboard Enter and all focus/visibility/return assertions. Such a change would stabilize test setup, not prove product focus retention during a late render. / 此次重现 10 月 13 日机制，不作为新引入产品回归或焦点行为已修复的证据。原串行基线与完整双 worker hosted CI 均通过此项。后续可在选择和聚焦前等待精确查询响应及渲染完成，保留 Enter 与全部焦点、可见性和返回断言；这只会稳定测试准备，不证明迟到渲染期间产品保持了焦点。
+
 ## References / 引用
 
 - [Development CI diagnostics](../../development.md#ci-execution-scope)

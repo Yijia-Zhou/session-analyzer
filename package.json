@@ -146,7 +146,7 @@
     "build:client": "node scripts/build-client.js",
     "test": "node --test \"test/*.test.js\"",
     "test:profile-coverage": "node scripts/deepseek-profile-coverage.js",
-    "test:browser": "node --test --test-concurrency=4 \"e2e/*.test.js\"",
+    "test:browser": "node --test --test-concurrency=2 \"e2e/*.test.js\"",
     "test:browser:profile": "node scripts/browser-test-profile.js",
     "test:package": "node scripts/package-smoke.js",
     "release:check": "npm run build:check && npm test && npm run test:package",
