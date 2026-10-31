@@ -12,7 +12,7 @@ on:
       browser_concurrency:
         description: Native Node browser test file concurrency
         type: choice
-        default: '2'
+        default: '4'
         options: ['1', '2', '4']
 
 permissions:
@@ -164,7 +164,7 @@ jobs:
       - run: npm run test:browser:profile -- --concurrency="$BROWSER_TEST_CONCURRENCY"
         id: browser-tests
         env:
-          BROWSER_TEST_CONCURRENCY: ${{ inputs.browser_concurrency || '2' }}
+          BROWSER_TEST_CONCURRENCY: ${{ inputs.browser_concurrency || '4' }}
           BROWSER_TEST_PHASES: '1'
       - name: Upload browser timing report
         if: ${{ always() && (steps.browser-tests.outcome == 'success' || steps.browser-tests.outcome == 'failure') }}

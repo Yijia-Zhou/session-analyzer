@@ -8,7 +8,7 @@ const { run } = require('node:test');
 const { inspect } = require('node:util');
 
 const usage = `Usage: node scripts/browser-test-profile.js [options] [test files...]
-  --concurrency=N  Native Node file concurrency (default: 2)
+  --concurrency=N  Native Node file concurrency (default: 4)
   --output=PATH    JSON report (default: work/browser-profile.json)
   --timeout=MS     Native runner timeout (default: no added timeout)
   --help          Show this help
@@ -18,7 +18,7 @@ Set BROWSER_TEST_PHASES=1 to collect optional common-helper phase diagnostics.
 `;
 
 function parseArgs(argv, cwd = process.cwd()) {
-  const options = { concurrency: 2, output: path.resolve(cwd, 'work/browser-profile.json'), files: [], timeout: undefined };
+  const options = { concurrency: 4, output: path.resolve(cwd, 'work/browser-profile.json'), files: [], timeout: undefined };
   for (const arg of argv) {
     if (arg === '--help') return { help: true };
     if (arg.startsWith('--concurrency=')) {
