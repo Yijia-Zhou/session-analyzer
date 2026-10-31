@@ -6,7 +6,8 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
-const { createProfile, formatSummary, parseArgs } = require('../scripts/browser-test-profile');
+const { createProfile, formatSummary, parseArgs, selectGroup } = require('../scripts/browser-test-profile');
+const browserTestGroups = require('../scripts/browser-test-groups.json');
 
 const script = path.resolve(__dirname, '../scripts/browser-test-profile.js');
 
@@ -72,6 +73,60 @@ test('native shards cover every discovered file exactly once and retain failures
   const names = reports.flatMap((report) => report.tests.map((result) => result.name));
   assert.equal(new Set(names).size, 5);
   assert.equal(names.length, 5);
+});
+
+test('thematic groups completely partition the checkout and reject invalid membership', () => {
+  const root = path.resolve(__dirname, '..');
+  const all = parseArgs([], root).files;
+  const selected = Object.keys(browserTestGroups).flatMap((name) => parseArgs([`--group=${name}`], root).files);
+  assert.equal(selected.length, all.length);
+  assert.deepEqual([...new Set(selected)].sort(), all);
+  const files = ['a.test.js', 'b.test.js'];
+  const valid = { first: ['a.test.js'], second: ['b.test.js'] };
+  assert.deepEqual(selectGroup('first', files, valid), ['a.test.js']);
+  assert.throws(() => selectGroup('first', files, { first: ['a.test.js'] }), /Unassigned.*b\.test\.js/);
+  assert.throws(() => selectGroup('first', files, { first: ['a.test.js'], second: ['missing.test.js'] }), /Unknown browser test file/);
+  assert.throws(() => selectGroup('first', files, { first: ['a.test.js', 'a.test.js'], second: ['b.test.js'] }), /Duplicate/);
+  assert.throws(() => selectGroup('first', files, { first: ['a.test.js'], second: ['a.test.js', 'b.test.js'] }), /Duplicate/);
+  assert.throws(() => selectGroup('first', files, { first: [], second: files }), /Empty or invalid/);
+  assert.throws(() => selectGroup('first', files, { first: 'a.test.js', second: ['b.test.js'] }), /Empty or invalid/);
+  assert.throws(() => selectGroup('toString', files, valid), /Unknown browser test group/);
+  assert.throws(() => parseArgs(['--group='], root), /needs a name/);
+  assert.throws(() => parseArgs(['--group=unknown'], root), /Unknown browser test group/);
+  assert.throws(() => parseArgs(['--group=navigation-evidence', '--output=e2e/browser.test.js'], root), /overwrite a test file/);
+  assert.throws(() => parseArgs(['--group=reading-presentation', '--shard=1/2'], root), /cannot be combined/);
+  assert.throws(() => parseArgs(['--group=reading-presentation', 'e2e/browser.test.js'], root), /cannot be combined/);
+});
+
+test('thematic CLI runs retain failures, report their identity and reject unassigned new files', async (t) => {
+  const members = Object.values(browserTestGroups).flat();
+  const failingFile = 'browser-code-mode.test.js';
+  const root = await fixture(t, Object.fromEntries(members.map((name) => [
+    name, `const test = require('node:test'); test(${JSON.stringify(name)}, () => { ${name === failingFile ? "throw new Error('thematic failure');" : ''} });`,
+  ])));
+  const executed = [];
+  for (const [group, expected] of Object.entries(browserTestGroups)) {
+    const child = invoke(root, [`--group=${group}`]);
+    assert.equal(child.error, undefined);
+    assert.equal(child.status, expected.includes(failingFile) ? 1 : 0, child.stdout + child.stderr);
+    const report = JSON.parse(await fs.readFile(path.join(root, 'work/result.json'), 'utf8'));
+    assert.equal(report.group, group);
+    assert.equal(report.shard, null);
+    assert.equal(report.inputFileCount, members.length);
+    assert.equal(report.success, !expected.includes(failingFile));
+    assert.deepEqual(report.incompleteFiles, []);
+    assert.deepEqual(report.tests.map((result) => result.name).sort(), [...expected].sort());
+    assert.deepEqual(report.files.map((file) => file.file).sort(), expected.map((name) => `e2e/${name}`).sort());
+    assert.match(child.stdout, new RegExp(`group=${group}`));
+    executed.push(...report.tests.map((result) => result.name));
+  }
+  assert.equal(executed.length, members.length);
+  assert.equal(new Set(executed).size, members.length);
+  await fs.writeFile(path.join(root, 'e2e/new.test.js'), 'throw new Error("must not start any tests");');
+  const rejected = invoke(root, ['--group=reading-presentation']);
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /Unassigned browser test files: new\.test\.js/);
+  assert.doesNotMatch(rejected.stdout + rejected.stderr, /must not start any tests/);
 });
 
 test('browser profile separates native file elapsed time from nested test duration sums', () => {

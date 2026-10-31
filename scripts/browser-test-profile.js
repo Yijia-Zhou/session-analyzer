@@ -6,14 +6,17 @@ const os = require('node:os');
 const { performance } = require('node:perf_hooks');
 const { run } = require('node:test');
 const { inspect } = require('node:util');
+const browserTestGroups = require('./browser-test-groups.json');
 
 const usage = `Usage: node scripts/browser-test-profile.js [options] [test files...]
   --concurrency=N  Native Node file concurrency (default: 2)
   --shard=N/M      Native file shard, 1-based (default: all files)
+  --group=NAME     Thematic CI group; cannot combine with --shard or test files
   --output=PATH    JSON report (default: work/browser-profile.json)
   --timeout=MS     Native runner timeout (default: no added timeout)
   --help          Show this help
-With no files, run all e2e/*.test.js files relative to the current directory.
+With no files, discover all e2e/*.test.js files relative to the current directory.
+Run all of them unless --group or --shard selects a subset.
 Build browser assets and install Chromium before running browser tests.
 Set BROWSER_TEST_PHASES=1 to collect optional common-helper phase diagnostics.
 `;
@@ -33,6 +36,9 @@ function parseArgs(argv, cwd = process.cwd()) {
       options.shard = { index, total };
     } else if (arg.startsWith('--timeout=')) {
       options.timeout = positiveInteger(arg.slice('--timeout='.length), '--timeout');
+    } else if (arg.startsWith('--group=')) {
+      options.group = arg.slice('--group='.length);
+      if (!options.group) throw new Error('--group needs a name');
     } else if (arg.startsWith('--output=')) {
       const value = arg.slice('--output='.length);
       if (!value) throw new Error('--output needs a path');
@@ -43,6 +49,9 @@ function parseArgs(argv, cwd = process.cwd()) {
       options.files.push(path.resolve(cwd, arg));
     }
   }
+  if (options.group && (options.shard || options.files.length > 0)) {
+    throw new Error('--group cannot be combined with --shard or explicit test files');
+  }
   if (options.files.length === 0) {
     options.files = fs.readdirSync(path.join(cwd, 'e2e'), { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.endsWith('.test.js'))
@@ -50,6 +59,7 @@ function parseArgs(argv, cwd = process.cwd()) {
   }
   options.files = [...new Set(options.files)];
   if (options.files.length === 0) throw new Error('No test files found');
+  options.inputFileCount = options.files.length;
   if (options.shard) {
     options.files.sort();
     if (options.shard.total > options.files.length) throw new Error('--shard total must not exceed the test file count');
@@ -58,7 +68,27 @@ function parseArgs(argv, cwd = process.cwd()) {
     if (!fs.statSync(file).isFile()) throw new Error(`Not a test file: ${file}`);
     if (file === options.output) throw new Error('The report cannot overwrite a test file');
   }
+  if (options.group) options.files = selectGroup(options.group, options.files);
   return options;
+}
+
+function selectGroup(group, files, groups = browserTestGroups) {
+  if (!Object.hasOwn(groups, group)) throw new Error(`Unknown browser test group: ${group}`);
+  const discovered = new Set(files.map((file) => path.basename(file)));
+  const owners = new Map();
+  // Validate the entire partition on every group run. Adding, deleting or
+  // moving a test file must never silently reduce CI coverage.
+  for (const [name, members] of Object.entries(groups)) {
+    if (!Array.isArray(members) || members.length === 0) throw new Error(`Empty or invalid browser test group: ${name}`);
+    for (const member of members) {
+      if (!discovered.has(member)) throw new Error(`Unknown browser test file in group ${name}: ${member}`);
+      if (owners.has(member)) throw new Error(`Duplicate browser test file: ${member}`);
+      owners.set(member, name);
+    }
+  }
+  const unassigned = [...discovered].filter((file) => !owners.has(file));
+  if (unassigned.length) throw new Error(`Unassigned browser test files: ${unassigned.join(', ')}`);
+  return files.filter((file) => owners.get(path.basename(file)) === group).sort();
 }
 
 function positiveInteger(value, option) {
@@ -141,7 +171,8 @@ function createProfile(options, cwd = process.cwd()) {
       schemaVersion: 1, startedAt, nodeVersion: process.version, platform: process.platform,
       architecture: process.arch, availableParallelism: os.availableParallelism(),
       concurrency: options.concurrency, timeoutMs: options.timeout ?? null,
-      shard: options.shard ?? null, inputFileCount: options.files.length,
+      shard: options.shard ?? null, group: options.group ?? null,
+      inputFileCount: options.inputFileCount ?? options.files.length,
       wallTimeMs, success: Boolean(summary?.success) && !interrupted && !runnerError && incompleteFiles.length === 0,
       interrupted, runnerError: errorDetails(runnerError), incompleteFiles, summary,
       measurement: {
@@ -198,7 +229,7 @@ function summarizePhases(measurements) {
 function formatSummary(report) {
   const counts = report.summary?.counts;
   const lines = [
-    '', `Browser profile: ${report.success ? 'PASS' : 'FAIL'}; concurrency=${report.concurrency}${report.shard ? `; shard=${report.shard.index}/${report.shard.total}` : ''}; wall=${(report.wallTimeMs / 1000).toFixed(2)}s`,
+    '', `Browser profile: ${report.success ? 'PASS' : 'FAIL'}; concurrency=${report.concurrency}${report.group ? `; group=${report.group}` : ''}${report.shard ? `; shard=${report.shard.index}/${report.shard.total}` : ''}; wall=${(report.wallTimeMs / 1000).toFixed(2)}s`,
     counts ? `Tests: ${counts.tests}; passed=${counts.passed}; failed=${counts.failed}; skipped=${counts.skipped}; cancelled=${counts.cancelled}; todo=${counts.todo}` : 'No complete native summary received.',
     'Files (process elapsed / top-level test sum; concurrent files overlap):',
   ];
@@ -278,4 +309,4 @@ async function main(argv = process.argv.slice(2)) {
 
 if (require.main === module) main().then((code) => { process.exitCode = code; });
 
-module.exports = { createProfile, formatSummary, parseArgs, profileTests };
+module.exports = { createProfile, formatSummary, parseArgs, profileTests, selectGroup };

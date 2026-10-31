@@ -2,7 +2,7 @@
 
 ## Coverage and isolation / 覆盖与隔离
 
-The browser suite uses Playwright as an automation library and Node's native test runner. `npm run test:browser` runs every `e2e/*.test.js` file with two concurrent file workers. Tests within each file remain sequential. The profiling command discovers the same files; without `--shard` it runs the full suite. CI runs all shards to preserve full coverage. / 浏览器套件使用 Playwright 自动化库与 Node 原生测试运行器。上述命令以两个文件 worker 运行全部匹配文件，文件内测试仍顺序执行。量测命令发现相同文件，不带分片参数时执行全量；CI 执行所有分片以保留完整覆盖。
+The browser suite uses Playwright as an automation library and Node's native test runner. `npm run test:browser` runs every `e2e/*.test.js` file with two concurrent file workers. Tests within each file remain sequential. The profiling command discovers the same files; without a group, shard or explicit file selection it runs the full suite. CI runs every thematic group to preserve full coverage. / 浏览器套件使用 Playwright 自动化库与 Node 原生测试运行器。上述命令以两个文件 worker 运行全部匹配文件，文件内测试仍顺序执行。量测命令发现相同文件，不指定主题、分片或文件时执行全量；CI 执行所有主题以保留完整覆盖。
 
 The former large `browser.test.js` is organized into these feature groups. Existing source-specific and history suites retain their own files. / 原大型文件按下表组织；已有的来源专项与历史测试仍保留独立文件。
 
@@ -21,7 +21,7 @@ The former large `browser.test.js` is organized into these feature groups. Exist
 
 `e2e/browser-helpers.js` contains shared synthetic fixtures and setup helpers. Every test still owns its browser/context, dynamically allocated server port and temporary directories. No browser, server or mutable fixture is pooled between tests. The source-bundle promise is process-local; splitting can repeat its one-time build in more than one worker. / 公共 helper 保存合成 fixture 与启动辅助代码。每项测试仍拥有独立浏览器／context、动态端口与临时目录，不跨测试复用浏览器、服务或可变 fixture。源码 bundle promise 仍局限于进程，拆分后不同 worker 可能分别构建一次。
 
-Keep new tests in the appropriate feature file. A new top-level `e2e/*.test.js` file is automatically included in both full commands; helpers must not use the `.test.js` suffix. Targeted file runs shorten development feedback but do not replace the full merge/release gate. / 新测试加入对应功能文件；新增顶层匹配测试文件会被两个全量入口自动纳入，helper 不应使用测试后缀。开发时按文件验证可以缩短反馈，但不能替代完整合并／发布门槛。
+Keep new tests in the appropriate feature file. A new top-level `e2e/*.test.js` file is automatically included in both full commands; also assign it to exactly one group in [the CI manifest](../../scripts/browser-test-groups.json). Group runs reject missing, duplicate, unknown or empty assignments before starting tests. Helpers must not use the `.test.js` suffix. Targeted runs shorten development feedback but do not replace the full merge/release gate. / 新测试加入对应功能文件；新增顶层匹配文件会被两个全量入口自动纳入，同时必须在 CI 清单中归入恰好一个主题。主题执行在启动测试前拒绝遗漏、重复、不存在的文件和空组。Helper 不应使用测试后缀；局部执行可以缩短开发反馈，但不能替代完整合并／发布门槛。
 
 ## Measurements / 量测
 
@@ -36,7 +36,11 @@ npm run test:browser
 npm run test:browser:profile -- --concurrency=2
 # Repeat serially with 1, 2, 4; use distinct report paths / 顺序比较并保留独立报告
 npm run test:browser:profile -- --concurrency=4 --output=work/browser-profile-4.json
-# Reproduce both CI shards; each command covers only its own files / 复现两个 CI 分片，每条仅覆盖对应文件
+# Reproduce all three thematic CI jobs / 复现全部三个主题 CI job
+npm run test:browser:profile -- --group=reading-presentation --output=work/browser-profile-reading.json
+npm run test:browser:profile -- --group=search-loading --output=work/browser-profile-search.json
+npm run test:browser:profile -- --group=navigation-evidence --output=work/browser-profile-navigation.json
+# Historical native two-shard comparison / 历史原生两分片对照
 npm run test:browser:profile -- --shard=1/2 --output=work/browser-profile-shard-1.json
 npm run test:browser:profile -- --shard=2/2 --output=work/browser-profile-shard-2.json
 ```
@@ -51,10 +55,18 @@ Measure memory with a process-tree sampler that includes Chromium children; the 
 
 ## CI policy / CI 策略
 
-CI runs a two-entry Browser matrix on independent Ubuntu runners, with two native file workers per runner. The profiler passes the complete sorted file list and `shard: { index, total }` to `node:test.run`; Node assigns alternating files to `1/2` and `2/2`. Every discovered file belongs to exactly one shard, including newly added test files. The report records the shard, full input file count and assigned file results; invalid or empty shard configurations fail. / CI 在独立 Ubuntu runner 上运行两项 Browser 矩阵，每项使用两个原生文件 worker。量测器将完整排序文件列表与分片参数交给 Node，由其交替分配给两个分片。每个发现的文件恰好属于一个分片，新增测试文件也自动纳入。报告记录分片、完整输入文件数与所属文件结果；无效或空分片配置直接失败。
+CI runs three thematic Browser jobs on independent Ubuntu runners, with two native file workers per runner. Each job validates the complete manifest against discovered files, then passes its sorted file subset to `node:test.run`. A workflow contract checks that matrix entries exactly match the manifest's group names. The report records `group`, the complete `inputFileCount` and assigned file results. `--group` cannot combine with `--shard` or explicit files, avoiding accidental partial group coverage. / CI 在独立 Ubuntu runner 上运行三个主题 Browser job，每项使用两个原生文件 worker。每项先验证完整清单与发现的文件一致，再将所属排序文件列表交给 Node。Workflow 契约校验矩阵项与清单主题名完全一致。报告记录主题、完整输入文件数与所属文件结果。主题参数不能与原生分片或显式文件混用，避免意外只执行主题的一部分。
 
-The existing full Node/package matrix, conservative docs-only classification, asset policy and final `ci` gate remain. `fail-fast: false` lets both shards finish; the aggregate requires the whole Browser matrix to succeed. Each shard uploads `browser-timing-<shard>-<attempt>` on success or failure and `browser-navigation-failures-<shard>-<attempt>` on test failure, with seven-day retention. Main/development pushes, manual dispatches and code PRs still require every browser test. / 完整 Node／安装包矩阵、保守文档分类、资产策略与最终门槛保留。关闭快速失败使两个分片都能完成；聚合门槛要求整个 Browser 矩阵成功。每项成功或失败均上传独立时长工件，测试失败时上传独立导航诊断工件，保留七天。Main／开发分支 push、手动执行与代码 PR 仍要求全部浏览器测试。
+| Group / 主题 | Files / 文件 | Execution items / 执行项 | Coverage / 覆盖 |
+| --- | ---: | ---: | --- |
+| `reading-presentation` | 13 | 167 | Basic reading, Code Mode, Trajectory, Detail, rendering, and all pi/OpenCode/WorkBuddy suites / 基础阅读、Code Mode、Trajectory、详情、渲染及全部 pi／OpenCode／WorkBuddy 专项 |
+| `search-loading` | 4 | 145 | Search, pagination, source configuration/recovery and request handoffs / 搜索、分页、来源配置与恢复、请求交接 |
+| `navigation-evidence` | 4 | 111 | File/collaboration navigation, history evidence, turn lineage and recorded configuration / 文件／协作导航、历史依据、回合关系与已记录配置 |
+
+These initial counts total 423 execution items: 418 top-level tests and five nested Code Mode subtests. Locale, viewport and other parameter combinations count separately. Membership is maintained by file, not by fixed test counts. The pi navigation suite stays with its source-specific siblings. / 初始数量合计 423 个执行项，即 418 项顶层测试与五项 Code Mode 子测试；语言、视口等参数组合分别计数。分组按文件维护，不固定测试数量。pi 导航套件与同来源专项保持在一起。
+
+The existing full Node/package matrix, conservative docs-only classification, asset policy and final `ci` gate remain. `fail-fast: false` lets every group finish; the aggregate requires the whole Browser matrix to succeed. Each group uploads `browser-timing-<group>-<attempt>` on success or failure and `browser-navigation-failures-<group>-<attempt>` on test failure, with seven-day retention. Main/development pushes, manual dispatches and code PRs still require every browser test. / 完整 Node／安装包矩阵、保守文档分类、资产策略与最终门槛保留。关闭快速失败使所有主题都能完成；聚合门槛要求整个 Browser 矩阵成功。每项成功或失败均上传独立时长工件，测试失败时上传独立导航诊断工件，保留七天。Main／开发分支 push、手动执行与代码 PR 仍要求全部浏览器测试。
 
 The existing manual workflow accepts `browser_concurrency` values `1`, `2` or `4` per runner for controlled comparisons on the same commit. Normal CI uses two workers per shard; the local full command still uses two workers on one machine. Increase per-runner concurrency only after checking complete test counts, failures and memory on the hosted runner; more workers can make individual tests slower through CPU and I/O contention. No tests move to nightly, the skip allowlist is unchanged, and no browser container is introduced. / 既有手动 workflow 接受每个 runner 的三种并行度，用于同提交对照。常规 CI 每个分片使用两个 worker；本地全量命令仍在单机使用两个 worker。提高单机并行度前须检查 hosted runner 的完整计数、失败与内存，因为 CPU／I/O 竞争可能使单项更慢。测试不移至 nightly，跳过白名单不变，不引入浏览器容器。
 
-The [initial experiment](../exec-plans/completed/2026-10-31-browser-ci-performance.md) selected two workers: two successful hosted runs took 336.1 s and 408.9 s versus the unchanged-tree baseline's 431.6 s. Four workers took 361.7 s and failed one navigation assertion, while raising local sampled memory. The [matrix experiment](../exec-plans/completed/2026-10-31-browser-ci-matrix.md) then passed all 423 tests in two shards taking 215.2 s and 205.5 s. Including preparation, their combined execution window was about 248.5 s; summed runner time was about 11% above the last single-runner sample. Retain two shards with two workers each. These are limited hosted samples, not a latency guarantee or proof that pre-existing navigation races are eliminated. / 初始实验选择双 worker：两次 hosted 成功样本耗时 336.1 秒与 408.9 秒，未改树基线为 431.6 秒。四 worker 耗时 361.7 秒并出现一项导航断言失败，本地采样内存也上升。后续矩阵实验完整通过全部 423 项测试，两个分片分别为 215.2 秒与 205.5 秒。包含准备的执行窗口约 248.5 秒，合计 runner 时间比上一次单 runner 样本多约 11%。保留两个分片、各两个 worker。这些是有限 hosted 样本，不保证固定时延或消除既有导航竞态。
+The [initial experiment](../exec-plans/completed/2026-10-31-browser-ci-performance.md) selected two workers per runner. The [native matrix experiment](../exec-plans/completed/2026-10-31-browser-ci-matrix.md) passed all 423 tests; its two successful Browser execution windows including setup were about 248.5 s and 249.3 s. The [thematic matrix experiment](../exec-plans/active/2026-10-31-browser-ci-thematic-matrix.md) compares three named groups against that baseline, recording both elapsed waiting time and summed runner time. Hosted validation is pending for the thematic candidate. These are limited samples, not latency guarantees or proof that pre-existing navigation races are eliminated. / 初始实验选择每个 runner 两个 worker。原生矩阵实验完整通过全部 423 项测试，包含准备的两次 Browser 执行窗口约为 248.5 秒与 249.3 秒。主题矩阵实验以此为基线比较三个具名主题，同时记录等待时间与合计 runner 时间；候选主题配置尚待 hosted 验证。有限样本不保证固定时延或消除既有导航竞态。
