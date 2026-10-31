@@ -12,6 +12,7 @@ const claude = require('./claude');
 const deepseekHarness = require('./deepseek-harness');
 const pi = require('./pi');
 const opencode = require('./opencode');
+const workbuddy = require('./workbuddy');
 const { withIndexResources } = require('./index-resources');
 const { buildClaudeEventDetail } = require('./claude-detail');
 const { collaborationNavigation } = require('./shared/collaboration-navigation');
@@ -55,6 +56,7 @@ const SOURCE_KIND = Object.freeze({
   DEEPSEEK_HARNESS: 'deepseek-harness',
   PI: 'pi',
   OPENCODE: 'opencode',
+  WORKBUDDY: 'workbuddy',
 });
 
 function graphFingerprint(value, identityState = {
@@ -892,6 +894,7 @@ const adapters = createSourceAdapterRegistry([
   deepseekHarness.deepSeekAdapter,
   pi.piAdapter,
   opencode.opencodeAdapter,
+  workbuddy.workbuddyAdapter,
 ]);
 
 function getSourceAdapter(value) {

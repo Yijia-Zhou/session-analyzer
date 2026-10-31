@@ -377,6 +377,10 @@ OpenCode is an explicit source choice backed by a read-only SQLite reader and th
 
 For this source, a RawRecord represents native row evidence and uses a typed SQLite locator containing database identity, table, primary key, pointer and snapshot identity. The earlier JSONL physical-line rules do not apply. Existing source-neutral Logical, search, Detail and Raw consumers share the captured revision, while resource leases prevent retirement from deleting data during an actual read. Source changes require a new capture; old references cannot be repaired by reading current database content. `history.read.source` remains the Codex file/line interface. See [OpenCode native sessions](opencode-native-sessions.md) for read-only filesystem behavior, budgets, compatibility and deferred work. / 对该来源，RawRecord 表示原生行依据，使用包含数据库身份、表、主键、指针与快照身份的类型化 SQLite locator。此前 JSONL 物理行规则不适用。现有来源中立的 Logical、搜索、Detail 与 Raw 消费者共享捕获的 revision；资源 lease 防止退役在实际读取期间删除数据。来源变化要求重新捕获，旧引用不能通过读取数据库当前内容修复。`history.read.source` 保持为 Codex 文件／行接口。只读文件系统行为、预算、兼容及后续范围见 [OpenCode 原生会话](opencode-native-sessions.md)。
 
+## WorkBuddy / CodeBuddy native JSONL / WorkBuddy／CodeBuddy 原生 JSONL
+
+`workbuddy` is a separate registered adapter for the pinned CodeBuddy 2.179.0 engine history, selected with `--workbuddy-home` or the source chooser. It owns native record interpretation and structured Detail; shared queries and browser state remain source-neutral. Physical JSONL Raw identity is distinct from stream-json transport output. The [native design](workbuddy-native-sessions.md) records authority, source selection, mapping and unsupported boundaries. / `workbuddy` 是固定 CodeBuddy 2.179.0 引擎历史的独立注册 adapter，通过所列参数或来源选择器选择。它拥有原生记录解释与结构化 Detail；共享查询和浏览器状态保持来源中立。物理 JSONL Raw identity 区别于 stream-json 传输输出。[原生设计](workbuddy-native-sessions.md)记录依据、来源选择、映射和未支持边界。
+
 ## Deferred work / 推迟事项
 
 `0.2.0` deliberately does not: / `0.2.0` 有意不做：
