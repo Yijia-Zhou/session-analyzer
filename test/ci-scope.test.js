@@ -159,6 +159,11 @@ test('workflow wires full-history classification without filtering the required 
   assert.match(scope, /CI_HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \}\}/u);
   assert.match(scope, /run: node scripts\/ci-scope\.js/u);
   assert.match(browser, /needs: scope/u);
+  assert.match(workflow, /browser_concurrency:\n\s+description: Native Node browser test file concurrency\n\s+type: choice\n\s+default: '2'\n\s+options: \['1', '2', '4'\]/u);
+  assert.match(browser, /run: npm run test:browser:profile -- --concurrency="\$BROWSER_TEST_CONCURRENCY"/u);
+  assert.ok(browser.includes("BROWSER_TEST_CONCURRENCY: ${{ inputs.browser_concurrency || '2' }}"));
+  assert.match(browser, /BROWSER_TEST_PHASES: '1'/u);
+  assert.match(browser, /path: work\/browser-profile\.json\n\s+if-no-files-found: warn\n\s+retention-days: 7/u);
   assert.match(browser, /if: \$\{\{ needs\.scope\.outputs\.browser_required != 'false' \}\}/u);
   assert.ok(browser.includes("if: ${{ failure() && steps.browser-tests.outcome == 'failure' }}"));
   assert.ok(browser.includes('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'));

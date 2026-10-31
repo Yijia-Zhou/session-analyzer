@@ -4,6 +4,7 @@ node_modules/
 # Test and coverage output
 coverage/
 .nyc_output/
+/work/browser-profile*.json
 
 # Local browser automation artifacts
 .playwright-cli/

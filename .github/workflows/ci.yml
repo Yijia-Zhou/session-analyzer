@@ -8,6 +8,12 @@ on:
       - main
       - 'v*-development'
   workflow_dispatch:
+    inputs:
+      browser_concurrency:
+        description: Native Node browser test file concurrency
+        type: choice
+        default: '2'
+        options: ['1', '2', '4']
 
 permissions:
   contents: read
@@ -155,8 +161,19 @@ jobs:
           ASSET_MODE: ${{ needs.scope.outputs.asset_mode }}
         run: node scripts/ci-assets.js build
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:browser
+      - run: npm run test:browser:profile -- --concurrency="$BROWSER_TEST_CONCURRENCY"
         id: browser-tests
+        env:
+          BROWSER_TEST_CONCURRENCY: ${{ inputs.browser_concurrency || '2' }}
+          BROWSER_TEST_PHASES: '1'
+      - name: Upload browser timing report
+        if: ${{ always() && (steps.browser-tests.outcome == 'success' || steps.browser-tests.outcome == 'failure') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: browser-timing-${{ github.run_attempt }}
+          path: work/browser-profile.json
+          if-no-files-found: warn
+          retention-days: 7
       - name: Upload navigation failure diagnostics
         if: ${{ failure() && steps.browser-tests.outcome == 'failure' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
