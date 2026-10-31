@@ -34,5 +34,31 @@ These estimates exclude setup and queueing and assume per-file durations remain 
 ## Validation / 验证
 
 - Local: all 22 focused profiler/scope/asset checks passed on Node 24.19.0. Synthetic group executions prove complete/disjoint coverage, failure propagation and rejection of an unassigned new file; manifest checks reject duplicates, stale files, empty groups and conflicting selectors. / 本地 Node 24.19.0 的 22 项相关检查通过。合成主题执行验证完整无重复覆盖、失败传递与新增未分组文件拒绝；清单检查覆盖重复、失效文件、空组和冲突参数。
-- Fresh independent precommit review: pending. / 提交前 fresh 独立审查待执行。
-- Hosted comparison and final decision: pending. Download all three reports, verify their identity multiset against the successful 423-item baseline, inspect every CI result and retain failures. / Hosted 对照与最终决定待执行。下载三份报告，核对测试身份与成功基线一致，检查全部 CI 结果并保留失败。
+- Fresh independent precommit review: `/root/review_theme_matrix` reviewed all eight files against `a368c95`, exact diff SHA-256 `468873a87620965f66dab5033f6f18de0fb3769093297e552778d7ce134d4548`. A report-path issue was fixed before commit: validation must protect test files outside the selected group too. Its regression check passed, and no actionable findings remained. The reviewer independently passed all 22 focused checks on minimum-supported Node 22.22.2, plus syntax, YAML/JSON, links, whitespace, partition and historical-evidence checks. These were local/static checks; hosted evidence follows. / Fresh reviewer 审查所列基线上的精确八文件 diff。提交前修复报告路径问题：所属主题以外的测试文件也须受到覆盖保护；回归检查通过，最终无待处理发现。Reviewer 在最低支持的 Node 22.22.2 独立通过 22 项相关检查，以及语法、YAML／JSON、链接、空白、分组与历史证据检查。此处为本地／静态检查，hosted 依据如下。
+
+## Hosted result / Hosted 结果
+
+Implementation `d4a37c63e3c6a3317e99e253434ea646134833e5` passed [CI 41176247337](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176247337), including all three Browser jobs and all ten CI jobs. Each Browser job used Node 24.22.1, Ubuntu 24.04 and locked Chromium 148.0.7778.96. / 实现提交通过所列 CI，包含三个 Browser job 在内的十个 CI job 全部成功。每项 Browser 使用 Node 24.22.1、Ubuntu 24.04 与锁定 Chromium 148.0.7778.96。
+
+| Group / 主题 | Tests / 测试 | Test stage / 测试阶段 | Approximate whole job / 约整项 job | Artifact / 工件 |
+| --- | ---: | ---: | ---: | --- |
+| [reading-presentation](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176247337/job/124464321888) | 167/167 | 145.879 s | 178.747 s | [Timing](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176247337/artifacts/13033351988) |
+| [search-loading](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176247337/job/124464321870) | 145/145 | 134.780 s | 172.839 s | [Timing](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176247337/artifacts/13032956482) |
+| [navigation-evidence](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176247337/job/124464321830) | 111/111 | 126.348 s | 157.220 s | [Timing](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176247337/artifacts/13033341964) |
+
+The downloaded reports conserve the exact `(file, name, nesting, type)` multiset of all 423 baseline execution items. The 21 files occur exactly once, each report matches its manifest group and declares all 21 input files, and there are no failures, skips or cancellations. / 下载报告的测试身份多重集合与基线全部 423 个执行项完全一致。21 个文件恰好各出现一次，每份报告匹配清单主题并声明完整 21 个输入文件，失败、跳过与取消均为零。
+
+| Comparison / 对照 | Native sample 1 / 原生样本 1 | Native sample 2 / 原生样本 2 | Thematic sample / 主题样本 |
+| --- | ---: | ---: | ---: |
+| Slowest test stage / 最慢测试阶段 | 215.233 s | 217.392 s | 145.879 s |
+| Browser window including setup / 含准备的 Browser 窗口 | 248.450 s | 249.308 s | 178.747 s |
+| Summed test-stage time / 合计测试阶段时间 | 420.771 s | 376.981 s | 407.007 s |
+| Summed whole-job time / 合计整项 job 时间 | 488.211 s | 434.618 s | 508.806 s |
+
+The Browser window shortened by 28.1–28.3%, while summed runner time rose by 4.2–17.1% against the two observed baselines. Three-runner setup totaled about 96.1 s, versus 63.3/54.1 s previously; preparation is repeated for each job. Test-file timings also vary, so this is a latency/resource tradeoff across independent hosted samples, not a paired benchmark, statistical failure-rate estimate or billed-minute calculation. Browser windows exclude runner queues and the scope/final aggregate jobs. / 相比两次实测基线，Browser 窗口缩短约 28.1–28.3%，合计 runner 时间增加约 4.2–17.1%。三项准备合计约 96.1 秒，之前为 63.3／54.1 秒；各 job 都重复准备。单文件耗时也有波动，因此这是独立 hosted 样本的等待／资源权衡，不是同机配对、统计失败率或计费分钟计算。Browser 窗口不含排队与前后聚合 job。
+
+## Decision / 决定
+
+Retain three thematic groups with two workers each: this sample combines complete passing coverage, clear failure ownership and approximately three-minute Browser feedback, at the measured extra runner cost. Keep native `--shard` and full-suite commands for local use and future comparisons. Future file additions must update the manifest; do not rebalance by silently dropping tests or introducing a timed subset. / 保留三个主题、各两个 worker：本次样本完整通过，失败归属清楚，Browser 反馈约三分钟，代价为上述额外 runner 用量。保留原生分片和全量命令供本地使用与未来对照。后续新增文件须更新清单，不能通过遗漏测试或限时子集来平衡耗时。
+
+The final documentation commit repeats full CI with identical implementation and browser test files. Hosted variability and pre-existing navigation races remain possible; the successful sample does not establish fixed latency or eliminate those races. / 最终文档提交以相同实现与浏览器测试文件再次执行完整 CI。Hosted 波动与既有导航竞态仍可能存在；成功样本不保证固定时延或消除这些竞态。
