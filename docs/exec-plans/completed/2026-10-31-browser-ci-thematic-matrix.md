@@ -4,7 +4,7 @@
 
 The user requested a real comparison of three thematic CI jobs after discussing the 423-item Browser inventory. Continue draft PR #105 on `perf/browser-ci-profile`, starting at `a368c95bf350158bd5d934c06e1424a153493883`. Keep two workers per runner and all browser test bodies, assertions, fixtures, resources and generated assets unchanged. / 用户在讨论 423 项 Browser 清单后要求实测三个主题 CI job。在所列基线上继续同一 draft PR；保持单 runner 两个 worker，以及全部测试正文、断言、fixture、资源隔离和生成资产不变。
 
-The successful native two-shard baselines were [41171155733](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41171155733) and [41171757777](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41171757777). Both passed 423/423 and all nine CI jobs. Browser windows including setup were 248.450/249.308 s; summed job time was 488.211/434.618 s. The slower test stages were 215.233/217.392 s. Job-log estimates exclude runner queues, preceding scope classification and final aggregation. / 两次原生两分片基线均完整通过 423 项与全部九个 CI job。包含准备的 Browser 窗口为 248.450／249.308 秒，合计 job 时间为 488.211／434.618 秒，较慢测试阶段为 215.233／217.392 秒。日志估算不含 runner 排队、前置分类与最终聚合。
+The successful native two-shard baselines were [41171155733](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41171155733) and [41171757777](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41171757777). Both passed 423/423 and all nine CI jobs. Browser windows including setup were 248.450/249.308 s; summed Browser job time was 488.211/434.618 s. The slower test stages were 215.233/217.392 s. Each Browser job estimate spans its first and last log timestamps; the Browser window spans the earliest first log to the latest last log across Browser jobs. These estimates exclude waiting before the first Browser log, preceding scope classification and final aggregation. / 两次原生两分片基线均完整通过 423 项与全部九个 CI job。包含准备的 Browser 窗口为 248.450／249.308 秒，合计 Browser job 时间为 488.211／434.618 秒，较慢测试阶段为 215.233／217.392 秒。每项 Browser job 以首尾日志估算时长；Browser 窗口从所有 Browser job 的最早首条日志计算至最晚末条日志。这些估算不含首条 Browser 日志之前的等待、前置分类与最终聚合。
 
 ## Candidate / 候选方案
 
@@ -46,19 +46,40 @@ Implementation `d4a37c63e3c6a3317e99e253434ea646134833e5` passed [CI 41176247337
 | [search-loading](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176247337/job/124464321870) | 145/145 | 134.780 s | 172.839 s | [Timing](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176247337/artifacts/13032956482) |
 | [navigation-evidence](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176247337/job/124464321830) | 111/111 | 126.348 s | 157.220 s | [Timing](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176247337/artifacts/13033341964) |
 
-The downloaded reports conserve the exact `(file, name, nesting, type)` multiset of all 423 baseline execution items. The 21 files occur exactly once, each report matches its manifest group and declares all 21 input files, and there are no failures, skips or cancellations. / 下载报告的测试身份多重集合与基线全部 423 个执行项完全一致。21 个文件恰好各出现一次，每份报告匹配清单主题并声明完整 21 个输入文件，失败、跳过与取消均为零。
+Documentation-only head `4caed59b07da701b5ef1279444f2181005a63266` repeated the same implementation and browser tests in [CI 41176840562](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176840562). All ten jobs passed again with the same Browser toolchain. / 仅文档变化的所列 head 以相同实现与浏览器测试重复运行 CI，十个 job 再次全部通过，Browser 工具链相同。
 
-| Comparison / 对照 | Native sample 1 / 原生样本 1 | Native sample 2 / 原生样本 2 | Thematic sample / 主题样本 |
-| --- | ---: | ---: | ---: |
-| Slowest test stage / 最慢测试阶段 | 215.233 s | 217.392 s | 145.879 s |
-| Browser window including setup / 含准备的 Browser 窗口 | 248.450 s | 249.308 s | 178.747 s |
-| Summed test-stage time / 合计测试阶段时间 | 420.771 s | 376.981 s | 407.007 s |
-| Summed whole-job time / 合计整项 job 时间 | 488.211 s | 434.618 s | 508.806 s |
+| Group / 主题 | Tests / 测试 | Test stage / 测试阶段 | Approximate whole job / 约整项 job | Artifact / 工件 |
+| --- | ---: | ---: | ---: | --- |
+| [reading-presentation](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176840562/job/124466161894) | 167/167 | 141.096 s | 172.097 s | [Timing](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176840562/artifacts/13033373129) |
+| [search-loading](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176840562/job/124466161943) | 145/145 | 131.997 s | 164.681 s | [Timing](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176840562/artifacts/13033626578) |
+| [navigation-evidence](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176840562/job/124466161931) | 111/111 | 144.602 s | 179.186 s | [Timing](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176840562/artifacts/13033168455) |
 
-The Browser window shortened by 28.1–28.3%, while summed runner time rose by 4.2–17.1% against the two observed baselines. Three-runner setup totaled about 96.1 s, versus 63.3/54.1 s previously; preparation is repeated for each job. Test-file timings also vary, so this is a latency/resource tradeoff across independent hosted samples, not a paired benchmark, statistical failure-rate estimate or billed-minute calculation. Browser windows exclude runner queues and the scope/final aggregate jobs. / 相比两次实测基线，Browser 窗口缩短约 28.1–28.3%，合计 runner 时间增加约 4.2–17.1%。三项准备合计约 96.1 秒，之前为 63.3／54.1 秒；各 job 都重复准备。单文件耗时也有波动，因此这是独立 hosted 样本的等待／资源权衡，不是同机配对、统计失败率或计费分钟计算。Browser 窗口不含排队与前后聚合 job。
+Both sets of downloaded reports conserve the exact `(file, name, nesting, type)` multiset of all 423 baseline execution items. In each run, the 21 files occur exactly once, each report matches its manifest group and declares all 21 input files, and there are no failures, skips or cancellations. / 两组下载报告的测试身份多重集合均与基线全部 423 个执行项完全一致。每轮的 21 个文件恰好各出现一次，每份报告匹配清单主题并声明完整 21 个输入文件，失败、跳过与取消均为零。
+
+| Comparison / 对照 | Native sample 1 / 原生样本 1 | Native sample 2 / 原生样本 2 | Thematic sample 1 / 主题样本 1 | Thematic sample 2 / 主题样本 2 |
+| --- | ---: | ---: | ---: | ---: |
+| Slowest test stage / 最慢测试阶段 | 215.233 s | 217.392 s | 145.879 s | 144.602 s |
+| Browser window including setup / 含准备的 Browser 窗口 | 248.450 s | 249.308 s | 178.747 s | 179.952 s |
+| Summed test-stage time / 合计测试阶段时间 | 420.771 s | 376.981 s | 407.007 s | 417.695 s |
+| Summed Browser job time / 合计 Browser job 时间 | 488.211 s | 434.618 s | 508.806 s | 515.964 s |
+
+Comparing each thematic sample with each native baseline gives 27.6–28.3% shorter Browser windows and 4.2–18.7% more summed Browser runner time. Three-runner setup totaled about 96.1/92.5 s, versus 63.3/54.1 s previously; preparation is repeated for each job. Test-file timings also vary, so this is a latency/resource tradeoff across independent hosted samples, not a paired benchmark, statistical failure-rate estimate or billed-minute calculation. / 各主题样本分别与各原生基线比较，Browser 窗口缩短约 27.6–28.3%，合计 Browser runner 时间增加约 4.2–18.7%。三项准备合计约 96.1／92.5 秒，之前为 63.3／54.1 秒；各 job 都重复准备。单文件耗时也有波动，因此这是独立 hosted 样本的等待／资源权衡，不是同机配对、统计失败率或计费分钟计算。
+
+## Whole workflow timing / 整条 workflow 计时
+
+For each completed attempt, read `run_started_at` from `GET /repos/{owner}/{repo}/actions/runs/{run_id}` and take the latest `completed_at` across all its jobs from the run's `/jobs` endpoint. Their difference includes initial waiting, scope classification, job scheduling and final aggregation after the run starts. The workflow-run response has no `completed_at`; `updated_at` is not a completion-time field. Keep these timestamps with the run ID and attempt when collecting future samples. All four samples below are attempt 1, with every job successful; timestamps are UTC on 2026-10-31. / 对每次已完成的 attempt，从所列运行 API 读取 `run_started_at`，并从该运行的 `/jobs` 端点取全部 job 中最晚的 `completed_at`。二者之差包含运行开始后的初始等待、范围分类、job 调度与最终聚合。Workflow 运行响应没有 `completed_at`，`updated_at` 也不是完成时间字段。以后收集样本时保留这些时间戳、run ID 与 attempt。下表四轮均为 attempt 1，所有 job 成功；时间戳均为 2026-10-31 UTC。
+
+| Run / 运行 | `run_started_at` | Latest job `completed_at` / 最晚 job 完成时间 | Workflow / 整条 workflow | Browser window / Browser 窗口 | Summed Browser jobs / 合计 Browser job |
+| --- | --- | --- | ---: | ---: | ---: |
+| [Native 1 / 原生 1](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41171155733) | 05:05:13Z | 05:09:50Z | 277 s | 248.450 s | 488.211 s |
+| [Native 2 / 原生 2](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41171757777) | 05:13:58Z | 05:18:34Z | 276 s | 249.308 s | 434.618 s |
+| [Thematic 1 / 主题 1](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176247337) | 06:21:13Z | 06:24:28Z | 195 s | 178.747 s | 508.806 s |
+| [Thematic 2 / 主题 2](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41176840562) | 06:29:52Z | 06:33:33Z | 221 s | 179.952 s | 515.964 s |
+
+Whole-workflow waiting was about 20–30% shorter across these samples. This is a separate observation from the approximately 28% shorter Browser window. Initial waiting until the first job started was 3 s in the first thematic run and 24 s in the repeat, accounting for 21 s of their 26 s workflow difference; the Browser windows differed by only 1.205 s. The samples do not establish a stable speedup or include time before `run_started_at`. / 这些样本的整条 workflow 等待缩短约 20–30%，与 Browser 窗口缩短约 28% 是分别记录的观察。首次主题运行至首个 job 启动的等待为 3 秒，重复运行为 24 秒，解释了两轮 workflow 相差 26 秒中的 21 秒；Browser 窗口仅相差 1.205 秒。样本不证明稳定加速，也不包含 `run_started_at` 之前的时间。
 
 ## Decision / 决定
 
-Retain three thematic groups with two workers each: this sample combines complete passing coverage, clear failure ownership and approximately three-minute Browser feedback, at the measured extra runner cost. Keep native `--shard` and full-suite commands for local use and future comparisons. Future file additions must update the manifest; do not rebalance by silently dropping tests or introducing a timed subset. / 保留三个主题、各两个 worker：本次样本完整通过，失败归属清楚，Browser 反馈约三分钟，代价为上述额外 runner 用量。保留原生分片和全量命令供本地使用与未来对照。后续新增文件须更新清单，不能通过遗漏测试或限时子集来平衡耗时。
+Retain three thematic groups with two workers each: both samples combine complete passing coverage, clear failure ownership and approximately three-minute Browser feedback, at the measured extra runner cost. Keep native `--shard` and full-suite commands for local use and future comparisons. Future file additions must update the manifest and follow the [group maintenance rules](../../design-docs/browser-test-execution.md#coverage-and-isolation--覆盖与隔离); do not rebalance by silently dropping tests or introducing a timed subset. / 保留三个主题、各两个 worker：两次样本均完整通过，失败归属清楚，Browser 反馈约三分钟，代价为上述额外 runner 用量。保留原生分片和全量命令供本地使用与未来对照。后续新增文件须更新清单并遵循分组维护规则，不能通过遗漏测试或限时子集来平衡耗时。
 
-The final documentation commit repeats full CI with identical implementation and browser test files. Hosted variability and pre-existing navigation races remain possible; the successful sample does not establish fixed latency or eliminate those races. / 最终文档提交以相同实现与浏览器测试文件再次执行完整 CI。Hosted 波动与既有导航竞态仍可能存在；成功样本不保证固定时延或消除这些竞态。
+The CI optimization measurements are complete. Keep [browser-test-execution.md](../../design-docs/browser-test-execution.md) as the current execution and maintenance guide; this record and the earlier worker/native-matrix plans preserve historical experiments. The [navigation diagnostics plan](../active/2026-10-09-ci-collaboration-navigation-diagnostics.md) remains active: successful CI does not establish fixed latency, a unique root cause or repaired navigation behavior. / CI 优化量测已完成。浏览器测试执行文档作为当前执行与维护说明；本文及较早的 worker／原生矩阵计划保留历史实验。导航诊断计划继续保持 active：CI 成功不保证固定时延，也不证明唯一根因或导航行为已修复。
