@@ -958,10 +958,27 @@ test('collaboration return settles delayed Inspector navigation before restoring
 test('collaboration navigation opens each confirmed target and restores reading context in both presentations', withNavigationDiagnostics(async (t, diagnostics) => {
   const { index, parentId, childId, eventId } = await makeCollaborationNavigationFixture(t);
   const { page } = await openApp(t, index, { locale: 'en', beforeGoto: diagnostics.attach });
+  const setQuery = async (query) => {
+    // Register before input: networkidle can precede the debounced find request.
+    // The 500-row Inspector navigation read does not commit the search render.
+    const committedSearch = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === `/api/sessions/${parentId}/timeline`
+        && (url.searchParams.get('q') || '') === query
+        && url.searchParams.get('layer') === 'main'
+        && url.searchParams.get('offset') === '0'
+        && url.searchParams.get('limit') === '150';
+    });
+    await fillSearch(page, query);
+    const response = await committedSearch;
+    assert.equal(response.status(), 200);
+    assert.equal(await response.finished(), null);
+    // Loading ends after the response has replaced the Timeline and Inspector.
+    await page.waitForFunction(() => /^Loaded \d+$/.test(document.querySelector('#loadMoreBtn')?.textContent || ''));
+  };
   for (const presentation of ['timeline', 'trajectory']) {
     await page.locator(`[data-session-id="${parentId}"]`).click();
-    await page.locator('#searchInput').fill('recorded result');
-    await page.locator('#searchInput').dispatchEvent('input');
+    await setQuery('recorded result');
     await page.locator(`#mainPresentationControl [data-main-presentation="${presentation}"]`).click();
     const event = page.locator(presentation === 'timeline'
       ? `#timeline .event[data-event-id="${eventId}"]`
@@ -1002,8 +1019,7 @@ test('collaboration navigation opens each confirmed target and restores reading 
     assert.equal(await page.locator(`#mainPresentationControl [data-main-presentation="${presentation}"]`).getAttribute('aria-pressed'), 'true');
     await page.waitForFunction((top) => Math.abs(document.querySelector('.timelinePane').scrollTop - top) < 3, before);
     assert.equal(await page.locator('[data-reading-back]').count(), 0);
-    await page.locator('#searchInput').fill('');
-    await page.locator('#searchInput').dispatchEvent('input');
+    await setQuery('');
   }
 }));
 
