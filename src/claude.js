@@ -50,6 +50,9 @@ const {
 } = require('./shared/plan-facet');
 
 const POINTER_PROVISIONAL_ASSOCIATION = 'pointer-provisional';
+const CLAUDE_SDK_RESULT_ERROR_SUBTYPES = new Set([
+  'error_during_execution', 'error_max_turns', 'error_max_budget_usd', 'error_max_structured_output_retries',
+]);
 // Keep the ordinary UUID/agent spelling stable, but never let an identity
 // component contribute a delimiter or a percent escape of its own.  The
 // explicit surrogate handling below also makes this total over JavaScript
@@ -381,9 +384,32 @@ function isClaudeSdkStreamRecord(record) {
     return typeof record.cwd === 'string' && typeof record.model === 'string'
       && Array.isArray(record.tools);
   }
+  // Task progress and terminal results do not carry parent_tool_use_id.
+  // Match their stable SDK field combinations before the message/child gate;
+  // type names or foreign session references alone are not SDK evidence.
+  if (record.type === 'system' && record.subtype === 'task_progress') {
+    return Boolean(usableSourceSessionIdentity(record.task_id))
+      && typeof record.description === 'string' && isPlainObject(record.usage)
+      && Number.isFinite(record.usage.total_tokens) && Number.isFinite(record.usage.tool_uses)
+      && Number.isFinite(record.usage.duration_ms);
+  }
+  if (record.type === 'result') {
+    if (typeof record.is_error !== 'boolean' || !Number.isFinite(record.duration_ms)
+        || !Number.isFinite(record.duration_api_ms) || !Number.isFinite(record.num_turns)
+        || !Number.isFinite(record.total_cost_usd) || !isPlainObject(record.usage)
+        || !isPlainObject(record.modelUsage) || !Array.isArray(record.permission_denials)) return false;
+    if (record.subtype === 'success') return typeof record.result === 'string';
+    return CLAUDE_SDK_RESULT_ERROR_SUBTYPES.has(record.subtype)
+      && Array.isArray(record.errors) && record.errors.every((error) => typeof error === 'string');
+  }
   if (!Object.hasOwn(record, 'parent_tool_use_id')
       || (record.parent_tool_use_id !== null
         && !usableSourceSessionIdentity(record.parent_tool_use_id))) return false;
+  if (record.type === 'tool_progress') {
+    return Boolean(usableSourceSessionIdentity(record.tool_use_id))
+      && typeof record.tool_name === 'string' && record.tool_name.length > 0
+      && Number.isFinite(record.elapsed_time_seconds);
+  }
   if (record.type === 'assistant' || record.type === 'user') {
     return isPlainObject(record.message) && record.message.role === record.type;
   }

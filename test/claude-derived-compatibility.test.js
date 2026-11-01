@@ -16,6 +16,7 @@ const {
 const { filterSessions, getTimeline } = require('../src/codex');
 const { buildClaudeEventDetail } = require('../src/claude-detail');
 const { materializeSessionForIndex, validateIndexOwnership } = require('../src/source-adapters');
+const { sdkToolProgress, sdkTaskProgress, sdkResult } = require('./helpers/claude-sdk-fixture');
 
 const TEMPLATE_ROOT = path.join(
   __dirname,
@@ -434,6 +435,23 @@ for (const [mode, buildIndex] of [
         event: { type: 'content_block_delta', index: 0,
           delta: { type: 'text_delta', text: 'Synthetic child output.' } },
       }),
+    },
+    {
+      label: 'SDK tool progress',
+      record: () => sdkToolProgress({ session_id: PARENT_SOURCE_ID, parent_tool_use_id: 'sdk-agent-call' }),
+    },
+    {
+      label: 'SDK task progress',
+      record: () => sdkTaskProgress({ session_id: PARENT_SOURCE_ID }),
+    },
+    {
+      label: 'SDK result',
+      record: () => sdkResult({ session_id: PARENT_SOURCE_ID }),
+    },
+    {
+      label: 'SDK startup failure result',
+      record: () => sdkResult({ session_id: PARENT_SOURCE_ID, subtype: 'error_during_execution',
+        startup_failure_reason: 'temp_dir_unusable' }),
     },
   ];
 

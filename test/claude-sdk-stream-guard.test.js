@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { getSourceAdapter } = require('../src/source-adapters');
+const { getSourceAdapter, materializeSessionForIndex } = require('../src/source-adapters');
+const { sdkToolProgress, sdkTaskProgress, sdkResult } = require('./helpers/claude-sdk-fixture');
 const {
   buildClaudeIndex,
   buildClaudeSourceBackedIndex,
@@ -46,7 +47,104 @@ function sdkChild() {
       content: [{ type: 'text', text: 'Private synthetic child task; not a human prompt.' }] } };
 }
 
+const standaloneEnvelopes = [
+  ['tool progress', () => sdkToolProgress()],
+  ['child tool progress', () => sdkToolProgress({ parent_tool_use_id: 'sdk-agent-call' })],
+  ['task progress without parent_tool_use_id', () => sdkTaskProgress()],
+  ['successful result', () => sdkResult()],
+  // SDK subtype success may still report an API error through is_error.
+  ['success-subtype API error result', () => sdkResult({ is_error: true })],
+  ['startup failure result without init', () => sdkResult({
+    subtype: 'error_during_execution', startup_failure_reason: 'temp_dir_unusable', result_index: 0,
+  })],
+  ...['error_max_turns', 'error_max_budget_usd', 'error_max_structured_output_retries']
+    .map((subtype) => [subtype, () => sdkResult({ subtype })]),
+];
+
 for (const [mode, build] of [['complete', buildClaudeIndex], ['source-backed', buildClaudeSourceBackedIndex]]) {
+  test(`Claude ${mode} reports progress/result-only roots without native project evidence`, async (t) => {
+    const f = await fixture(t);
+    for (const [n, [, record]] of standaloneEnvelopes.entries()) await write(f, `sdk-${n}`, [record()]);
+    const index = await build(f);
+    assert.equal(index.sessions.length, 0);
+    assert.equal(index.totals.skippedFileCount, standaloneEnvelopes.length);
+    assert.equal(index.totals.unknownFileCount, 0);
+    assert.equal(index.sourceDiagnostics.counts.CLAUDE_SDK_STREAM_UNSUPPORTED, standaloneEnvelopes.length);
+    const diagnostics = [];
+    const projects = await getSourceAdapter('claude-code').discoverProjects({
+      sourceHome: f.claudeHome, onDiagnostic: (entry) => diagnostics.push(entry),
+    });
+    assert.deepEqual(projects, []);
+    assert.equal(diagnostics.length, standaloneEnvelopes.length);
+    assert.ok(diagnostics.every((entry) => entry.code === 'CLAUDE_SDK_STREAM_UNSUPPORTED'));
+  });
+
+  for (const [label, record] of standaloneEnvelopes) {
+    test(`Claude ${mode} rejects standalone and mixed SDK ${label} on cold index and reindex`, async (t) => {
+      const f = await fixture(t);
+      for (const id of ['native', 'standalone', 'mixed']) await write(f, id, [native(f.repoRoot, id)]);
+      const before = await build(f);
+      assert.equal(before.sessions.length, 3);
+      const control = before.sessions.find((session) => session.sourceSessionId === 'native');
+      const expected = mode === 'source-backed' ? await materializeSessionForIndex(before, control) : control;
+
+      await write(f, 'standalone', [record()]);
+      await fsp.appendFile(path.join(f.container, 'mixed.jsonl'), `${JSON.stringify(record())}\n`);
+      for (const index of [await build(f), await build({ ...f, previousIndex: before })]) {
+        assert.deepEqual(index.sessions.map((session) => session.sourceSessionId), ['native']);
+        assert.equal(index.totals.skippedFileCount, 2);
+        assert.equal(index.sourceDiagnostics.counts.CLAUDE_SDK_STREAM_UNSUPPORTED, 2);
+        assert.equal(JSON.stringify(index.sourceDiagnostics).includes('Private synthetic'), false);
+        const readable = mode === 'source-backed'
+          ? await materializeSessionForIndex(index, index.sessions[0]) : index.sessions[0];
+        assert.deepEqual(readable.rawEvents, expected.rawEvents);
+        assert.deepEqual(readable.logicalEvents, expected.logicalEvents);
+      }
+      const diagnostics = [];
+      const projects = await discoverClaudeProjects({ ...f, onDiagnostic: (entry) => diagnostics.push(entry) });
+      assert.equal(projects.length, 1);
+      assert.equal(projects[0].sessionCount, 1);
+      assert.equal(diagnostics.length, 2);
+      assert.ok(diagnostics.every((entry) => entry.code === 'CLAUDE_SDK_STREAM_UNSUPPORTED'));
+    });
+  }
+
+  test(`Claude ${mode} retains native progress/result lookalikes and incomplete SDK signatures`, async (t) => {
+    const f = await fixture(t);
+    const nativeRecords = [native(f.repoRoot), ...standaloneEnvelopes.map(([, record]) => ({
+      ...record(), sessionId: 'native',
+    })), { type: 'unknown_future_record', sessionId: 'native', data: sdkTaskProgress() }];
+    nativeRecords[0].message.content[0].text = JSON.stringify(sdkResult());
+    await write(f, 'native', nativeRecords);
+    const lookalikes = [
+      { type: 'result', subtype: 'success', session_id: 'foreign-reference', result: 'Extension result.' },
+      { type: 'tool_progress', session_id: 'foreign-reference', tool_name: 'Read', elapsed_time_seconds: 1 },
+      { type: 'system', subtype: 'task_progress', session_id: 'foreign-reference', task_id: 'extension-task' },
+      sdkToolProgress({ parent_tool_use_id: 7 }),
+      sdkToolProgress({ elapsed_time_seconds: '1' }),
+      sdkTaskProgress({ usage: [] }),
+      sdkResult({ usage: [] }),
+      sdkResult({ subtype: 'error_future_extension' }),
+      ...[sdkToolProgress(), sdkTaskProgress(), sdkResult()].map((record) => {
+        delete record.session_id;
+        return record;
+      }),
+    ];
+    for (const [n, record] of lookalikes.entries()) await write(f, `lookalike-${n}`, [record]);
+    const index = await build(f);
+    assert.equal(index.sessions.length, lookalikes.length + 1);
+    assert.equal(index.sourceDiagnostics.totalCount, 0);
+    assert.equal(index.totals.skippedFileCount, 0);
+    for (const session of index.sessions) {
+      const readable = mode === 'source-backed' ? await materializeSessionForIndex(index, session) : session;
+      assert.equal(readable.rawEvents.length, session.sourceSessionId === 'native' ? nativeRecords.length : 1);
+      if (session.sourceSessionId !== 'native') {
+        assert.equal(readable.counts.userMessages, 0);
+        assert.deepEqual(readable.logicalEvents.map((event) => event.kind), ['protocol']);
+      }
+    }
+  });
+
   test(`Claude ${mode} index excludes SDK streams and retains unrelated native transcripts`, async (t) => {
     const f = await fixture(t);
     await write(f, 'native', [native(f.repoRoot)]);
