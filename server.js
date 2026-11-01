@@ -1347,6 +1347,7 @@ async function main() {
     dshHome: opts.dshHome,
     piHome: opts.piHome,
     opencodeHome: opts.opencodeHome,
+    workbuddyHome: opts.workbuddyHome,
     repo: opts.repo,
     logDir: opts.logDir,
     onProjectJobSettled(job) {

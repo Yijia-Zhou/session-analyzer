@@ -89,6 +89,28 @@ async function buildPiFixtureIndex(t) {
   return getSourceAdapter('pi').buildIndex({ repoRoot, sourceHome: home });
 }
 
+async function buildWorkbuddyFixtureIndex(t) {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-conformance-workbuddy-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const repoRoot = path.join(home, 'repo');
+  const directory = path.join(home, 'projects', 'conformance-fixture');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(directory, { recursive: true });
+  const shared = { sessionId: 'workbuddy-conformance', cwd: repoRoot };
+  const records = [
+    { ...shared, type: 'message', id: 'user', timestamp: 1793400000000, role: 'user',
+      content: [{ type: 'input_text', text: 'WORKBUDDY_USER_PRIMARY_SENTINEL' }] },
+    { ...shared, type: 'function_call', id: 'call', parentId: 'user', timestamp: 1793400001000,
+      name: 'Bash', callId: 'bash-call', arguments: JSON.stringify({ command: 'printf workbuddy-conformance', timeout: 15 }) },
+    { ...shared, type: 'function_call_result', id: 'result', parentId: 'call', timestamp: 1793400002000,
+      name: 'Bash', callId: 'bash-call', status: 'completed', output: { type: 'text', text: 'workbuddy-conformance' } },
+    { ...shared, type: 'message', id: 'answer', parentId: 'result', timestamp: 1793400003000,
+      role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'WORKBUDDY_ASSISTANT_PRIMARY_SENTINEL' }] },
+  ];
+  await fsp.writeFile(path.join(directory, 'workbuddy-conformance.jsonl'), records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+  return getSourceAdapter('workbuddy').buildIndex({ repoRoot, sourceHome: home });
+}
+
 async function buildOpenCodeFixtureIndex(t) {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-conformance-opencode-'));
   let index;
@@ -410,8 +432,26 @@ async function assertResponsibilityFixture(fixture) {
 }
 
 test('all registered adapters satisfy one source-neutral detail and Raw readback suite', async (t) => {
-  assert.deepEqual(supportedSourceKinds(), ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode']);
+  assert.deepEqual(supportedSourceKinds(), ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy']);
   const fixtures = [
+    {
+      kind: 'workbuddy',
+      index: await buildWorkbuddyFixtureIndex(t),
+      expectedPurposes: ['content', 'request', 'result', 'context', 'fallback'],
+      expectedArchetypes: {
+        'readable-user-message': {
+          matchOwner: ({ event }) => event.preview === 'WORKBUDDY_USER_PRIMARY_SENTINEL',
+        },
+        'readable-assistant-message': {
+          matchOwner: ({ event }) => event.preview === 'WORKBUDDY_ASSISTANT_PRIMARY_SENTINEL',
+        },
+        'completed-command': {
+          matchOwner: ({ event }) => event.kind === 'command' && event.preview === 'printf workbuddy-conformance',
+          fullRequestEvidence: (section) => section?.value?.timeout === 15
+            || (section?.type === 'code' && /"timeout"\s*:\s*15/.test(section.code || '')),
+        },
+      },
+    },
     {
       kind: 'opencode',
       index: await buildOpenCodeFixtureIndex(t),

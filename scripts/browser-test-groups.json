@@ -1,0 +1,29 @@
+{
+  "reading-presentation": [
+    "browser-code-mode.test.js",
+    "browser-detail.test.js",
+    "browser-rendering.test.js",
+    "browser-trajectory.test.js",
+    "browser.test.js",
+    "opencode.test.js",
+    "pi-branches.test.js",
+    "pi-images.test.js",
+    "pi-native-tools.test.js",
+    "pi-navigation.test.js",
+    "pi-reading-evidence.test.js",
+    "pi.test.js",
+    "workbuddy.test.js"
+  ],
+  "search-loading": [
+    "browser-handoffs.test.js",
+    "browser-pagination.test.js",
+    "browser-search.test.js",
+    "browser-source-switching.test.js"
+  ],
+  "navigation-evidence": [
+    "browser-navigation.test.js",
+    "history-evidence.test.js",
+    "recorded-configuration.test.js",
+    "turn-lineage.test.js"
+  ]
+}

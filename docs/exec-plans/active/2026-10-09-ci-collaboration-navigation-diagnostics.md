@@ -1,6 +1,6 @@
 # Collaboration navigation CI diagnostics / 协作导航 CI 诊断
 
-Status: instrumentation implemented and locally validated; hosted failure capture and root-cause confirmation remain pending. / 状态：诊断已实现并完成本地验证；hosted 失败捕获与根因确认仍待完成。
+Status: instrumentation implemented and locally validated; hosted diagnostic capture of the original keyboard/scroll failures and root-cause confirmation remain pending. / 状态：诊断已实现并完成本地验证；原键盘／滚动失败的 hosted 诊断捕获与根因确认仍待完成。
 
 ## Scope / 范围
 
@@ -25,6 +25,18 @@ During history-open regression validation, the keyboard test failed once: the Tr
 The current targeted test passed on rerun. Three isolated runs serving the original `9adc4956` generated bundle in memory also passed; a natural baseline failure was not reproduced. History navigation was inactive in the captured path and the relevant ordinary search-render behavior was unchanged. This supports an existing timing-sensitive focus race, without proving a unique cause or claiming it fixed. The original input, timeout and assertion remain unchanged. / 当前聚焦复测通过；以内存提供原 9adc4956 bundle 的三轮隔离测试也通过，未自然复现基线失败。捕获路径未激活历史引用导航，相关普通搜索渲染行为未变。这支持既有时序敏感焦点竞态的判断，但不证明唯一根因，也不声称已修复。原输入、超时与断言保持不变。
 
 - After the instrumented change reaches CI, inspect a failing artifact's actual key/click target, removed focused action, departure checkpoints and return geometry. Distinguish lost input, late layout changes and capture-before-click differences using evidence. A passing run alone does not confirm the root cause. / 诊断变更进入 CI 后，核对失败工件中的实际按键／点击目标、被移除的焦点入口、离开检查点与返回几何位置。根据证据区分输入丢失、延迟布局变化及点击前采样差异；仅有通过运行不能确认根因。
+
+### Local parallel-suite evidence on 2026-10-31 / 2026-10-31 本地并行套件依据
+
+During Browser CI optimization, the unchanged keyboard-navigation callback failed once with two file workers on local Chromium 154 / Node 24.19.0. The target button was focused at `trajectory:before-enter`; 5 ms later the debounced parent `timeline?q=recorded+result&limit=150` request started. Its response replaced the Inspector article, recorded `removedFocusedAction=true`, and moved focus to BODY before Enter. No child navigation was initiated, so the subsequent selected-session wait timed out. The trace says the preceding `networkidle` event had already fired; that wait lasted only 0.19 ms. Capture completed without errors. / 浏览器 CI 优化期间，未修改的键盘导航回调在本地双文件 worker 下失败一次。轨迹检查点时目标按钮已聚焦；5 ms 后防抖搜索请求启动，返回后替换 Inspector 文章，记录焦点入口移除并使 BODY 获得焦点，随后 Enter 没有触发子会话导航，因此选中会话等待超时。Trace 显示此前 networkidle 已发生，等待仅 0.19 ms；诊断捕获无错误。
+
+This repeats the October 13 mechanism; it is not evidence of a newly introduced product regression or a repaired focus behavior. The original serial baseline and the [complete two-worker hosted CI](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41165859662) passed this case. A possible bounded follow-up is to await the exact query response and its rendered completion before selecting/focusing the target, while retaining keyboard Enter and all focus/visibility/return assertions. Such a change would stabilize test setup, not prove product focus retention during a late render. / 此次重现 10 月 13 日机制，不作为新引入产品回归或焦点行为已修复的证据。原串行基线与完整双 worker hosted CI 均通过此项。后续可在选择和聚焦前等待精确查询响应及渲染完成，保留 Enter 与全部焦点、可见性和返回断言；这只会稳定测试准备，不证明迟到渲染期间产品保持了焦点。
+
+## CI optimization boundary / CI 优化边界
+
+The [Browser CI optimization](../completed/2026-10-31-browser-ci-thematic-matrix.md) completed test splitting, profiling and the comparison of two- and three-group matrices. Both three-group hosted samples passed all 423 execution items and all ten CI jobs. This is performance and coverage evidence; it does not repair navigation behavior or complete this investigation. The original keyboard activation and mobile scroll-return failures remain open. / Browser CI 优化已完成测试拆分、量测以及两组与三组矩阵对照。两次三组 hosted 样本均通过全部 423 个执行项与十个 CI job。这些是性能与覆盖依据，不代表导航行为已修复或本调查已完成。原键盘激活与移动端滚动返回失败仍待调查。
+
+The [four-worker hosted failure](https://github.com/Yijia-Zhou/session-analyzer/actions/runs/41166429389) was a different composed collaboration-return test: its captured departure coordinate was `undefined`. The local BODY-focus trace above does not establish the cause of that failure. Keep these observations separate, as recorded in the [worker comparison](../completed/2026-10-31-browser-ci-performance.md). / 四 worker hosted 失败属于另一项组合协作返回测试：捕获的离开坐标为 `undefined`。上文 BODY 焦点的本地 trace 不能证明该次失败的原因。两类观察保持区分，详见 worker 对照记录。
 
 ## References / 引用
 

@@ -8,6 +8,12 @@ on:
       - main
       - 'v*-development'
   workflow_dispatch:
+    inputs:
+      browser_concurrency:
+        description: Native Node browser test file concurrency
+        type: choice
+        default: '2'
+        options: ['1', '2', '4']
 
 permissions:
   contents: read
@@ -129,12 +135,16 @@ jobs:
       - run: npm run test:package
 
   browser:
-    name: Browser on Ubuntu
+    name: Browser on Ubuntu (${{ matrix.group }})
     needs: scope
     if: ${{ needs.scope.outputs.browser_required != 'false' }}
     # Playwright 1.60 supports Ubuntu 24.04; ubuntu-latest may advance first.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [reading-presentation, search-loading, navigation-evidence]
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -155,13 +165,25 @@ jobs:
           ASSET_MODE: ${{ needs.scope.outputs.asset_mode }}
         run: node scripts/ci-assets.js build
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:browser
+      - run: npm run test:browser:profile -- --concurrency="$BROWSER_TEST_CONCURRENCY" --group="$BROWSER_TEST_GROUP"
         id: browser-tests
+        env:
+          BROWSER_TEST_CONCURRENCY: ${{ inputs.browser_concurrency || '2' }}
+          BROWSER_TEST_GROUP: ${{ matrix.group }}
+          BROWSER_TEST_PHASES: '1'
+      - name: Upload browser timing report
+        if: ${{ always() && (steps.browser-tests.outcome == 'success' || steps.browser-tests.outcome == 'failure') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: browser-timing-${{ matrix.group }}-${{ github.run_attempt }}
+          path: work/browser-profile.json
+          if-no-files-found: warn
+          retention-days: 7
       - name: Upload navigation failure diagnostics
         if: ${{ failure() && steps.browser-tests.outcome == 'failure' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: browser-navigation-failures-${{ github.run_attempt }}
+          name: browser-navigation-failures-${{ matrix.group }}-${{ github.run_attempt }}
           path: output/playwright/browser-failures/
           if-no-files-found: warn
           retention-days: 7
