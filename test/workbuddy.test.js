@@ -162,6 +162,44 @@ test('runtime user meta is Protocol and cannot begin a turn or replace title; ti
   assert.equal(session.title, 'Snapshot custom title'); assert.ok(session.logicalEvents.some((event) => event.subtype === 'workbuddy_meta_message'));
 });
 
+test('message identity and physical counts agree across index, materialization, block detail, query and exact Raw', async (t) => {
+  const f = await fixture(t, [
+    { ...user('recovery', 'RUNTIME_RECOVERY_MARKER'), providerData: { isCompactInternal: true, isPtlRecovery: true, isPtlRetryMarker: true } },
+    { ...user('summary', 'SUMMARY_NOT_TITLE'), providerData: { isSummary: true, isCompacted: true, skipRun: true } },
+    { ...user('human', 'FIRST_USER_BLOCK'), content: [{ type: 'input_text', text: 'FIRST_USER_BLOCK' }, { type: 'text', text: 'SECOND_USER_BLOCK' }] },
+    { ...user('steer', 'STEER_USER_BLOCK'), providerData: { startsNewUserRequest: false } },
+    record('message', 'answer', 'steer', { role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'FIRST_ASSISTANT_BLOCK' }, { type: 'text', text: 'SECOND_ASSISTANT_BLOCK' }] }),
+    { ...user('schedule', 'RUNTIME_SCHEDULE_MARKER'), providerData: { isMeta: true, startsNewUserRequest: true, __codebuddyInteractionType: 'schedule' } },
+  ]);
+  const { index, session } = await materialized(t, f);
+  assert.equal(session.title, 'FIRST_USER_BLOCK');
+  assert.equal(session.counts.messages, 3); assert.equal(session.counts.userMessages, 2);
+  assert.equal(session.counts.assistantMessages, 1); assert.equal(session.counts.turns, 1); assert.equal(session.counts.compactions, 1);
+  assert.deepEqual(index.sessions[0].counts, session.counts);
+  assert.equal(index.sessions[0].title, session.title);
+  assert.equal(await projectQueryProjectionDigestAsync(session, workbuddyAdapter.query.projectQueryPresentation), index.sessions[0].queryProjectionDigest);
+  for (const marker of ['FIRST_USER_BLOCK', 'SECOND_USER_BLOCK', 'STEER_USER_BLOCK', 'FIRST_ASSISTANT_BLOCK', 'SECOND_ASSISTANT_BLOCK']) {
+    const event = session.logicalEvents.find((item) => item.workbuddy?.text === marker);
+    assert.ok(event); assert.equal(event.layer, 'main');
+    assert.match(JSON.stringify(await buildEventDetailForSession(index, session, event.id, 'main')), new RegExp(marker));
+  }
+  for (const raw of session.rawEvents) {
+    assert.equal((await readIndexedRawRecord(index, session, raw.rawId)).raw, f.text.split('\n')[raw.line - 1]);
+  }
+  for (const line of [1, 6]) {
+    const runtime = session.logicalEvents.find((event) => event.source.line === line && event.layer === 'protocol' && event.subtype !== 'workbuddy_recorded_history');
+    assert.ok(runtime);
+    const detail = await buildEventDetailForSession(index, session, runtime.id, 'protocol');
+    assert.match(JSON.stringify(detail), line === 1 ? /RUNTIME_RECOVERY_MARKER/ : /RUNTIME_SCHEDULE_MARKER/);
+  }
+  const service = await createHistoryService({ repo: f.repoRoot, source: 'workbuddy', workbuddyHome: f.sourceHome });
+  t.after(() => service.close());
+  const result = await service.execute('search', { query: 'SECOND_USER_BLOCK' });
+  assert.equal(result.scan.matchedSessions, 1); assert.equal(result.scan.matchedEvents, 1);
+  const detail = await service.execute('read', { refs: [result.items[0].ref], parts: ['message', 'raw'] });
+  assert.match(JSON.stringify(detail), /SECOND_USER_BLOCK/);
+});
+
 test('malformed tool arguments cannot acquire command or file semantics; request mismatch and fork markers prohibit pairing', async (t) => {
   const f = await fixture(t, [user(), call('Bash', {}, { arguments: '{bad json', providerData: { conversationRequestId: 'req1' } }), result('Bash', { providerData: { conversationRequestId: 'req2' } }),
     call('Read', { file_path: '/do/not/load' }, { id: 'c2', callId: 'call2' }), record('resend-fork-notice', 'fork', 'u'), result('Read', { id: 'r2', parentId: 'c2', callId: 'call2' })]);

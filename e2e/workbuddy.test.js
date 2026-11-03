@@ -76,3 +76,81 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
   assert.equal(await fs.readFile(file, 'utf8'), original, 'reading never rewrites native history');
   assert.deepEqual(errors, []);
 });
+
+test('WorkBuddy runtime user envelopes stay in Protocol while real requests and steers retain identity', { timeout: 45000 }, async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'workbuddy-identity-browser-'));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const repo = path.join(home, 'project');
+  const directory = path.join(home, 'projects', 'synthetic-project');
+  await fs.mkdir(repo); await fs.mkdir(directory, { recursive: true });
+  const sessionId = 'synthetic-workbuddy-identity';
+  const internal = [
+    ['recovery', 'WB_RECOVERY_ONLY', { isCompactInternal: true, isPtlRecovery: true, isPtlRetryMarker: true, skipRun: false }],
+    ['media', 'WB_MEDIA_ONLY', { isCompactInternal: true, isMediaBodyRecovery: true, isPtlRetryMarker: true, skipRun: false }],
+    ['teammate', 'WB_TEAMMATE_ONLY', { teammateMessage: { from: 'agent-a', summary: 'Synthetic peer evidence' } }],
+    ['command', 'WB_COMMAND_ONLY', { skipRun: true }],
+    ['summary', 'WB_PARTIAL_SUMMARY_ONLY', { isSummary: true }],
+    ['compact-type', 'WB_PARTIAL_COMPACT_ONLY', { compactType: 'auto' }],
+  ];
+  const requestText = 'WB_REAL_REQUEST: explain literal <system-reminder> and <teammate-message> tags.';
+  const messages = [
+    ...internal.map(([id, text, providerData]) => ({ id, text, providerData })),
+    { id: 'request', text: requestText, providerData: { startsNewUserRequest: true } },
+    { id: 'steer', text: 'WB_REAL_STEER: also explain the closing tags.', providerData: { startsNewUserRequest: false } },
+    { id: 'external-meta', text: 'WB_EXTERNAL_META: inspect the next synthetic example.', providerData: { isMeta: true, startsNewUserRequest: true } },
+  ];
+  const rows = messages.map(({ id, text, providerData }, i) => ({ id, ...(i ? { parentId: messages[i - 1].id } : {}),
+    type: 'message', role: 'user', content: [{ type: 'input_text', text }], providerData,
+    sessionId, cwd: repo, timestamp: 1790000000000 + i * 1000 }));
+  const lines = rows.map((row) => JSON.stringify(row));
+  const file = path.join(directory, `${sessionId}.jsonl`);
+  const original = `${lines.join('\n')}\n`;
+  await fs.writeFile(file, original);
+  const service = await createHistoryService({ repo, source: 'workbuddy', workbuddyHome: home });
+  t.after(() => service.close());
+  const server = service.createViewerServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } });
+  page.setDefaultTimeout(10000);
+  const errors = []; page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(origin);
+  const session = page.locator('#sessionList .sessionItem').first();
+  await session.click();
+  await page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('WB_REAL_STEER'));
+  assert.equal(await session.locator('.sessionTitle').innerText(), requestText, 'runtime envelopes cannot supply the session title');
+  const mainText = await page.locator('#timeline').innerText();
+  for (const marker of ['WB_REAL_REQUEST', 'WB_REAL_STEER', 'WB_EXTERNAL_META']) assert.ok(mainText.includes(marker), marker);
+  for (const [, marker] of internal) assert.ok(!mainText.includes(marker), marker);
+  const indexedId = await session.getAttribute('data-session-id');
+  const analysis = await (await page.request.get(`${origin}/api/sessions/${encodeURIComponent(indexedId)}/analysis`)).json();
+  assert.equal(analysis.counts.userMessages, 3);
+  assert.equal(analysis.counts.turns, 2);
+  const main = await (await page.request.get(`${origin}/api/sessions/${encodeURIComponent(indexedId)}/timeline?layer=main&limit=150`)).json();
+  assert.deepEqual(main.events.map((event) => [event.kind, event.turnId]), [
+    ['user_message', 'request'], ['user_message', 'request'], ['user_message', 'external-meta'],
+  ], 'a genuine steer remains in its existing user turn');
+  for (const [index, [, marker]] of internal.entries()) {
+    assert.equal((await service.execute('search', { query: marker, layer: 'main' })).items.length, 0, marker);
+    const hits = (await service.execute('search', { query: marker, layer: 'protocol' })).items;
+    assert.equal(hits.length, 1, `${marker} has one Protocol owner`);
+    const hit = hits[0];
+    await page.goto(`${origin}/#ref=${encodeURIComponent(hit.ref)}`);
+    await page.waitForFunction((eventId) => document.querySelector('#timeline article.selected')?.dataset.eventId === eventId, hit.eventId);
+    assert.equal(await page.locator('#layerSelect').inputValue(), 'protocol');
+    await page.locator('#detail [data-detail-action="raw"]').waitFor();
+    assert.ok((await page.locator('#detail').textContent()).includes(marker), `${marker} remains inspectable in Detail`);
+    const rawResponse = page.waitForResponse((response) => new URL(response.url()).pathname.includes('/raw/'));
+    await page.locator('#detail [data-detail-action="raw"]').click();
+    const raw = await (await rawResponse).json();
+    assert.equal(raw.raw, lines[index], `${marker} resolves to its exact physical record`);
+    await page.waitForFunction((expected) => document.querySelector('#detail .rawRefsView pre')?.textContent.includes(expected), marker);
+    assert.equal(await page.locator('#detail .rawRefsView pre').count(), 1);
+    assert.deepEqual(JSON.parse(await page.locator('#detail .rawRefsView pre').textContent()), rows[index]);
+  }
+  assert.equal(await fs.readFile(file, 'utf8'), original);
+  assert.deepEqual(errors, []);
+});
