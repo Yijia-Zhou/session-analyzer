@@ -18,6 +18,47 @@ function textOf(value, types = ['input_text', 'output_text', 'text']) {
   const blocks = Array.isArray(value) ? value : object(value) ? [value] : [];
   return blocks.filter((block) => object(block) && types.includes(block.type) && typeof block.text === 'string').map((block) => block.text).join('\n');
 }
+function classifyMessage(record) {
+  const fallback = { kind: 'protocol', startsTurn: false, titleEligible: false };
+  const internal = { ...fallback, subtype: 'workbuddy_internal_message' };
+  if (record.type !== 'message' || !['user', 'assistant'].includes(record.role)) return fallback;
+  if (!string(record.id) || (record.parentId !== undefined && typeof record.parentId !== 'string')) return fallback;
+  if (record.providerData !== undefined && !object(record.providerData)) return fallback;
+  const data = record.providerData || {};
+  // These are persisted identity discriminators from the pinned producer's
+  // InputItemUtils and classifyUserMessageMarkers. Unknown discriminator
+  // values stay Protocol; unrelated extension metadata does not imply identity.
+  const booleans = ['isMeta', 'isCompactInternal', 'isCompacted', 'isSummary', 'isPtlRecovery', 'isMediaBodyRecovery', 'isPtlRetryMarker'];
+  if (record.role === 'user') booleans.push('skipRun', 'isAdditionalData', 'startsNewUserRequest', '__codebuddyAttachedContext');
+  if (booleans.some((key) => data[key] !== undefined && typeof data[key] !== 'boolean')
+    || (data.compactType !== undefined && typeof data.compactType !== 'string')
+    || (data.agent !== undefined && typeof data.agent !== 'string')) return fallback;
+  if (record.role === 'user') {
+    if ((data.__codebuddyInitiator !== undefined && !['user', 'agent'].includes(data.__codebuddyInitiator))
+      || (data.__codebuddyInteractionType !== undefined && !['prompt', 'schedule', 'notification', 'teammate'].includes(data.__codebuddyInteractionType))) return fallback;
+    // Explicit runtime markers win even over startsNewUserRequest / initiator.
+    // Scheduled prompts can be external to a run without being human input.
+    if (data.teammateMessage !== undefined || data.scheduledTaskTrigger !== undefined
+      || data.goalScopeId !== undefined || data.goalStatus !== undefined
+      || data.__codebuddyInitiator === 'agent'
+      || ['schedule', 'notification', 'teammate'].includes(data.__codebuddyInteractionType)) return internal;
+  }
+  if (data.isPtlRecovery === true || data.isMediaBodyRecovery === true || data.isPtlRetryMarker === true) return internal;
+  if (data.isSummary === true && data.isCompacted === true) return { ...fallback, kind: 'compaction' };
+  if (record.role === 'user' && (data.skipRun === true || data.isAdditionalData === true || data.__codebuddyAttachedContext === true)) return internal;
+  if (data.isCompactInternal === true || data.isCompacted === true || data.isSummary === true
+    || data.compactType !== undefined || data.agent === 'compact') return internal;
+  if (data.isMeta === true && !(record.role === 'user' && data.startsNewUserRequest === true)) return { ...fallback, subtype: 'workbuddy_meta_message' };
+  const user = record.role === 'user';
+  // Unsupported content remains Protocol/Raw and cannot manufacture a turn.
+  // This does not assign new attachment-only presentation semantics.
+  if (user && typeof record.content !== 'string' && !(Array.isArray(record.content)
+    && record.content.some((block) => object(block) && ['input_text', 'text'].includes(block.type) && typeof block.text === 'string'))) return fallback;
+  // Queued/steer input remains a user message. startsNewUserRequest controls
+  // the turn boundary independently. A meta+new-request prompt is accepted as
+  // external input here, without claiming that its author is proven human.
+  return { kind: `${record.role}_message`, startsTurn: user && data.startsNewUserRequest !== false, titleEligible: user };
+}
 function workbuddyRawRef(raw) { return { file: raw.source.file, line: raw.source.line, rawId: raw.rawId, sourceLocator: raw.sourceLocator,
   sourceRecordType: raw.recordType, sourceEventType: raw.payloadType }; }
 function eventFor(session, raw, suffix, fields) {
@@ -67,10 +108,11 @@ function makeSession(document, sourceFile) {
     session.primarySessionMetaKind = 'subagent';
     session.parentSessionId = `workbuddy:${identityPart(`${location[0]}/${location[1]}.jsonl`)}`;
   }
+  const messageClasses = document.rows.map(({ parsed }) => classifyMessage(object(parsed) ? parsed : {}));
   let turnId = '';
-  session.rawEvents = document.rows.map((row) => {
+  session.rawEvents = document.rows.map((row, index) => {
     const record = object(row.parsed) ? row.parsed : {};
-    if (record.type === 'message' && record.role === 'user' && record.providerData?.isMeta !== true && record.providerData?.isCompacted !== true && string(record.id)) turnId = record.id;
+    if (messageClasses[index].startsTurn) turnId = record.id;
     if (record.type === 'resend-fork-notice') turnId = '';
     const source = { file: sourceFile, line: row.line }; const sourceLocator = { type: 'jsonl_line', ...source };
     const text = row.parseError ? 'Malformed JSON record (content available in Raw)' : search(record);
@@ -125,8 +167,10 @@ function makeSession(document, sourceFile) {
       usage.workbuddy = { text: 'Recorded model usage', usage: safe(row.message?.usage ?? row.providerData.usage), model: string(row.providerData?.model) };
       session.logicalEvents.push(usage);
     }
-    if (row.type === 'message' && row.providerData?.isMeta === true && row.providerData?.isCompacted !== true) {
-      session.logicalEvents.push(protocol(session, raw, 'workbuddy_meta_message', 'Recorded runtime message')); continue;
+    const messageClass = messageClasses[i];
+    if (row.type === 'message' && messageClass.kind === 'protocol') {
+      session.logicalEvents.push(protocol(session, raw, messageClass.subtype || raw.payloadType,
+        messageClass.subtype ? 'Recorded runtime message' : 'Unclassified saved message')); continue;
     }
     const identified = string(row.id) && (row.parentId === undefined || typeof row.parentId === 'string');
     if (row.type === 'message' && identified && ['user', 'assistant'].includes(row.role)) {
@@ -144,11 +188,11 @@ function makeSession(document, sourceFile) {
         const allowed = row.role === 'user' ? ['input_text', 'text'] : ['output_text', 'text'];
         if (object(block) && allowed.includes(block.type) && typeof block.text === 'string') {
           const text = redactEmbeddedDataUrls(block.text);
-          session.logicalEvents.push(eventFor(session, raw, `text:${n}`, { kind: row.providerData?.isSummary === true && row.providerData?.isCompacted === true ? 'compaction' : `${row.role}_message`, role: row.role, preview: text,
+          session.logicalEvents.push(eventFor(session, raw, `text:${n}`, { kind: messageClass.kind, role: row.role, preview: text,
             searchText: row.role === 'assistant' && string(row.providerData?.error?.message) ? `${text}\n${redactEmbeddedDataUrls(row.providerData.error.message)}` : text,
             status: row.role === 'assistant' ? (row.providerData?.error ? 'failed' : row.status === 'completed' ? 'success' : 'incomplete') : '',
             severity: row.providerData?.error ? 'error' : 'normal', workbuddy: { text: safe(text), blockIndex: n } }));
-          if (row.role === 'user' && !session.title && text.trim()) session.title = preview(text);
+          if (messageClass.titleEligible && !session.title && text.trim()) session.title = preview(text);
         } else session.logicalEvents.push(protocol(session, raw, `workbuddy_content_${n}`, 'Unmodeled saved message content'));
       }
     } else if (row.type === 'reasoning' && identified) {
@@ -209,13 +253,18 @@ function makeSession(document, sourceFile) {
 }
 function summarize(session) {
   const counts = Object.fromEntries(INDEXED_SESSION_COUNT_FIELDS.map((name) => [name, 0]));
-  const tools = new Map(); const kinds = new Map(); const protocols = new Map(); const turns = new Set(); const failedCommands = [];
+  const tools = new Map(); const kinds = new Map(); const protocols = new Map(); const turns = new Set(); const messages = new Set(); const failedCommands = [];
   for (const event of session.logicalEvents) {
     if (event.turnId) turns.add(event.turnId);
     if (event.layer === 'protocol') { counts.protocol++; protocols.set(event.subtype, (protocols.get(event.subtype) || 0) + 1); continue; }
     kinds.set(event.kind, (kinds.get(event.kind) || 0) + 1);
-    if (event.kind === 'user_message') { counts.messages++; counts.userMessages++; }
-    if (event.kind === 'assistant_message') { counts.messages++; counts.assistantMessages++; }
+    // A physical message may have several independently readable text blocks.
+    // Keep every block event while counting its owning source record once.
+    if (['user_message', 'assistant_message'].includes(event.kind) && !messages.has(event.source.rawId)) {
+      messages.add(event.source.rawId); counts.messages++;
+      if (event.kind === 'user_message') counts.userMessages++;
+      else counts.assistantMessages++;
+    }
     if (event.kind === 'reasoning') counts.reasoning++;
     if (event.kind === 'compaction') counts.compactions++;
     if (event.kind === 'error') counts.errors++;

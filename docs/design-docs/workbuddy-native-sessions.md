@@ -30,6 +30,27 @@ Tool pairing requires corroborating unique call identity, name and request evide
 
 Session metadata, usage, goals, checkpoints and other runtime facts retain traceability. In particular, cumulative terminal cost is not summed as per-turn cost, and duplicated model usage carried by multiple rows is not counted as distinct model requests. / 会话 metadata、用量、目标、检查点及其他运行时事实保留可追溯性；尤其不把终态累计费用逐条相加，也不把多行重复携带的模型用量视为多个请求。
 
+### Message identity, turns and titles / 消息身份、回合与标题
+
+The corrective source audit also pins `dist/codebuddy-headless.js` SHA-256 `dfba8dc057a592d1428ed2db9554aa3d5640674c9e98d794f1cce1783be5afa8`. Relevant anchors are `InputItemUtils.isLiveStreamUserMessageItem`, `isExternalUserPromptItem`, `classifyUserMessageMarkers`, `classifyMessageInteractionType`, `startsNewTurnTimer`, the steer/queue writers, recovery writers and `CommandMessageUtils.buildOutput`. These functions answer different questions: external run input is not proof of a person manually sending a message. / 修正审查同时固定上述 headless bundle 及摘要；相关锚点包括所列输入判定、交互类型、回合计时及 writer。这些函数回答不同问题：运行的外部输入不证明由人手动发送。
+
+One classifier supplies logical message kind, turn-start eligibility and fallback-title eligibility before Raw turn assignment and logical mapping. Explicit runtime exclusions take precedence over positive new-request markers. Known identity discriminator values are validated; unrelated extension metadata is not a reason to reject input. Body text, including literal `<user_query>`, `<system-reminder>` or teammate-like tags, never establishes identity by itself. / 单一分类器在 Raw 回合归属及逻辑映射前提供消息类型、回合起点资格和默认标题资格。明确运行时排除标记优先于新请求标记；校验已知身份判别字段的取值，不因无关扩展 metadata 拒绝输入。正文及所列字面标签本身不建立身份。
+
+| Recorded evidence / 已记录依据 | Interpretation / 判定 |
+| --- | --- |
+| Recovery flags, internal/partial compaction markers / 恢复标记、内部／部分压缩标记 | Protocol/Raw; not user input, a new turn or title / 协议／原始层，不作为用户输入、新回合或标题 |
+| User-role `skipRun`, attached/additional context, teammate, goal, schedule or agent-origin markers / 用户角色上的所列输出、上下文、队友、目标、定时及 agent 来源标记 | Protocol/Raw even if a positive new-request marker is present / 即使存在开启请求标记也保留协议／原始层 |
+| Accepted user input with `startsNewUserRequest: false` / 接纳的用户输入且不开启新请求 | User message on the existing turn; never invent a preceding turn if none exists / 现有回合中的用户消息；无前序回合时不伪造回合 |
+| `isMeta: true` + `startsNewUserRequest: true` without an exclusion / 不含排除标记的所列组合 | External prompt eligible for message/turn/title; not certified manual authorship / 可用于消息、回合及标题的外部提示，不证明人工发送 |
+| Explicit complete summary / 明确完整摘要 | Compaction, never a fallback title / 压缩，不作为默认标题 |
+| Malformed known identity discriminator / 已知身份字段取值异常 | Protocol/Raw, not speculative human input / 协议／原始层，不推测为人工输入 |
+
+Message counts deduplicate user and assistant text-block events by their physical Raw record, while all block events retain search, Detail and Raw references. This is not duplicate-ID collapse across physical history. Explicit recorded custom/AI/topic titles keep their existing precedence. / 消息数量按物理 Raw 记录去重用户与助手文本块事件，所有块事件仍保留搜索、详情及原始引用；不跨物理历史合并重复 ID。明确记录的自定义／AI／topic 标题保持既有优先级。
+
+The referenced real-session line 701 has not been located in the available corpus. Synthetic tests establish reader behavior for its described marker combination, not the author's actual operation or an exact manual-input count. / 当前可用语料未定位所指真实第 701 行。合成测试证明所述标记组合的 reader 行为，不证明作者实际操作或精确人工输入数。
+
+Fresh 2026-11-03 official CLI TUI probes confirmed queued input consumption at a tool boundary (two accepted user records, one turn), two actual Agent children with native `subagents/` files, and six local-command records carrying `skipRun: true` before one ordinary user prompt. This is evidence for the CLI queue path, not ACP immediate-steer or persisted `teammateMessage.from` delivery. Final readback covered six physical sessions (three requested parents, two children and one startup-only attempt), 70 Raw records and 80 Detail events with unchanged source bytes and zero final diagnostics. / 2026-11-03 官方 CLI TUI 新探针确认了工具边界消费排队输入（两条用户记录、一个回合）、两个实际 Agent 子代理及原生子文件，以及普通用户提示前六条带 `skipRun: true` 的本地命令记录。这证明 CLI 排队路径，不证明 ACP 即时 steer 或持久化队友消息投递。最终回读覆盖六个物理会话（三个请求的主会话、两个子会话及一个仅启动的尝试）、70 条 Raw 和 80 条详情事件，源文件字节未变，最终诊断为零。
+
 ### Implemented reading coverage / 已实现阅读覆盖
 
 | Native evidence / 原生依据 | Presentation / 呈现 |
