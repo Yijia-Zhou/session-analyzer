@@ -49,6 +49,133 @@ async function detailFor(f, event) {
 const toolEvent = (f, id) => f.session.logicalEvents.find((event) => event.workbuddy?.callId === id);
 const primary = (detail) => JSON.stringify(detail.timelineSections);
 
+test('native nested error receipts override completed delivery without interpreting lookalike flags', async (t) => {
+  const f = await fixture(t, [user(),
+    ...tool('deferred', 'DeferExecuteTool', { toolName: 'im_list_conversations', arguments: {} },
+      { content: 'SYNTHETIC_HEADLESS_UNAVAILABLE', rawResponse: { is_error: true } }),
+    ...tool('shell', 'Bash', { command: 'synthetic-command' }, { rawResponse: { is_error: true } }),
+    ...tool('false', 'DeferExecuteTool', { toolName: 'Read' }, { rawResponse: { is_error: false } }),
+    ...tool('string', 'DeferExecuteTool', { toolName: 'Read' }, { rawResponse: { is_error: 'true' } }),
+    ...tool('nested', 'Read', { file_path: 'example' }, { rawResponse: { content: { is_error: true } } }),
+  ]);
+  for (const id of ['deferred', 'shell', 'false', 'string', 'nested']) {
+    const event = toolEvent(f, id);
+    const failed = ['deferred', 'shell'].includes(id);
+    assert.equal(event.status, failed ? 'failed' : 'success');
+    assert.equal(event.workbuddy.resultStatus, 'completed');
+    const detail = await detailFor(f, event);
+    assert.equal(primary(detail).includes('recorded tool response reports an error'), failed);
+    const raw = await readIndexedRawRecord(f.index, f.session, detail.rawRefs[1].rawId);
+    assert.equal(raw.raw, f.lines[detail.rawRefs[1].line - 1]);
+    if (id === 'deferred') {
+      assert.equal(event.toolName, 'DeferExecuteTool');
+      assert.match(event.preview, /im_list_conversations/);
+      assert.match(primary(detail), /Requested tool.*im_list_conversations/);
+      assert.match(primary(detail), /SYNTHETIC_HEADLESS_UNAVAILABLE/);
+    }
+  }
+});
+
+const imageRef = (fields = {}) => ({ type: 'image_blob_ref', blob_id: 'synthetic-blob', mime: 'image/png',
+  original_filename: 'SYNTHETIC_IMAGE.png', size: 123, blob_path: '/nonexistent/synthetic-image.png', ...fields });
+
+test('native image-only envelope has one searchable user event and keeps wrappers in inspection and exact Raw', async (t) => {
+  const f = await fixture(t, [{ ...user(), content: [
+    { type: 'input_text', text: '<system-reminder data-role="user-context">SYNTHETIC_CONTEXT</system-reminder>\n<user_query>@image#1:SYNTHETIC_IMAGE.png</user_query>' },
+    imageRef(), { type: 'input_text', text: '<image_local_path>/nonexistent/synthetic-image.png</image_local_path>\n' },
+  ] }]);
+  const events = f.session.logicalEvents.filter((event) => event.rawRefs.some((ref) => ref.line === 1)
+    && event.subtype !== 'workbuddy_recorded_history');
+  assert.equal(events.length, 1);
+  const [event] = events;
+  assert.equal(event.kind, 'user_message');
+  assert.equal(f.session.counts.userMessages, 1);
+  assert.equal(f.session.counts.turns, 1);
+  assert.match(f.session.title, /SYNTHETIC_IMAGE.png/);
+  assert.doesNotMatch(f.session.title, /system-reminder/);
+  const detail = await detailFor(f, event);
+  assert.match(primary(detail), /Image attachment.*SYNTHETIC_IMAGE.png.*image\/png.*123/);
+  assert.match(primary(detail), /preview is not available/);
+  assert.doesNotMatch(primary(detail), /SYNTHETIC_CONTEXT|image_local_path|nonexistent/);
+  assert.match(JSON.stringify(detail.inspectorSections), /SYNTHETIC_CONTEXT/);
+  assert.match(JSON.stringify(detail.inspectorSections), /image_local_path/);
+  const { createHistoryService } = require('../src/history-service');
+  const service = await createHistoryService({ source: 'workbuddy', repo: f.index.repoRoot, workbuddyHome: path.dirname(f.index.sessionsRoot) });
+  t.after(() => service.close());
+  for (const query of ['SYNTHETIC_IMAGE.png', 'SYNTHETIC_CONTEXT']) {
+    const hits = (await service.execute('search', { query, layer: 'main' })).items;
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].eventId, event.id);
+  }
+  assert.equal((await readIndexedRawRecord(f.index, f.session, event.rawRefs[0].rawId)).raw, f.lines[0]);
+});
+
+test('reference-only and mixed image messages preserve text, bounded metadata and runtime identity exclusions', async (t) => {
+  const f = await fixture(t, [
+    { ...user(), content: [imageRef()] },
+    { ...user(), id: 'mixed', content: [{ type: 'input_text', text: 'Explain this image' }, imageRef(),
+      { type: 'input_text', text: '<image_local_path>LITERAL_PATH</image_local_path>' }] },
+    { ...user(), id: 'many', content: Array.from({ length: 150 }, (_, n) => imageRef({ blob_id: `blob-${n}` })) },
+    { ...user(), id: 'internal', content: [imageRef()], providerData: { teammateMessage: { from: 'synthetic-peer' } } },
+  ]);
+  const events = f.session.logicalEvents.filter((event) => event.kind === 'user_message');
+  assert.equal(events.length, 3);
+  assert.equal(f.session.counts.userMessages, 3);
+  assert.equal(f.session.counts.turns, 3);
+  const mixed = await detailFor(f, events[1]);
+  assert.match(primary(mixed), /Explain this image/);
+  assert.match(primary(mixed), /LITERAL_PATH/);
+  const many = await detailFor(f, events[2]);
+  assert.equal(many.timelineSections.filter((section) => section.title === 'Image attachment').length, 16);
+  assert.match(primary(many), /Showing 16 of 150/);
+  assert.ok(JSON.stringify(many).length < 200_000);
+  assert.ok(f.session.logicalEvents.some((event) => event.layer === 'protocol' && event.source.line === 4));
+});
+
+test('malformed image references stay Protocol while uncorroborated literal envelopes remain readable', async (t) => {
+  for (const ref of [imageRef({ blob_id: '' }), imageRef({ mime: 'text/plain' }), imageRef({ blob_id: 7 })]) {
+    const f = await fixture(t, [{ ...user(), content: [ref] }]);
+    assert.equal(f.session.counts.userMessages, 0);
+    assert.equal(f.session.counts.turns, 0);
+    const event = f.session.logicalEvents.find((item) => item.subtype !== 'workbuddy_recorded_history');
+    assert.equal(event.layer, 'protocol');
+    assert.equal((await readIndexedRawRecord(f.index, f.session, event.rawRefs[0].rawId)).raw, f.lines[0]);
+  }
+  for (const literal of [
+    '<system-reminder>LITERAL_CONTEXT</system-reminder><user_query>@image#1:other.png</user_query>',
+    '<system-reminder>LITERAL_CONTEXT</system-reminder>'.repeat(100),
+  ]) {
+    for (const extra of [[], [imageRef()]]) {
+      const f = await fixture(t, [{ ...user(literal), content: [...user(literal).content, ...extra] }]);
+      const event = f.session.logicalEvents.find((item) => item.kind === 'user_message');
+      assert.match(primary(await detailFor(f, event)), /LITERAL_CONTEXT/);
+    }
+  }
+});
+
+test('image wrapper recognition requires the complete native shape and a recorded filename', async (t) => {
+  const envelope = (name) => ({ type: 'input_text', text: `<system-reminder>KEEP_CONTEXT</system-reminder><user_query>@image#1:${name}</user_query>` });
+  const localPath = { type: 'input_text', text: '<image_local_path>/synthetic/KEEP_LITERAL.png</image_local_path>' };
+  for (const blocks of [
+    [envelope('SYNTHETIC_IMAGE.png'), imageRef(), { type: 'input_text', text: 'Explain this literal path.' }, localPath],
+    [envelope('SYNTHETIC_IMAGE.png'), imageRef(), { type: 'future_block', marker: 'KEEP_UNKNOWN' }, localPath],
+    [envelope('undefined'), imageRef({ original_filename: undefined }), localPath],
+    [envelope('42'), imageRef({ original_filename: 42 }), localPath],
+    [envelope('SYNTHETIC_IMAGE.png'), imageRef(), { type: 'input_text', text: '<image_local_path>KEEP_LITERAL</image_local_path>' }],
+  ]) {
+    const f = await fixture(t, [{ ...user(), content: blocks }]);
+    const event = f.session.logicalEvents.find((item) => item.kind === 'user_message');
+    assert.equal(f.session.counts.userMessages, 1);
+    const detail = await detailFor(f, event);
+    assert.match(primary(detail), /KEEP_CONTEXT/);
+    assert.match(primary(detail), /KEEP_LITERAL/);
+    assert.equal((await readIndexedRawRecord(f.index, f.session, event.rawRefs[0].rawId)).raw, f.lines[0]);
+    if (blocks.some((block) => block.type === 'future_block')) {
+      assert.ok(f.session.logicalEvents.some((item) => item.layer === 'protocol' && item.subtype === 'workbuddy_content_2'));
+    }
+  }
+});
+
 test('tool details retain native failure, interruption and successful delivery evidence', async (t) => {
   const f = await fixture(t, [user(),
     ...tool('ok', 'Bash', { command: 'printf SUCCESS_OUTPUT' }, { content: 'SUCCESS_OUTPUT', rawResponse: { exitCode: 0 } }),
@@ -178,6 +305,47 @@ test('compaction details retain readable summaries, execution model and recorded
   const usage = f.session.logicalEvents.find((item) => item.subtype === 'workbuddy_usage');
   const usageDetail = await detailFor(f, usage);
   assert.deepEqual(usageDetail.rawRefs, event.rawRefs, 'the usage receipt refers to the same original summary record');
+});
+
+test('internal compaction continuation is searchable in Protocol and preserves exact Raw', async (t) => {
+  const row = { type: 'message', id: 'continuation', role: 'user',
+    content: [{ type: 'input_text', text: 'INTERNAL_CONTINUATION_CONTEXT' }],
+    providerData: { isCompacted: true, isCompactInternal: true, isSummary: false } };
+  const f = await fixture(t, [row, user()]);
+  assert.equal(f.session.title, 'Inspect synthetic project');
+  assert.equal(f.session.counts.compactions, 0);
+  assert.equal(f.session.counts.userMessages, 1);
+  assert.equal(f.session.counts.messages, 1);
+  const event = f.session.logicalEvents.find((item) => item.subtype === 'workbuddy_internal_message');
+  const detail = await detailFor(f, event);
+  assert.match(JSON.stringify(detail), /INTERNAL_CONTINUATION_CONTEXT/);
+  assert.equal(event.layer, 'protocol');
+  assert.doesNotMatch(JSON.stringify(detail.inspectorSections), /This is the recorded summary/);
+  assert.equal(event.role, 'user', 'preserve the recorded role without counting a human message');
+  assert.equal((await readIndexedRawRecord(f.index, f.session, event.rawRefs[0].rawId)).raw, f.lines[0]);
+  const { createHistoryService } = require('../src/history-service');
+  const service = await createHistoryService({ repo: f.index.repoRoot, source: 'workbuddy', workbuddyHome: f.index.sourceHome });
+  t.after(() => service.close());
+  const hits = await service.execute('search', { query: 'INTERNAL_CONTINUATION_CONTEXT', layer: 'protocol' });
+  assert.equal(hits.items.length, 1);
+  const messages = await service.execute('search', { query: 'INTERNAL_CONTINUATION_CONTEXT', kind: 'user_message' });
+  assert.equal(messages.items.length, 0);
+});
+
+test('partial and nonboolean compaction markers retain Protocol evidence', async (t) => {
+  for (const providerData of [{ isCompacted: true }, { isCompactInternal: true },
+    { isSummary: true }, { isCompacted: false, isCompactInternal: true },
+    { isCompacted: true, isCompactInternal: 'true', isSummary: false },
+    { isCompacted: 'true', isCompactInternal: true }]) {
+    const f = await fixture(t, [{ ...user(), providerData }]);
+    assert.equal(f.session.counts.compactions, 0);
+    assert.equal(f.session.counts.userMessages, 0);
+    assert.equal(f.session.counts.turns, 0);
+    const event = f.session.logicalEvents.find((item) => item.subtype !== 'workbuddy_recorded_history');
+    assert.equal(event.layer, 'protocol');
+    const detail = await detailFor(f, event);
+    assert.equal((await readIndexedRawRecord(f.index, f.session, detail.rawRefs[0].rawId)).raw, f.lines[0]);
+  }
 });
 
 test('unknown result blocks and future protocol fields retain bounded fallback and exact Raw evidence', async (t) => {

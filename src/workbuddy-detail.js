@@ -48,6 +48,7 @@ function planSection(title, value, purpose) {
 function toolRequest(detail, event, facts) {
   const args = object(facts.arguments) && facts.argumentsValid ? facts.arguments : null;
   const primary = detail.timelineSections;
+  if (facts.requestedToolName) primary.push(kv('Deferred tool request', [['Requested tool', facts.requestedToolName]], 'request'));
   if (typeof facts.command === 'string' && facts.command) primary.push(code('Command', facts.command, 'request', event.toolName === 'PowerShell' ? 'powershell' : 'bash'));
   else if (args && ['read', 'write', 'edit'].includes(facts.activity)) {
     primary.push(kv('Requested file operation', [['Operation', facts.activity], ['File', args.file_path],
@@ -88,6 +89,7 @@ function toolResult(detail, event, facts) {
   const renderer = object(result.renderer) ? result.renderer : {};
   const primary = detail.timelineSections;
   let shown = false;
+  if (result.rawResponse?.is_error === true) primary.push({ type: 'notice', purpose: 'result', level: 'error', text: 'The recorded tool response reports an error.' });
   const output = text(facts.output) || text(result.content);
   // The renderer hint alone does not prove a patch exists (native Edit commonly
   // records renderer.type=diff with only a success sentence).
@@ -209,6 +211,7 @@ function protocolSections(detail, raw) {
 function residualFields(raw, event) {
   if (!object(raw.parsed)) return raw.parsed;
   const { id, parentId, logicalParentId, sessionId, timestamp, cwd, type, ...rest } = raw.parsed;
+  if (event.workbuddy?.imageMessage) return rest;
   if (['user_message', 'assistant_message', 'reasoning', 'compaction'].includes(event.kind)) {
     // The selected content block is presented above. Preserve other block types
     // as residual evidence without repeating all message text in every detail.
@@ -278,10 +281,22 @@ async function buildWorkbuddyEventDetail(index, session, eventId, layer = 'main'
     toolRequest(detail, event, facts);
     toolResult(detail, event, facts);
   } else if (['user_message', 'assistant_message', 'reasoning', 'compaction'].includes(event.kind)) {
-    detail.timelineSections.push(...content(text(facts.text) || event.preview));
-    if (event.kind === 'compaction') detail.inspectorSections.push(notice('This is the recorded summary. Earlier physical history remains visible as archival evidence.'));
+    if (facts.imageMessage) {
+      if (text(facts.text)) detail.timelineSections.push(...content(facts.text));
+      for (const image of (facts.images || []).slice(0, 16)) {
+        detail.timelineSections.push(kv('Image attachment', [['Name', image.original_filename || 'Unnamed image'],
+          ['Media type', image.mime], ['Bytes', Number.isSafeInteger(image.size) && image.size >= 0 ? image.size : undefined]], 'content'));
+      }
+      if (facts.imageCount > 16) detail.timelineSections.push(notice(`Showing 16 of ${facts.imageCount} image references; see Raw for the remainder.`, 'content'));
+      detail.timelineSections.push(notice('Image reference recorded; preview is not available.', 'content'));
+    } else detail.timelineSections.push(...content(text(facts.text) || event.preview));
+    if (event.kind === 'compaction') detail.inspectorSections.push(notice('This is a recorded compaction message. Earlier physical history remains visible as archival evidence.'));
   } else if (!protocolSections(detail, raws[0])) {
     detail.timelineSections.push(...content(text(facts.text) || event.preview));
+  }
+  if (facts.inputScope === 'subagent') {
+    detail.timelineSections.unshift(notice('Input to a subagent. The recorded user role does not establish human authorship.', 'content'));
+    context.push(['Parent session', session.parentSessionId]);
   }
   recordedMetadata(detail, raws, facts, context);
   if (event.tokenUsage?.length) detail.inspectorSections.push({ type: 'token_usage', purpose: 'context', items: event.tokenUsage });

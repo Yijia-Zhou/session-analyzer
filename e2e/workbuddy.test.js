@@ -33,6 +33,19 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
     { id: 'compact', parentId: 'task-result', type: 'message', role: 'assistant', status: 'completed',
       content: [{ type: 'output_text', text: 'WORKBUDDY_COMPACT_SUMMARY: the file has been inspected.' }],
       providerData: { conversationRequestId: 'request-1', isSummary: true, isCompacted: true, isCompactInternal: true, compactionKind: 'manual' } },
+    { id: 'continuation', parentId: 'compact', type: 'message', role: 'user',
+      content: [{ type: 'input_text', text: 'WORKBUDDY_INTERNAL_CONTEXT: continue from the recorded context.' }],
+      providerData: { isCompacted: true, isCompactInternal: true, isSummary: false } },
+    { id: 'image-input', type: 'message', role: 'user', content: [
+      { type: 'input_text', text: '<system-reminder>WORKBUDDY_IMAGE_CONTEXT</system-reminder><user_query>@image#1:WORKBUDDY_IMAGE.png</user_query>' },
+      { type: 'image_blob_ref', blob_id: 'synthetic-blob', original_filename: 'WORKBUDDY_IMAGE.png', mime: 'image/png', size: 123, blob_path: '/nonexistent/image.png' },
+      { type: 'input_text', text: '<image_local_path>/nonexistent/image.png</image_local_path>' },
+    ] },
+    { id: 'defer-call', parentId: 'image-input', type: 'function_call', callId: 'defer-1', name: 'DeferExecuteTool',
+      arguments: JSON.stringify({ toolName: 'im_list_conversations', arguments: {} }) },
+    { id: 'defer-result', parentId: 'defer-call', type: 'function_call_result', callId: 'defer-1', name: 'DeferExecuteTool', status: 'completed',
+      output: { type: 'text', text: 'WORKBUDDY_HEADLESS_UNAVAILABLE' },
+      providerData: { toolResult: { content: 'WORKBUDDY_HEADLESS_UNAVAILABLE', rawResponse: { is_error: true } } } },
   ].map((row, i) => ({ timestamp: 1790000000000 + i * 1000, sessionId, cwd: repo,
     providerData: { conversationRequestId: 'request-1' }, ...row }));
   const file = path.join(directory, `${sessionId}.jsonl`);
@@ -66,12 +79,28 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
   await page.locator('[data-main-presentation="trajectory"]').click();
   await page.waitForFunction(() => document.body.dataset.mainPresentation === 'trajectory');
   assert.match(await page.locator('#timeline').innerText(), /WORKBUDDY_FINAL|Read|example\.txt/);
-  for (const marker of ['WORKBUDDY_COMPLETED_TASK', 'WORKBUDDY_COMPACT_SUMMARY']) {
-    const matches = (await service.execute('search', { query: marker })).items;
+  for (const marker of ['WORKBUDDY_COMPLETED_TASK', 'WORKBUDDY_COMPACT_SUMMARY', 'WORKBUDDY_INTERNAL_CONTEXT', 'WORKBUDDY_IMAGE.png', 'WORKBUDDY_HEADLESS_UNAVAILABLE']) {
+    const matches = (await service.execute('search', { query: marker, ...(marker === 'WORKBUDDY_INTERNAL_CONTEXT' ? { layer: 'protocol' } : {}) })).items;
     assert.equal(matches.length, 1);
     await page.goto(`http://127.0.0.1:${server.address().port}/#ref=${encodeURIComponent(matches[0].ref)}`);
     await page.waitForFunction((expected) => document.querySelector('#timeline article.selected')?.innerText.includes(expected), marker);
     if (marker === 'WORKBUDDY_COMPLETED_TASK') assert.match(await page.locator('#timeline article.selected').innerText(), /completed/i);
+    if (marker === 'WORKBUDDY_IMAGE.png') {
+      const text = await page.locator('#timeline article.selected').innerText();
+      assert.match(text, /Image attachment|image\/png/);
+      // Search-match evidence can quote the hidden source wrapper; the message
+      // content itself only presents the attachment metadata.
+      assert.doesNotMatch(text.split('Search match')[0], /WORKBUDDY_IMAGE_CONTEXT|image_local_path/);
+      if (width < 760) await page.getByRole('button', { name: 'Detail', exact: true }).click();
+      await page.locator('#detail [data-detail-action="raw"]').click();
+      await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('image_blob_ref'));
+      assert.match(await page.locator('#detail .rawRefsView').innerText(), /WORKBUDDY_IMAGE_CONTEXT/);
+      if (width < 760) await page.locator('button[data-mobile-view="events"]').click();
+    }
+    if (marker === 'WORKBUDDY_HEADLESS_UNAVAILABLE') {
+      assert.equal(matches[0].status, 'failed');
+      assert.match(await page.locator('#timeline article.selected').innerText(), /im_list_conversations/);
+    }
   }
   assert.equal(await fs.readFile(file, 'utf8'), original, 'reading never rewrites native history');
   assert.deepEqual(errors, []);

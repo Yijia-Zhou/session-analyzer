@@ -36,6 +36,17 @@ test('native catalog discovers recorded cwd, includes owned subagents and never 
   const child = index.sessions.find((item) => item.parentSessionId);
   assert.equal(child.primarySessionMetaKind, 'subagent'); assert.equal(child.parentSessionId, parent.id);
   const session = await materializeSessionForIndex(index, parent);
+  const childSession = await materializeSessionForIndex(index, child);
+  const input = childSession.logicalEvents.find((event) => event.kind === 'user_message');
+  assert.equal(input.label, 'Subagent input');
+  assert.equal(input.role, 'user');
+  assert.equal(childSession.counts.userMessages, 1);
+  assert.equal(childSession.counts.turns, 1);
+  const detail = await buildEventDetailForSession(index, childSession, input.id, input.layer);
+  assert.match(JSON.stringify(detail.timelineSections), /does not establish human authorship/);
+  assert.match(JSON.stringify(detail.inspectorSections), /Parent session/);
+  assert.equal(await projectQueryProjectionDigestAsync(childSession, workbuddyAdapter.query.projectQueryPresentation), child.queryProjectionDigest);
+  assert.notEqual(session.logicalEvents.find((event) => event.kind === 'user_message').label, 'Subagent input');
   assert.equal(Object.hasOwn(index.sessions[0], 'logicalEvents'), false);
   assert.equal(await projectQueryProjectionDigestAsync(session, workbuddyAdapter.query.projectQueryPresentation), parent.queryProjectionDigest);
   assert.equal(await fs.readFile(f.file, 'utf8'), f.text);

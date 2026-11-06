@@ -18,6 +18,46 @@ function textOf(value, types = ['input_text', 'output_text', 'text']) {
   const blocks = Array.isArray(value) ? value : object(value) ? [value] : [];
   return blocks.filter((block) => object(block) && types.includes(block.type) && typeof block.text === 'string').map((block) => block.text).join('\n');
 }
+function imageReferences(record) {
+  if (!Array.isArray(record.content)) return [];
+  return record.content.filter((block) => object(block) && block.type === 'image_blob_ref'
+    && string(block.blob_id).trim() && /^image\/[a-z0-9.+-]+$/i.test(string(block.mime)));
+}
+function imageOnlyQuery(text) {
+  let rest = text; let reminders = 0;
+  // Scan consecutive wrappers without a repeated wildcard regexp: failed
+  // matches on many reminders must not cause exponential backtracking.
+  while (/^<system-reminder\b[^>]*>/.test(rest)) {
+    const end = rest.indexOf('</system-reminder>');
+    if (end < 0) return '';
+    rest = rest.slice(end + '</system-reminder>'.length).trimStart();
+    reminders++;
+  }
+  return reminders ? (rest.match(/^<user_query>([\s\S]*)<\/user_query>\s*$/)?.[1] || '').trim() : '';
+}
+function imageMessage(record, images) {
+  const texts = []; const unmodeled = [];
+  const imageSet = new Set(images);
+  const [first, image, last] = record.content;
+  const isText = (block) => object(block) && ['input_text', 'text'].includes(block.type) && typeof block.text === 'string';
+  // The desktop capture has exactly these three blocks. Extra prose, unknown
+  // blocks and missing names cannot establish an image-only wrapper. Clipboard
+  // and blob paths are different native references; do not assert equality.
+  const nativeImageOnlyEnvelope = record.content.length === 3 && images.length === 1 && imageSet.has(image)
+    && isText(first) && isText(last) && string(image.original_filename).trim()
+    && imageOnlyQuery(first.text) === `@image#1:${image.original_filename}`
+    && /^<image_local_path>(?:[a-z]:[\\/]|\/)[^<>\r\n]+<\/image_local_path>\s*$/i.test(last.text);
+  for (const [index, block] of record.content.entries()) {
+    if (imageSet.has(block)) continue;
+    if (!isText(block)) {
+      unmodeled.push(index); continue;
+    }
+    const text = block.text;
+    if (nativeImageOnlyEnvelope) continue;
+    if (text.trim()) texts.push(text);
+  }
+  return { text: texts.join('\n\n'), unmodeled };
+}
 function classifyMessage(record) {
   const fallback = { kind: 'protocol', startsTurn: false, titleEligible: false };
   const internal = { ...fallback, subtype: 'workbuddy_internal_message' };
@@ -51,9 +91,10 @@ function classifyMessage(record) {
   if (data.isMeta === true && !(record.role === 'user' && data.startsNewUserRequest === true)) return { ...fallback, subtype: 'workbuddy_meta_message' };
   const user = record.role === 'user';
   // Unsupported content remains Protocol/Raw and cannot manufacture a turn.
-  // This does not assign new attachment-only presentation semantics.
+  // Validated native image references also establish supported content.
   if (user && typeof record.content !== 'string' && !(Array.isArray(record.content)
-    && record.content.some((block) => object(block) && ['input_text', 'text'].includes(block.type) && typeof block.text === 'string'))) return fallback;
+    && record.content.some((block) => object(block) && ['input_text', 'text'].includes(block.type) && typeof block.text === 'string'))
+    && !imageReferences(record).length) return fallback;
   // Queued/steer input remains a user message. startsNewUserRequest controls
   // the turn boundary independently. A meta+new-request prompt is accepted as
   // external input here, without claiming that its author is proven human.
@@ -64,6 +105,9 @@ function workbuddyRawRef(raw) { return { file: raw.source.file, line: raw.source
 function eventFor(session, raw, suffix, fields) {
   const rawRefs = fields.rawRefs || [workbuddyRawRef(raw)];
   const provider = raw.parsed?.providerData;
+  if (fields.kind === 'user_message' && session.parentSessionId) {
+    fields = { ...fields, label: 'Subagent input', workbuddy: { ...fields.workbuddy, inputScope: 'subagent' } };
+  }
   fields = { ...fields, workbuddy: { model: string(provider?.model), requestId: string(provider?.conversationRequestId),
     ...(object(provider?.error) ? { error: safe(provider.error) } : {}), ...fields.workbuddy } };
   return { id: `${session.id}:event:${raw.line}:${suffix}`, schemaVersion: CANONICAL_SCHEMA_VERSION, sourceKind: 'workbuddy',
@@ -184,6 +228,20 @@ function makeSession(document, sourceFile) {
         else session.logicalEvents.push(protocol(session, raw));
         continue;
       }
+      const images = row.role === 'user' && messageClass.kind === 'user_message' ? imageReferences(row) : [];
+      if (images.length) {
+        const parts = imageMessage(row, images);
+        const attachmentText = images.map((image) => `Image: ${string(image.original_filename) || 'Unnamed image'} (${image.mime})`).join('\n');
+        const text = redactEmbeddedDataUrls(parts.text);
+        session.logicalEvents.push(eventFor(session, raw, 'image-message', {
+          kind: 'user_message', role: 'user', preview: text || attachmentText,
+          searchText: search(row.content), workbuddy: { text: safe(text), imageMessage: true,
+            imageCount: images.length, images: safe(images.map(({ original_filename, mime, size }) => ({ original_filename, mime, size }))) },
+        }));
+        for (const n of parts.unmodeled) session.logicalEvents.push(protocol(session, raw, `workbuddy_content_${n}`, 'Unmodeled saved message content'));
+        if (messageClass.titleEligible && !session.title) session.title = preview(text || attachmentText);
+        continue;
+      }
       for (const [n, block] of blocks.entries()) {
         const allowed = row.role === 'user' ? ['input_text', 'text'] : ['output_text', 'text'];
         if (object(block) && allowed.includes(block.type) && typeof block.text === 'string') {
@@ -218,16 +276,16 @@ function makeSession(document, sourceFile) {
       const args = argumentsFor(row); const native = nativeTool(row, args);
       const receipt = result?.providerData?.toolResult;
       const exitCode = receipt?.rawResponse?.exitCode;
-      const failed = Boolean(receipt?.error) || result?.status === 'failed' || (row.name === 'Bash' && Number.isInteger(exitCode) && exitCode !== 0);
+      const failed = receipt?.rawResponse?.is_error === true || Boolean(receipt?.error) || result?.status === 'failed' || (row.name === 'Bash' && Number.isInteger(exitCode) && exitCode !== 0);
       const status = result ? (failed ? 'failed' : receipt?.rawResponse?.interrupted === true ? 'incomplete' : result.status === 'completed' ? 'success' : 'incomplete') : 'incomplete';
       const output = textOf(result?.output); const refs = [workbuddyRawRef(raw)]; if (result) refs.push(workbuddyRawRef(session.rawEvents[resultIndex]));
       session.logicalEvents.push(eventFor(session, raw, 'call', { kind: native.activity === 'command' ? 'command' : 'other_tool_call', role: 'assistant',
         toolName: row.name, status, severity: status === 'failed' ? 'error' : 'normal', touchedFiles: native.paths,
-        preview: native.command || `${row.name}${native.paths.length ? ` ${native.paths[0]}` : ''}`,
+        preview: native.command || (row.name === 'DeferExecuteTool' && string(args?.toolName) ? `DeferExecuteTool: ${args.toolName}` : '') || `${row.name}${native.paths.length ? ` ${native.paths[0]}` : ''}`,
         outputStats: { ...(Number.isInteger(exitCode) ? { exitCode } : {}) },
         searchText: [row.name, search(row.arguments), search(result?.output), search(result?.providerData?.toolResult)].filter(Boolean).join('\n'), rawRefs: refs,
         workbuddy: { callId: row.callId, arguments: safe(args ?? row.arguments), argumentsValid: Boolean(args), command: safe(native.command),
-          activity: native.activity, output: safe(output), pairing: result ? 'exact_call_name_request_or_ancestry' : 'missing_or_ambiguous_result',
+          activity: native.activity, requestedToolName: row.name === 'DeferExecuteTool' ? string(args?.toolName) : '', output: safe(output), pairing: result ? 'exact_call_name_request_or_ancestry' : 'missing_or_ambiguous_result',
           resultStatus: string(result?.status), toolResult: safe(result?.providerData?.toolResult ?? null) } }));
     } else if (row.type === 'summary' && typeof row.summary === 'string') {
       session.logicalEvents.push(protocol(session, raw, 'summary', row.summary));
