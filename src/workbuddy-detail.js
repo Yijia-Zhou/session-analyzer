@@ -211,7 +211,7 @@ function protocolSections(detail, raw) {
 function residualFields(raw, event) {
   if (!object(raw.parsed)) return raw.parsed;
   const { id, parentId, logicalParentId, sessionId, timestamp, cwd, type, ...rest } = raw.parsed;
-  if (event.workbuddy?.imageMessage) return rest;
+  if (event.workbuddy?.imageMessage || event.workbuddy?.fileMessage) return rest;
   if (['user_message', 'assistant_message', 'reasoning', 'compaction'].includes(event.kind)) {
     // The selected content block is presented above. Preserve other block types
     // as residual evidence without repeating all message text in every detail.
@@ -281,7 +281,12 @@ async function buildWorkbuddyEventDetail(index, session, eventId, layer = 'main'
     toolRequest(detail, event, facts);
     toolResult(detail, event, facts);
   } else if (['user_message', 'assistant_message', 'reasoning', 'compaction'].includes(event.kind)) {
-    if (facts.imageMessage) {
+    if (facts.fileMessage) {
+      if (text(facts.text)) detail.timelineSections.push(...content(facts.text));
+      for (const file of (facts.files || []).slice(0, 16)) detail.timelineSections.push(kv('File reference', [['Path', file]], 'content'));
+      if (facts.fileCount > 16) detail.timelineSections.push(notice(`Showing 16 of ${facts.fileCount} file references; see Raw for the remainder.`, 'content'));
+      detail.timelineSections.push(notice('Only a file reference was recorded. File contents are not loaded.', 'content'));
+    } else if (facts.imageMessage) {
       if (text(facts.text)) detail.timelineSections.push(...content(facts.text));
       for (const image of (facts.images || []).slice(0, 16)) {
         detail.timelineSections.push(kv('Image attachment', [['Name', image.original_filename || 'Unnamed image'],
@@ -297,6 +302,12 @@ async function buildWorkbuddyEventDetail(index, session, eventId, layer = 'main'
   if (facts.inputScope === 'subagent') {
     detail.timelineSections.unshift(notice('Input to a subagent. The recorded user role does not establish human authorship.', 'content'));
     context.push(['Parent session', session.parentSessionId]);
+  }
+  if (facts.desktopOrigin) {
+    detail.timelineSections.unshift(notice('Scheduled automation input; not counted as a user message or a new user turn.', 'content'));
+    detail.inspectorSections.push(kv('Recorded automation origin', [['Source', 'workbuddy.db: sessions + automation_runs'],
+      ['Snapshot policy', 'copied_value'], ['Session', facts.desktopOrigin.sessionId], ['Automation', facts.desktopOrigin.automationId],
+      ['Run', facts.desktopOrigin.runId], ['Run kind', facts.desktopOrigin.runKind]], 'context'));
   }
   recordedMetadata(detail, raws, facts, context);
   if (event.tokenUsage?.length) detail.inspectorSections.push({ type: 'token_usage', purpose: 'context', items: event.tokenUsage });

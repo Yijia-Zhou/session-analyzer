@@ -11,6 +11,7 @@ const { createProjectQueryStoreBuilder } = require('./project-query-store');
 const { createSourceDiagnostics } = require('./source-diagnostics');
 const storage = require('./workbuddy-storage');
 const logical = require('./workbuddy-logical');
+const { readDesktopOrigins, validOrigin, originDependency } = require('./workbuddy-desktop-origin');
 const { buildWorkbuddyEventDetail } = require('./workbuddy-detail');
 
 const SOURCE_KIND = 'workbuddy';
@@ -49,7 +50,7 @@ const workbuddyQuery = createSessionQuery({ schemaVersion: CANONICAL_SCHEMA_VERS
 async function parseWorkbuddySessionArtifact(filePath, relFile, _repoRoot, signal, options = {}) {
   const snapshot = await storage.readWorkbuddySnapshot(filePath, { ...options, signal });
   const document = storage.parseWorkbuddyDocument(snapshot, relFile);
-  return logical.makeWorkbuddySession(document, relFile);
+  return logical.makeWorkbuddySession(document, relFile, options.desktopOrigin);
 }
 
 async function discoverWorkbuddyProjects({ sourceHome, signal, onDiagnostic }) {
@@ -98,13 +99,14 @@ async function buildWorkbuddyIndex({ sourceHome, repoRoot, signal, onProgress, o
       }
       if (document.torn) diagnostics.add({ code: 'WORKBUDDY_TORN_TAIL', path: file, message: 'Uncommitted final bytes were excluded from the indexed snapshot.' });
       candidateBytes += document.acceptedBytes;
-      candidates.push({ header: { id: document.id },
+      candidates.push({ header: { id: document.id, cwd: document.cwd },
         acceptedSnapshot: { acceptedBytes: document.acceptedBytes, digest: document.digest, fileIdentity: document.fileIdentity },
         // Normalize only host separators: a POSIX backslash is part of the
         // physical filename and must survive every later snapshot read.
         sourceFile: path.relative(sessionsRoot, file).split(path.sep).join('/') });
     } catch (error) { report(error, file, diagnostics.add, signal); skippedFileCount++; }
   }
+  const desktopOrigins = await readDesktopOrigins(sourceHome, candidates, signal, diagnostics.add);
   const builder = createProjectQueryStoreBuilder({ signal, presentationForEvent: workbuddyQuery.projectQueryPresentation,
     shareTextRanges: true });
   try {
@@ -120,10 +122,12 @@ async function buildWorkbuddyIndex({ sourceHome, repoRoot, signal, onProgress, o
         document = storage.parseWorkbuddyDocument(await storage.readWorkbuddySnapshot(path.resolve(sessionsRoot, sourceFile),
           { sessionsRoot, acceptedSnapshot, signal }), sourceFile);
       } catch (error) { report(error, sourceFile, diagnostics.add, signal); skippedFileCount++; continue; }
-      const nativeSessions = [logical.makeWorkbuddySession(document, sourceFile)];
+      const desktopOrigin = desktopOrigins.get(sourceFile);
+      const nativeSessions = [logical.makeWorkbuddySession(document, sourceFile, desktopOrigin)];
       const entries = [{ role: 'primary_transcript', pathIdentity: sourceFile, existence: 'present', kind: 'file',
         policy: 'accepted_prefix', acceptedBytes: document.acceptedBytes, lineCount: document.lines.length,
         digest: document.digest, directoryEntries: [], evidence: { fileIdentity: document.fileIdentity } }];
+      if (desktopOrigin) entries.push(originDependency(desktopOrigin));
       const dependencySet = { schemaVersion: 1, id: dependencyId(entries), sourceKind: SOURCE_KIND, entries };
       materializationDependencies.set(dependencySet.id, dependencySet);
       for (const session of nativeSessions) {
@@ -166,7 +170,14 @@ function validateWorkbuddyMaterializationDescriptor({ materializationContext, in
   const { sourceFile } = descriptor.payload;
   if (typeof sourceFile !== 'string' || !sourceFile || sourceFile !== indexedSession.sourceFile
       || !validSourceFile(sourceFile) || path.isAbsolute(sourceFile) || !isPathInsideOrSame(path.resolve(materializationContext.sessionsRoot, sourceFile), materializationContext.sessionsRoot)
-      || dependencySet.entries.length !== 1) throw new Error('Invalid WorkBuddy transcript descriptor');
+      || ![1, 2].includes(dependencySet.entries.length)) throw new Error('Invalid WorkBuddy transcript descriptor');
+  if (dependencySet.entries.length === 2) {
+    const originEntry = dependencySet.entries[1];
+    exactKeys(originEntry.evidence, ['origin']);
+    if (sourceFile.split('/').length !== 2
+      || !validOrigin(originEntry.evidence.origin, indexedSession.sourceSessionId, indexedSession.projectAssociation)
+      || !isDeepStrictEqual(originEntry, originDependency(originEntry.evidence.origin))) throw new Error('Invalid WorkBuddy desktop origin dependency');
+  }
   const entry = dependencySet.entries[0];
   exactKeys(entry, ['role', 'pathIdentity', 'existence', 'kind', 'policy', 'acceptedBytes', 'lineCount', 'digest', 'directoryEntries', 'evidence']);
   exactKeys(entry.evidence, ['fileIdentity']); exactKeys(entry.evidence.fileIdentity, ['device', 'inode']);
@@ -187,7 +198,7 @@ async function materializeWorkbuddySession({ materializationContext, indexedSess
   const payload = indexedSession.materializationDescriptor.payload;
   const session = await parseWorkbuddySessionArtifact(path.resolve(materializationContext.sessionsRoot, payload.sourceFile), payload.sourceFile,
     materializationContext.repoRoot, signal, { sessionsRoot: materializationContext.sessionsRoot,
-      acceptedSnapshot: accepted(dependencySet.entries[0]) });
+      acceptedSnapshot: accepted(dependencySet.entries[0]), desktopOrigin: dependencySet.entries[1]?.evidence.origin });
   if (!session || session.id !== indexedSession.id || session.rawEventCount !== indexedSession.rawEventCount || session.logicalEventCount !== indexedSession.logicalEventCount) throw storage.stale();
   return { ...session, materializationSnapshotId: indexedSession.materializationDescriptor.sourceSnapshotId };
 }

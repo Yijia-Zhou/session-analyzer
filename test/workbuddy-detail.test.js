@@ -49,6 +49,44 @@ async function detailFor(f, event) {
 const toolEvent = (f, id) => f.session.logicalEvents.find((event) => event.workbuddy?.callId === id);
 const primary = (detail) => JSON.stringify(detail.timelineSections);
 
+test('desktop file references preserve human text, metadata, one input and exact Raw without loading files', async (t) => {
+  const file = 'Z:\\synthetic\\unavailable.txt';
+  const envelope = (suffix = '') => `<system-reminder data-role="user-context">FILE_CONTEXT</system-reminder>\n<system-reminder data-role="additional-data"><attached_files>\n<file path="${file}" />\n</attached_files></system-reminder>\n<user_query>@"Z:/synthetic/unavailable.txt"${suffix}</user_query>`;
+  const f = await fixture(t, [user(envelope()), { ...user(envelope(' FILE_QUERY: summarize this.')), id: 'with-text' }]);
+  const events = f.session.logicalEvents.filter((e) => e.kind === 'user_message');
+  assert.equal(events.length, 2); assert.equal(f.session.counts.userMessages, 2); assert.equal(f.session.counts.turns, 2);
+  assert.equal(events[0].workbuddy.text, '');
+  assert.equal(events[1].workbuddy.text, 'FILE_QUERY: summarize this.');
+  assert.match(f.session.title, /unavailable.txt/); assert.doesNotMatch(f.session.title, /system-reminder/);
+  for (const event of events) {
+    const detail = await detailFor(f, event);
+    assert.match(primary(detail), /File reference.*unavailable.txt/);
+    assert.doesNotMatch(primary(detail), /FILE_CONTEXT|attached_files|user_query/);
+    assert.match(JSON.stringify(detail.inspectorSections), /FILE_CONTEXT/);
+    assert.equal((await readIndexedRawRecord(f.index, f.session, event.rawRefs[0].rawId)).raw, f.lines[event.source.line - 1]);
+  }
+  const { createHistoryService } = require('../src/history-service');
+  const service = await createHistoryService({ source: 'workbuddy', repo: f.index.repoRoot, workbuddyHome: f.index.sourceHome });
+  t.after(() => service.close());
+  assert.equal((await service.execute('search', { query: 'FILE_QUERY', kind: 'user_message' })).items.length, 1);
+});
+
+test('file-like literal text and incomplete or mismatched envelopes do not acquire attachment semantics', async (t) => {
+  for (const value of [
+    '@"Z:/synthetic/file.txt"',
+    '<system-reminder>KEEP_LITERAL</system-reminder><user_query>@"Z:/synthetic/file.txt"</user_query>',
+    '<system-reminder data-role="additional-data"><attached_files><file path="Z:/other.txt" /></attached_files></system-reminder><user_query>@"Z:/synthetic/file.txt"</user_query>',
+    '<system-reminder data-role="additional-data"><attached_files><file path="relative.txt" /></attached_files></system-reminder><user_query>@"relative.txt"</user_query>',
+    `<system-reminder data-role="additional-data"><attached_files><file path="${path.join(process.cwd(), 'relative.txt')}" /></attached_files></system-reminder><user_query>@"relative.txt" ACTUAL_TEXT</user_query>`,
+  ]) {
+    const f = await fixture(t, [user(value)]);const event = f.session.logicalEvents.find((e) => e.kind === 'user_message');
+    assert.equal(event.workbuddy.fileMessage, undefined);
+    assert.equal(event.workbuddy.text, value);
+    assert.equal(f.session.counts.userMessages, 1);
+    await detailFor(f, event);
+  }
+});
+
 test('native nested error receipts override completed delivery without interpreting lookalike flags', async (t) => {
   const f = await fixture(t, [user(),
     ...tool('deferred', 'DeferExecuteTool', { toolName: 'im_list_conversations', arguments: {} },

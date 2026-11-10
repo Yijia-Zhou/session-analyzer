@@ -4,6 +4,7 @@ const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 const { createEmptyMaterializedPresentationIndexes, INDEXED_SESSION_COUNT_FIELDS } = require('./canonical-contract');
 const { sanitizeLogicalDetailValue, redactEmbeddedDataUrls } = require('./shared/logical-detail-sanitizer');
 const { projectSearchJson } = require('./search-json');
+const { fsPathApi, normalizeFsPath } = require('./shared/fs-path');
 const string = (value) => typeof value === 'string' ? value : '';
 const object = (value) => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const safe = (value) => sanitizeLogicalDetailValue(value, { maxDepth: 24, maxNodes: 2000, maxArrayItems: 128, maxObjectEntries: 128 });
@@ -23,25 +24,26 @@ function imageReferences(record) {
   return record.content.filter((block) => object(block) && block.type === 'image_blob_ref'
     && string(block.blob_id).trim() && /^image\/[a-z0-9.+-]+$/i.test(string(block.mime)));
 }
-function imageEnvelopeQuery(text) {
-  let rest = text; let reminders = 0;
+function promptEnvelope(text) {
+  let rest = text; const contexts = [];
   // Scan consecutive wrappers without a repeated wildcard regexp: failed
   // matches on many reminders must not cause exponential backtracking.
   while (/^<system-reminder\b[^>]*>/.test(rest)) {
     const end = rest.indexOf('</system-reminder>');
     if (end < 0) return null;
+    contexts.push(rest.slice(0, end + '</system-reminder>'.length));
     rest = rest.slice(end + '</system-reminder>'.length).trimStart();
-    reminders++;
   }
-  return reminders ? rest.match(/^<user_query>([\s\S]*)<\/user_query>\s*$/)?.[1] ?? null : null;
+  const query = contexts.length ? rest.match(/^<user_query>([\s\S]*)<\/user_query>\s*$/)?.[1] : undefined;
+  return query === undefined ? null : { query, contexts };
 }
 const imageTextBlock = (block) => object(block) && ['input_text', 'text'].includes(block.type) && typeof block.text === 'string';
 function nativeImageText(record, images) {
   // Require the complete observed text + (image, absolute-path text) sequence.
   // Extra prose blocks or unknown content cannot establish this envelope.
   if (record.content.length !== 1 + 2 * images.length || !imageTextBlock(record.content[0])) return null;
-  let query = imageEnvelopeQuery(record.content[0].text);
-  if (query === null) return null;
+  let query = promptEnvelope(record.content[0].text)?.query;
+  if (query === undefined) return null;
   for (const [n, image] of images.entries()) {
     const localPath = record.content[2 + 2 * n];
     const name = string(image.original_filename);
@@ -73,6 +75,31 @@ function imageMessage(record, images) {
     if (text.trim()) texts.push(text);
   }
   return { text: texts.join('\n\n'), unmodeled };
+}
+function fileReferenceMessage(record) {
+  if (!Array.isArray(record.content) || record.content.length !== 1 || !imageTextBlock(record.content[0])) return null;
+  const envelope = promptEnvelope(record.content[0].text);
+  if (!envelope) return null;
+  const contexts = envelope.contexts.filter((value) => /^<system-reminder data-role="additional-data">/.test(value));
+  const matches = contexts.flatMap((value) => [...value.matchAll(/<attached_files>([\s\S]*?)<\/attached_files>/g)]);
+  if (matches.length !== 1) return null;
+  const files = [];
+  for (const line of matches[0][1].trim().split(/\r?\n/)) {
+    const match = line.trim().match(/^<file path="([^"<>\r\n]+)" \/>$/);
+    if (!match || /&(?!amp;|quot;|apos;|lt;|gt;)/.test(match[1])) return null;
+    const entities = { '&amp;': '&', '&quot;': '"', '&apos;': "'", '&lt;': '<', '&gt;': '>' };
+    const file = match[1].replace(/&(amp|quot|apos|lt|gt);/g, (value) => entities[value]);
+    if (!fsPathApi(file).isAbsolute(file)) return null;
+    files.push(file);
+  }
+  if (!files.length) return null;
+  let query = envelope.query.trimStart();
+  for (const file of files) {
+    const marker = query.match(/^@"([^"\r\n]+)"(?=\s|$)/);
+    if (!marker || !fsPathApi(marker[1]).isAbsolute(marker[1]) || normalizeFsPath(marker[1]) !== normalizeFsPath(file)) return null;
+    query = query.slice(marker[0].length).trimStart();
+  }
+  return { text: query.trim(), files };
 }
 function classifyMessage(record) {
   const fallback = { kind: 'protocol', startsTurn: false, titleEligible: false };
@@ -154,7 +181,7 @@ function nativeTool(row, args) {
   if (['Agent', 'SendMessage', 'TeamCreate', 'TeamDelete'].includes(name)) return { activity: 'coordination', command: '', paths: [] };
   return { activity: '', command: '', paths: [] };
 }
-function makeSession(document, sourceFile) {
+function makeSession(document, sourceFile, desktopOrigin) {
   const session = { id: `workbuddy:${identityPart(sourceFile)}`, sourceKind: 'workbuddy', sourceSessionId: document.id,
     sourceDerivedId: '', sourceClientVersion: '', projectAssociation: document.cwd, sourceFile, title: '', agentNickname: '',
     primarySessionMetaKind: '', derivedRunId: '', startedAt: '', updatedAt: '', bytes: document.acceptedBytes, lineCount: document.lines.length,
@@ -169,6 +196,13 @@ function makeSession(document, sourceFile) {
     session.parentSessionId = `workbuddy:${identityPart(`${location[0]}/${location[1]}.jsonl`)}`;
   }
   const messageClasses = document.rows.map(({ parsed }) => classifyMessage(object(parsed) ? parsed : {}));
+  // Desktop automation is corroborated by copied SQLite session/run facts,
+  // never by the text of automation instructions. Only the initial input is
+  // automatic; subsequent accepted user messages keep their recorded identity.
+  const initialInput = desktopOrigin ? document.rows.findIndex(({ parsed }) => parsed?.type === 'message' && parsed.role === 'user') : -1;
+  if (initialInput >= 0 && messageClasses[initialInput].kind === 'user_message') {
+    messageClasses[initialInput] = { kind: 'protocol', subtype: 'workbuddy_scheduled_input', startsTurn: false, titleEligible: false };
+  }
   let turnId = '';
   session.rawEvents = document.rows.map((row, index) => {
     const record = object(row.parsed) ? row.parsed : {};
@@ -229,6 +263,11 @@ function makeSession(document, sourceFile) {
     }
     const messageClass = messageClasses[i];
     if (row.type === 'message' && messageClass.kind === 'protocol') {
+      if (messageClass.subtype === 'workbuddy_scheduled_input') {
+        const event = protocol(session, raw, messageClass.subtype, 'Scheduled automation input');
+        event.workbuddy = { text: safe(textOf(row.content)), desktopOrigin: safe(desktopOrigin) };
+        session.logicalEvents.push(event); continue;
+      }
       session.logicalEvents.push(protocol(session, raw, messageClass.subtype || raw.payloadType,
         messageClass.subtype ? 'Recorded runtime message' : 'Unclassified saved message')); continue;
     }
@@ -242,6 +281,17 @@ function makeSession(document, sourceFile) {
           preview: errorText, searchText: redactEmbeddedDataUrls(errorText), workbuddy: { text: safe(errorText) },
         }));
         else session.logicalEvents.push(protocol(session, raw));
+        continue;
+      }
+      const fileMessage = messageClass.kind === 'user_message' ? fileReferenceMessage(row) : null;
+      if (fileMessage) {
+        const text = redactEmbeddedDataUrls(fileMessage.text);
+        const attachmentText = fileMessage.files.map((file) => `File: ${fsPathApi(file).basename(file)}`).join('\n');
+        session.logicalEvents.push(eventFor(session, raw, 'file-message', {
+          kind: 'user_message', role: 'user', preview: text || attachmentText, searchText: search(row.content),
+          workbuddy: { text: safe(text), fileMessage: true, fileCount: fileMessage.files.length, files: safe(fileMessage.files) },
+        }));
+        if (messageClass.titleEligible && !session.title) session.title = preview(text || attachmentText);
         continue;
       }
       const images = row.role === 'user' && messageClass.kind === 'user_message' ? imageReferences(row) : [];

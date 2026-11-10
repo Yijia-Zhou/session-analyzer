@@ -53,6 +53,10 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
       { type: 'image_blob_ref', blob_id: 'mixed', original_filename: 'paste.png', mime: 'image/jpeg' },
       { type: 'input_text', text: '<image_local_path>/nonexistent/paste.jpg</image_local_path>' },
     ] },
+    { id: 'file-input', type: 'message', role: 'user', content: [{ type: 'input_text',
+      text: '<system-reminder data-role="additional-data"><attached_files>\n<file path="/synthetic/WORKBUDDY_FILE.txt" />\n</attached_files></system-reminder><user_query>@"/synthetic/WORKBUDDY_FILE.txt" WORKBUDDY_FILE_TEXT: summarize this file.</user_query>' }] },
+    { id: 'file-only', type: 'message', role: 'user', content: [{ type: 'input_text',
+      text: '<system-reminder data-role="additional-data"><attached_files>\n<file path="/synthetic/WORKBUDDY_ONLY_FILE.txt" />\n</attached_files></system-reminder><user_query>@"/synthetic/WORKBUDDY_ONLY_FILE.txt"</user_query>' }] },
     { id: 'defer-call', parentId: 'image-input', type: 'function_call', callId: 'defer-1', name: 'DeferExecuteTool',
       arguments: JSON.stringify({ toolName: 'im_list_conversations', arguments: {} }) },
     { id: 'defer-result', parentId: 'defer-call', type: 'function_call_result', callId: 'defer-1', name: 'DeferExecuteTool', status: 'completed',
@@ -91,7 +95,7 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
   await page.locator('[data-main-presentation="trajectory"]').click();
   await page.waitForFunction(() => document.body.dataset.mainPresentation === 'trajectory');
   assert.match(await page.locator('#timeline').innerText(), /WORKBUDDY_FINAL|Read|example\.txt/);
-  for (const marker of ['WORKBUDDY_COMPLETED_TASK', 'WORKBUDDY_COMPACT_SUMMARY', 'WORKBUDDY_INTERNAL_CONTEXT', 'WORKBUDDY_IMAGE.png', 'WORKBUDDY_MULTI.png', 'WORKBUDDY_MIXED', 'WORKBUDDY_HEADLESS_UNAVAILABLE']) {
+  for (const marker of ['WORKBUDDY_COMPLETED_TASK', 'WORKBUDDY_COMPACT_SUMMARY', 'WORKBUDDY_INTERNAL_CONTEXT', 'WORKBUDDY_IMAGE.png', 'WORKBUDDY_MULTI.png', 'WORKBUDDY_MIXED', 'WORKBUDDY_HEADLESS_UNAVAILABLE', 'WORKBUDDY_FILE_TEXT', 'WORKBUDDY_ONLY_FILE.txt']) {
     const matches = (await service.execute('search', { query: marker, ...(marker === 'WORKBUDDY_INTERNAL_CONTEXT' ? { layer: 'protocol' } : {}) })).items;
     assert.equal(matches.length, 1);
     await page.goto(`http://127.0.0.1:${server.address().port}/#ref=${encodeURIComponent(matches[0].ref)}`);
@@ -121,6 +125,11 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
         assert.match(text, /image\/png/);
         assert.match(text, /image\/jpeg/);
       } else assert.match(text, /describe this landscape/);
+    }
+    if (['WORKBUDDY_FILE_TEXT', 'WORKBUDDY_ONLY_FILE.txt'].includes(marker)) {
+      const text = (await page.locator('#timeline article.selected').innerText()).split('Search match')[0];
+      assert.match(text, /FILE REFERENCE/); assert.doesNotMatch(text, /system-reminder|attached_files|user_query/);
+      if (marker === 'WORKBUDDY_FILE_TEXT') assert.match(text, /summarize this file/);
     }
   }
   assert.equal(await fs.readFile(file, 'utf8'), original, 'reading never rewrites native history');
@@ -202,5 +211,36 @@ test('WorkBuddy runtime user envelopes stay in Protocol while real requests and 
     assert.deepEqual(JSON.parse(await page.locator('#detail .rawRefsView pre').textContent()), rows[index]);
   }
   assert.equal(await fs.readFile(file, 'utf8'), original);
+  assert.deepEqual(errors, []);
+});
+
+test('WorkBuddy desktop scheduled input is searchable in Protocol with copied provenance and exact Raw', { timeout: 45000 }, async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'workbuddy-automation-browser-'));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const repo = path.join(home, 'project'); const directory = path.join(home, 'projects', 'synthetic');
+  await fs.mkdir(repo); await fs.mkdir(directory, { recursive: true });
+  const row = { type: 'message', id: 'automatic', role: 'user', sessionId: 'scheduled', cwd: repo, timestamp: 1794300000000,
+    content: [{ type: 'input_text', text: 'WB_SCHEDULED_INPUT: perform the recorded task.' }], providerData: { startsNewUserRequest: true } };
+  const line = JSON.stringify(row);
+  await fs.writeFile(path.join(directory, 'scheduled.jsonl'), line + '\n');
+  const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(path.join(home, 'workbuddy.db'));
+  db.exec('CREATE TABLE sessions(id TEXT PRIMARY KEY, cwd TEXT, is_background_automation INTEGER, session_settings TEXT); CREATE TABLE automation_runs(thread_id TEXT PRIMARY KEY, automation_id TEXT, source_cwd TEXT, metadata_json TEXT)');
+  db.prepare('INSERT INTO sessions VALUES (?,?,?,?)').run('scheduled', repo, 1, JSON.stringify({ conversationTags: { automationId: 'auto-1' } }));
+  db.prepare('INSERT INTO automation_runs VALUES (?,?,?,?)').run('run-1', 'auto-1', repo, JSON.stringify({ sessionId: 'scheduled', conversationId: 'scheduled', runKind: 'scheduled' })); db.close();
+  const service = await createHistoryService({ repo, source: 'workbuddy', workbuddyHome: home }); t.after(() => service.close());
+  const hits = (await service.execute('search', { query: 'WB_SCHEDULED_INPUT', layer: 'protocol' })).items; assert.equal(hits.length, 1);
+  assert.equal((await service.execute('search', { query: 'WB_SCHEDULED_INPUT', kind: 'user_message' })).items.length, 0);
+  const server = service.createViewerServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined }); t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } }); page.setDefaultTimeout(10000);
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}/#ref=${encodeURIComponent(hits[0].ref)}`);
+  await page.waitForFunction(() => document.querySelector('#timeline article.selected')?.innerText.includes('WB_SCHEDULED_INPUT'));
+  assert.match(await page.locator('#timeline article.selected').innerText(), /not counted as a user message/);
+  assert.match(await page.locator('#detail').innerText(), /copied_value/);
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('WB_SCHEDULED_INPUT'));
+  assert.match(await page.locator('#detail .rawRefsView').innerText(), /startsNewUserRequest/);
   assert.deepEqual(errors, []);
 });
