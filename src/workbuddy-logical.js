@@ -23,37 +23,53 @@ function imageReferences(record) {
   return record.content.filter((block) => object(block) && block.type === 'image_blob_ref'
     && string(block.blob_id).trim() && /^image\/[a-z0-9.+-]+$/i.test(string(block.mime)));
 }
-function imageOnlyQuery(text) {
+function imageEnvelopeQuery(text) {
   let rest = text; let reminders = 0;
   // Scan consecutive wrappers without a repeated wildcard regexp: failed
   // matches on many reminders must not cause exponential backtracking.
   while (/^<system-reminder\b[^>]*>/.test(rest)) {
     const end = rest.indexOf('</system-reminder>');
-    if (end < 0) return '';
+    if (end < 0) return null;
     rest = rest.slice(end + '</system-reminder>'.length).trimStart();
     reminders++;
   }
-  return reminders ? (rest.match(/^<user_query>([\s\S]*)<\/user_query>\s*$/)?.[1] || '').trim() : '';
+  return reminders ? rest.match(/^<user_query>([\s\S]*)<\/user_query>\s*$/)?.[1] ?? null : null;
+}
+const imageTextBlock = (block) => object(block) && ['input_text', 'text'].includes(block.type) && typeof block.text === 'string';
+function nativeImageText(record, images) {
+  // Require the complete observed text + (image, absolute-path text) sequence.
+  // Extra prose blocks or unknown content cannot establish this envelope.
+  if (record.content.length !== 1 + 2 * images.length || !imageTextBlock(record.content[0])) return null;
+  let query = imageEnvelopeQuery(record.content[0].text);
+  if (query === null) return null;
+  for (const [n, image] of images.entries()) {
+    const localPath = record.content[2 + 2 * n];
+    const name = string(image.original_filename);
+    if (record.content[1 + 2 * n] !== image || !name.trim() || /["\r\n]/.test(name)
+      || !imageTextBlock(localPath)
+      || !/^<image_local_path>(?:[a-z]:[\\/]|\/)[^<>\r\n]+<\/image_local_path>\s*$/i.test(localPath.text)) return null;
+    query = query.trimStart();
+    const prefix = `@image#${n + 1}:`;
+    const marker = [`${prefix}"${name}"`, `${prefix}${name}`].find((value) => query.startsWith(value)
+      && (query.length === value.length || /\s/.test(query[value.length])));
+    if (!marker) return null;
+    query = query.slice(marker.length);
+  }
+  // Only the verified leading markers are removed. User query text, including
+  // literal markup, is retained. Clipboard and blob paths need not be equal.
+  return query.trim();
 }
 function imageMessage(record, images) {
+  const nativeText = nativeImageText(record, images);
+  if (nativeText !== null) return { text: nativeText, unmodeled: [] };
   const texts = []; const unmodeled = [];
   const imageSet = new Set(images);
-  const [first, image, last] = record.content;
-  const isText = (block) => object(block) && ['input_text', 'text'].includes(block.type) && typeof block.text === 'string';
-  // The desktop capture has exactly these three blocks. Extra prose, unknown
-  // blocks and missing names cannot establish an image-only wrapper. Clipboard
-  // and blob paths are different native references; do not assert equality.
-  const nativeImageOnlyEnvelope = record.content.length === 3 && images.length === 1 && imageSet.has(image)
-    && isText(first) && isText(last) && string(image.original_filename).trim()
-    && imageOnlyQuery(first.text) === `@image#1:${image.original_filename}`
-    && /^<image_local_path>(?:[a-z]:[\\/]|\/)[^<>\r\n]+<\/image_local_path>\s*$/i.test(last.text);
   for (const [index, block] of record.content.entries()) {
     if (imageSet.has(block)) continue;
-    if (!isText(block)) {
+    if (!imageTextBlock(block)) {
       unmodeled.push(index); continue;
     }
     const text = block.text;
-    if (nativeImageOnlyEnvelope) continue;
     if (text.trim()) texts.push(text);
   }
   return { text: texts.join('\n\n'), unmodeled };

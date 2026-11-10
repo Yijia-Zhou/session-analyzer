@@ -132,6 +132,63 @@ test('reference-only and mixed image messages preserve text, bounded metadata an
   assert.ok(f.session.logicalEvents.some((event) => event.layer === 'protocol' && event.source.line === 4));
 });
 
+test('uploaded image pairs and pasted image queries unwrap only complete native envelopes', async (t) => {
+  const envelope = (query) => ({ type: 'input_text', text: `<system-reminder>HIDDEN_NATIVE_CONTEXT</system-reminder><user_query>${query}</user_query>` });
+  const localPath = { type: 'input_text', text: '<image_local_path>C:\\synthetic\\clipboard.jpg</image_local_path>' };
+  const first = imageRef({ original_filename: '上传 图片.png' });
+  const second = imageRef({ blob_id: 'second', original_filename: 'second.png', mime: 'image/jpeg' });
+  const query = 'Describe the trees; keep <image_local_path>LITERAL_TEXT</image_local_path>.';
+  const f = await fixture(t, [
+    { ...user(), content: [envelope('@image#1:"上传 图片.png" @image#2:"second.png"'), first, localPath, second, localPath] },
+    { ...user(), id: 'pasted', content: [envelope(`@image#1:SYNTHETIC_IMAGE.png ${query}`), imageRef(), localPath] },
+  ]);
+  const events = f.session.logicalEvents.filter((event) => event.kind === 'user_message');
+  assert.equal(events.length, 2);
+  assert.equal(f.session.counts.userMessages, 2);
+  assert.equal(f.session.counts.turns, 2);
+  assert.deepEqual(events.map((event) => event.workbuddy.imageCount), [2, 1]);
+  assert.equal(events[0].workbuddy.text, '');
+  assert.equal(events[1].workbuddy.text, query);
+  assert.match(f.session.title, /上传 图片.png/);
+  for (const event of events) {
+    const detail = await detailFor(f, event);
+    assert.doesNotMatch(primary(detail), /HIDDEN_NATIVE_CONTEXT|clipboard.jpg|@image#/);
+    assert.match(JSON.stringify(detail.inspectorSections), /HIDDEN_NATIVE_CONTEXT/);
+    assert.equal((await readIndexedRawRecord(f.index, f.session, event.rawRefs[0].rawId)).raw, f.lines[event.rawRefs[0].line - 1]);
+  }
+  const pair = await detailFor(f, events[0]);
+  assert.equal(pair.timelineSections.filter((section) => section.title === 'Image attachment').length, 2);
+  assert.match(primary(pair), /image\/jpeg/, 'recorded MIME wins over filename extension');
+  assert.match(primary(await detailFor(f, events[1])), /LITERAL_TEXT/);
+  const { createHistoryService } = require('../src/history-service');
+  const service = await createHistoryService({ source: 'workbuddy', repo: f.index.repoRoot, workbuddyHome: f.index.sourceHome });
+  t.after(() => service.close());
+  for (const [term, event] of [['上传 图片.png', events[0]], ['second.png', events[0]], ['Describe the trees', events[1]]]) {
+    const hits = (await service.execute('search', { query: term, layer: 'main' })).items;
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].eventId, event.id);
+  }
+});
+
+test('incomplete image sequences and mismatched marker boundaries retain original text', async (t) => {
+  const image = imageRef();
+  const localPath = { type: 'input_text', text: '<image_local_path>/synthetic/KEEP_PATH.png</image_local_path>' };
+  for (const [query, tail] of [
+    ['@image#1:SYNTHETIC_IMAGE.png.extra text', [image, localPath]],
+    ['@image#2:SYNTHETIC_IMAGE.png', [image, localPath]],
+    ['@image#1:SYNTHETIC_IMAGE.png', [image]],
+    ['@image#1:SYNTHETIC_IMAGE.png @image#2:wrong.png', [image, localPath, imageRef({ blob_id: 'second' }), localPath]],
+    ['@image#1:SYNTHETIC_IMAGE.png @image#2:SYNTHETIC_IMAGE.png', [image, imageRef({ blob_id: 'second' }), localPath, localPath]],
+  ]) {
+    const f = await fixture(t, [{ ...user(), content: [
+      { type: 'input_text', text: `<system-reminder>KEEP_CONTEXT</system-reminder><user_query>${query}</user_query>` }, ...tail,
+    ] }]);
+    const event = f.session.logicalEvents.find((item) => item.kind === 'user_message');
+    assert.equal(f.session.counts.userMessages, 1);
+    assert.match(primary(await detailFor(f, event)), /KEEP_CONTEXT/);
+  }
+});
+
 test('malformed image references stay Protocol while uncorroborated literal envelopes remain readable', async (t) => {
   for (const ref of [imageRef({ blob_id: '' }), imageRef({ mime: 'text/plain' }), imageRef({ blob_id: 7 })]) {
     const f = await fixture(t, [{ ...user(), content: [ref] }]);

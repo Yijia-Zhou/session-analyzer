@@ -41,6 +41,18 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
       { type: 'image_blob_ref', blob_id: 'synthetic-blob', original_filename: 'WORKBUDDY_IMAGE.png', mime: 'image/png', size: 123, blob_path: '/nonexistent/image.png' },
       { type: 'input_text', text: '<image_local_path>/nonexistent/image.png</image_local_path>' },
     ] },
+    { id: 'multi-image-input', type: 'message', role: 'user', content: [
+      { type: 'input_text', text: '<system-reminder>HIDDEN_MULTI_CONTEXT</system-reminder><user_query>@image#1:"WORKBUDDY_MULTI.png" @image#2:"second image.png"</user_query>' },
+      { type: 'image_blob_ref', blob_id: 'multi-1', original_filename: 'WORKBUDDY_MULTI.png', mime: 'image/png' },
+      { type: 'input_text', text: '<image_local_path>/nonexistent/first.png</image_local_path>' },
+      { type: 'image_blob_ref', blob_id: 'multi-2', original_filename: 'second image.png', mime: 'image/jpeg' },
+      { type: 'input_text', text: '<image_local_path>/nonexistent/second.jpg</image_local_path>' },
+    ] },
+    { id: 'mixed-image-input', type: 'message', role: 'user', content: [
+      { type: 'input_text', text: '<system-reminder>HIDDEN_MIXED_CONTEXT</system-reminder><user_query>@image#1:paste.png WORKBUDDY_MIXED: describe this landscape.</user_query>' },
+      { type: 'image_blob_ref', blob_id: 'mixed', original_filename: 'paste.png', mime: 'image/jpeg' },
+      { type: 'input_text', text: '<image_local_path>/nonexistent/paste.jpg</image_local_path>' },
+    ] },
     { id: 'defer-call', parentId: 'image-input', type: 'function_call', callId: 'defer-1', name: 'DeferExecuteTool',
       arguments: JSON.stringify({ toolName: 'im_list_conversations', arguments: {} }) },
     { id: 'defer-result', parentId: 'defer-call', type: 'function_call_result', callId: 'defer-1', name: 'DeferExecuteTool', status: 'completed',
@@ -79,7 +91,7 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
   await page.locator('[data-main-presentation="trajectory"]').click();
   await page.waitForFunction(() => document.body.dataset.mainPresentation === 'trajectory');
   assert.match(await page.locator('#timeline').innerText(), /WORKBUDDY_FINAL|Read|example\.txt/);
-  for (const marker of ['WORKBUDDY_COMPLETED_TASK', 'WORKBUDDY_COMPACT_SUMMARY', 'WORKBUDDY_INTERNAL_CONTEXT', 'WORKBUDDY_IMAGE.png', 'WORKBUDDY_HEADLESS_UNAVAILABLE']) {
+  for (const marker of ['WORKBUDDY_COMPLETED_TASK', 'WORKBUDDY_COMPACT_SUMMARY', 'WORKBUDDY_INTERNAL_CONTEXT', 'WORKBUDDY_IMAGE.png', 'WORKBUDDY_MULTI.png', 'WORKBUDDY_MIXED', 'WORKBUDDY_HEADLESS_UNAVAILABLE']) {
     const matches = (await service.execute('search', { query: marker, ...(marker === 'WORKBUDDY_INTERNAL_CONTEXT' ? { layer: 'protocol' } : {}) })).items;
     assert.equal(matches.length, 1);
     await page.goto(`http://127.0.0.1:${server.address().port}/#ref=${encodeURIComponent(matches[0].ref)}`);
@@ -100,6 +112,15 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
     if (marker === 'WORKBUDDY_HEADLESS_UNAVAILABLE') {
       assert.equal(matches[0].status, 'failed');
       assert.match(await page.locator('#timeline article.selected').innerText(), /im_list_conversations/);
+    }
+    if (['WORKBUDDY_MULTI.png', 'WORKBUDDY_MIXED'].includes(marker)) {
+      const text = (await page.locator('#timeline article.selected').innerText()).split('Search match')[0];
+      assert.doesNotMatch(text, /HIDDEN_MULTI_CONTEXT|HIDDEN_MIXED_CONTEXT|image_local_path|@image#/);
+      if (marker === 'WORKBUDDY_MULTI.png') {
+        assert.match(text, /second image.png/);
+        assert.match(text, /image\/png/);
+        assert.match(text, /image\/jpeg/);
+      } else assert.match(text, /describe this landscape/);
     }
   }
   assert.equal(await fs.readFile(file, 'utf8'), original, 'reading never rewrites native history');
