@@ -222,16 +222,20 @@ test('duplicate physical session names cannot borrow a unique desktop origin', a
 test('WAL capture preserves committed WAL evidence without creating or changing source side files', async (t) => {
   for (const live of [false, true]) {
     const f = await fixture(t, { flag: 0 }); const writer = new DatabaseSync(f.dbFile);
-    writer.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; UPDATE sessions SET is_background_automation=1');
-    if (!live) writer.close();
-    t.after(() => { if (live) writer.close(); });
-    const namesBefore = (await fs.readdir(f.home)).sort();
-    const captured = new Map();
-    for (const name of namesBefore.filter(n => n.startsWith('workbuddy.db'))) captured.set(name, await fs.readFile(path.join(f.home, name)));
-    const index = await indexFor(t, f);
-    assert.equal(index.sourceDiagnostics.totalCount, 0);
-    assert.equal(index.sessions[0].counts.userMessages, 1, 'committed WAL metadata is included');
-    assert.deepEqual((await fs.readdir(f.home)).sort(), namesBefore, 'source directory members are unchanged');
-    for (const [name, bytes] of captured) assert.deepEqual(await fs.readFile(path.join(f.home, name)), bytes, name);
+    let writerOpen = true;
+    try {
+      writer.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; UPDATE sessions SET is_background_automation=1');
+      if (!live) { writer.close(); writerOpen = false; }
+      const namesBefore = (await fs.readdir(f.home)).sort();
+      const captured = new Map();
+      for (const name of namesBefore.filter(n => n.startsWith('workbuddy.db'))) captured.set(name, await fs.readFile(path.join(f.home, name)));
+      const index = await indexFor(t, f);
+      assert.equal(index.sourceDiagnostics.totalCount, 0);
+      assert.equal(index.sessions[0].counts.userMessages, 1, 'committed WAL metadata is included');
+      assert.deepEqual((await fs.readdir(f.home)).sort(), namesBefore, 'source directory members are unchanged');
+      for (const [name, bytes] of captured) assert.deepEqual(await fs.readFile(path.join(f.home, name)), bytes, name);
+    } finally {
+      if (writerOpen) writer.close();
+    }
   }
 });
