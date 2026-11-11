@@ -1,12 +1,13 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { buildWorkbuddyIndex, workbuddyAdapter } = require('../src/workbuddy');
-const { readDesktopOrigins } = require('../src/workbuddy-desktop-origin');
+const { readDesktopOrigins, validOrigin } = require('../src/workbuddy-desktop-origin');
 const { materializeSessionForIndex, validateIndexOwnershipForCommit, buildEventDetailForSession, readIndexedRawRecord } = require('../src/source-adapters');
 const { disposeIndexResources } = require('../src/index-resources');
 const { validateLogicalDetailEnvelope, validateStructuredLogicalDetailDto } = require('../src/shared/logical-detail-contract');
@@ -105,6 +106,145 @@ test('missing, ambiguous, mismatched and malformed desktop provenance never crea
     const session = await materializeSessionForIndex(index, index.sessions[0]);
     assert.ok(session.logicalEvents.every(e => e.subtype !== 'workbuddy_scheduled_input'));
   }
+});
+
+async function assertCwdScenarios(t, scenarios) {
+  const script = `
+    const { buildWorkbuddyIndex } = require(process.argv[1]);
+    const { validateIndexOwnershipForCommit, materializeSessionForIndex, readIndexedRawRecord } = require(process.argv[2]);
+    const { disposeIndexResources } = require(process.argv[3]);
+    (async () => {
+      const index = await buildWorkbuddyIndex({ sourceHome: process.argv[4], repoRoot: process.argv[5] });
+      try {
+        await validateIndexOwnershipForCommit(index);
+        const session = await materializeSessionForIndex(index, index.sessions[0]);
+        const first = session.logicalEvents.find((event) => event.source.line === 1
+          && (event.kind === 'user_message' || event.subtype === 'workbuddy_scheduled_input'));
+        if (!first) throw new Error('Initial input is missing');
+        const raw = await readIndexedRawRecord(index, session, first.rawRefs[0].rawId);
+        process.stdout.write(JSON.stringify({
+          userMessages: session.counts.userMessages, turns: session.counts.turns, title: session.title,
+          first: { kind: first.kind, layer: first.layer, subtype: first.subtype, turnId: first.turnId },
+          diagnostics: index.sourceDiagnostics.counts, raw: raw.raw,
+        }));
+      } finally { await disposeIndexResources(index); }
+    })().catch((error) => { console.error(error); process.exitCode = 1; });
+  `;
+  for (const options of scenarios) {
+    const f = await fixture(t, options);
+    if (options.rootRelativeRun || options.rootRelativeSession || options.rootRelativeTranscript) {
+      const rootRelative = f.repo.replace(/^[A-Za-z]:/, '');
+      assert.notEqual(rootRelative, f.repo, 'Windows fixture must use a drive-qualified path');
+      if (options.rootRelativeTranscript) {
+        f.lines = f.lines.map((line) => JSON.stringify({ ...JSON.parse(line), cwd: rootRelative }));
+        await fs.writeFile(f.file, f.lines.join('\n') + '\n');
+      } else {
+        const db = new DatabaseSync(f.dbFile);
+        try {
+          db.prepare(options.rootRelativeRun ? 'UPDATE automation_runs SET source_cwd = ?' : 'UPDATE sessions SET cwd = ?').run(rootRelative);
+        } finally { db.close(); }
+      }
+    }
+    const beforeDb = await fs.readFile(f.dbFile); const beforeJsonl = await fs.readFile(f.file);
+    const results = [f.repo, f.home].map((cwd) => {
+      const child = spawnSync(process.execPath, ['--no-warnings', '-e', script,
+        require.resolve('../src/workbuddy'), require.resolve('../src/source-adapters'),
+        require.resolve('../src/index-resources'), f.home, f.repo], { cwd, encoding: 'utf8', timeout: 15000 });
+      assert.ifError(child.error);
+      assert.equal(child.status, 0, child.stderr);
+      return JSON.parse(child.stdout);
+    });
+    const automatic = Object.keys(options).length === 0;
+    const expected = {
+      userMessages: automatic ? 1 : 2, turns: automatic ? 1 : 2,
+      title: automatic ? 'HUMAN_FOLLOWUP' : 'AUTOMATIC_INPUT_MARKER',
+      first: automatic
+        ? { kind: 'protocol', layer: 'protocol', subtype: 'workbuddy_scheduled_input', turnId: '' }
+        : { kind: 'user_message', layer: 'main', subtype: '', turnId: 'initial' },
+      diagnostics: automatic ? {} : { WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED: 1 }, raw: f.lines[0],
+    };
+    for (const result of results) assert.deepEqual(result, expected, JSON.stringify(options));
+    assert.deepEqual(await fs.readFile(f.dbFile), beforeDb);
+    assert.deepEqual(await fs.readFile(f.file), beforeJsonl);
+  }
+}
+
+test('desktop run working directories require absolute evidence independent of process cwd', async (t) => {
+  await assertCwdScenarios(t, [{ runCwd: '.' }, { runCwd: path.join('..', 'project') }, { runCwd: 'C:project' },
+    { sessionCwd: '.' }, { sessionCwd: path.join('..', 'project') }, { sessionCwd: 'C:project' }, {}]);
+});
+
+test('Windows root-relative desktop paths do not establish origin', async (t) => {
+  if (process.platform !== 'win32') return t.skip('Windows path and working-drive behavior');
+  if (!/^[A-Za-z]:[\\/]/.test(os.tmpdir())) return t.skip('A drive-qualified temporary directory is required');
+  await assertCwdScenarios(t, [{ rootRelativeRun: true }, { rootRelativeSession: true }, { rootRelativeTranscript: true }]);
+});
+
+test('desktop origin paths must be fully qualified across path flavors', () => {
+  for (const [cwd, accepted] of [['/synthetic/project', true], ['C:\\project', true],
+    ['\\\\server\\share\\project', true], ['C:project', false], ['\\project', false],
+    ['\\\\server', false], ['//server', false], ['///server/share', false]]) {
+    const origin = { sessionId: 'scheduled', cwd, automationId: 'automation-1', runId: 'run-1', runKind: 'scheduled' };
+    assert.equal(Boolean(validOrigin(origin, 'scheduled', cwd)), accepted, cwd);
+  }
+  const origin = { sessionId: 'scheduled', cwd: 'C:\\project', automationId: 'automation-1', runId: 'run-1', runKind: 'scheduled' };
+  assert.equal(Boolean(validOrigin(origin, 'scheduled', '\\project')), false, 'recorded JSONL cwd must also be fully qualified');
+  const unc = { ...origin, cwd: '//server/share/project' };
+  assert.equal(Boolean(validOrigin(unc, 'scheduled', '\\\\SERVER\\SHARE\\project')), true);
+  assert.equal(Boolean(validOrigin(unc, 'scheduled', '/server/share/project')), false);
+  assert.equal(Boolean(validOrigin({ ...origin, cwd: '/server/share/project' }, 'scheduled', unc.cwd)), false);
+});
+
+test('desktop origin matches UNC spellings without conflating POSIX paths', async (t) => {
+  const f = await fixture(t);
+  const forward = '//server/share/project'; const backslash = '\\\\SERVER\\SHARE\\project';
+  const posix = '/server/share/project'; const sourceFile = 'synthetic/scheduled.jsonl';
+  for (const [candidateCwd, sessionCwd, runCwd, accepted] of [
+    [forward, backslash, forward, true], [backslash, forward, backslash, true],
+    [forward, forward, posix, false], [posix, posix, forward, false], [forward, posix, forward, false],
+  ]) {
+    const db = new DatabaseSync(f.dbFile);
+    try {
+      db.prepare('UPDATE sessions SET cwd = ?').run(sessionCwd);
+      db.prepare('UPDATE automation_runs SET source_cwd = ?').run(runCwd);
+    } finally { db.close(); }
+    const diagnostics = [];
+    const origins = await readDesktopOrigins(f.home, [{ sourceFile, header: { id: 'scheduled', cwd: candidateCwd } }],
+      undefined, (diagnostic) => diagnostics.push(diagnostic));
+    assert.equal(origins.has(sourceFile), accepted, JSON.stringify({ candidateCwd, sessionCwd, runCwd }));
+    if (accepted) {
+      assert.equal(origins.get(sourceFile).cwd, sessionCwd, 'preserve recorded cwd spelling');
+      assert.deepEqual(diagnostics, []);
+    } else assert.deepEqual(diagnostics.map((diagnostic) => diagnostic.code), ['WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED']);
+  }
+});
+
+test('UNC origin evidence survives indexing and materialization without matching POSIX lookalikes', async (t) => {
+  const f = await fixture(t);
+  const forward = '//server/share/project'; const backslash = '\\\\SERVER\\SHARE\\project';
+  const lines = f.lines.map((line) => JSON.stringify({ ...JSON.parse(line), cwd: forward }));
+  await fs.writeFile(f.file, lines.join('\n') + '\n');
+  const db = new DatabaseSync(f.dbFile);
+  try {
+    db.prepare('UPDATE sessions SET cwd = ?').run(backslash);
+    db.prepare('UPDATE automation_runs SET source_cwd = ?').run(forward);
+  } finally { db.close(); }
+  const index = await buildWorkbuddyIndex({ sourceHome: f.home, repoRoot: forward });
+  t.after(() => disposeIndexResources(index)); await validateIndexOwnershipForCommit(index);
+  const session = await materializeSessionForIndex(index, index.sessions[0]);
+  assert.equal(session.counts.userMessages, 1);
+  assert.equal(index.sourceDiagnostics.totalCount, 0);
+  const event = session.logicalEvents.find((item) => item.subtype === 'workbuddy_scheduled_input');
+  assert.ok(event);
+  assert.equal((await readIndexedRawRecord(index, session, event.rawRefs[0].rawId)).raw, lines[0]);
+
+  const changed = new DatabaseSync(f.dbFile);
+  try { changed.prepare('UPDATE automation_runs SET source_cwd = ?').run('/server/share/project'); }
+  finally { changed.close(); }
+  const rebuilt = await buildWorkbuddyIndex({ sourceHome: f.home, repoRoot: forward });
+  t.after(() => disposeIndexResources(rebuilt)); await validateIndexOwnershipForCommit(rebuilt);
+  assert.equal(rebuilt.sessions[0].counts.userMessages, 2);
+  assert.equal(rebuilt.sourceDiagnostics.counts.WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED, 1);
 });
 
 test('recurring automation history does not hide its current scheduled run or other origins', async (t) => {

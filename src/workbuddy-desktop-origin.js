@@ -7,16 +7,34 @@ const { constants } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { setImmediate: yieldImmediate } = require('node:timers/promises');
-const { normalizeFsPath, isPathInsideOrSame, fsPathApi } = require('./shared/fs-path');
+const { isPathInsideOrSame, fsPathApi } = require('./shared/fs-path');
 const storage = require('./workbuddy-storage');
 const scalar = (value) => typeof value === 'string' && value.length > 0 && value.length <= 4096;
+function recordedPathIdentity(value) {
+  if (typeof value !== 'string' || !value) return '';
+  // Treat both slash spellings of a UNC path as Windows paths. The shared
+  // path helper otherwise treats a forward-slash UNC as a POSIX path.
+  const api = /^[\\/]{2}/.test(value) ? path.win32 : fsPathApi(value);
+  if (!api.isAbsolute(value)) return '';
+  // Windows root-relative paths without a drive still borrow the process's
+  // current drive even though path.win32.isAbsolute returns true.
+  if (api === path.win32) {
+    const root = api.parse(value).root.replace(/\//g, '\\');
+    if (!/^[A-Za-z]:\\/.test(root) && !/^\\\\[^\\]+\\[^\\]+/.test(root)) return '';
+    return `windows:${api.resolve(value).toLowerCase()}`;
+  }
+  return `posix:${api.resolve(value)}`;
+}
+function sameRecordedPath(left, right) {
+  const identity = recordedPathIdentity(left);
+  return Boolean(identity) && identity === recordedPathIdentity(right);
+}
 function validOrigin(value, sessionId, cwd) {
   return value && Object.getPrototypeOf(value) === Object.prototype
     && Object.keys(value).sort().join(',') === 'automationId,cwd,runId,runKind,sessionId'
     && ['sessionId', 'cwd', 'automationId', 'runId'].every((key) => scalar(value[key]))
     && value.runKind === 'scheduled' && value.sessionId === sessionId
-    && fsPathApi(value.cwd).isAbsolute(value.cwd)
-    && normalizeFsPath(value.cwd) === normalizeFsPath(cwd);
+    && sameRecordedPath(value.cwd, cwd);
 }
 function json(value) { try { return JSON.parse(value); } catch { return null; } }
 const sameFile = (a, b) => ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every((key) => a[key] === b[key]);
@@ -115,7 +133,7 @@ async function readDesktopOrigins(sourceHome, candidates, signal, onDiagnostic) 
       const tags = json(session.settings)?.conversationTags;
       if (session.is_background_automation !== 1 || session.id !== candidate.header.id
         || identities.get(candidate.header.id) !== 1 || !scalar(tags?.automationId)
-        || normalizeFsPath(session.cwd) !== normalizeFsPath(candidate.header.cwd)) { unverified(); continue; }
+        || !scalar(session.cwd) || !sameRecordedPath(session.cwd, candidate.header.cwd)) { unverified(); continue; }
       if (!groups.has(tags.automationId)) groups.set(tags.automationId, new Map());
       groups.get(tags.automationId).set(session.id, { candidate, session, automationId: tags.automationId,
         correlatedRuns: 0, matchingRuns: 0, runId: null, unverified });
@@ -128,7 +146,7 @@ async function readDesktopOrigins(sourceHome, candidates, signal, onDiagnostic) 
       const meta = json(run.metadata); const target = group.get(meta?.sessionId);
       if (!target || meta?.runKind !== 'scheduled' || meta.conversationId !== target.session.id) continue;
       target.correlatedRuns++;
-      if (target.correlatedRuns <= 100 && normalizeFsPath(run.source_cwd) === normalizeFsPath(target.session.cwd)) {
+      if (target.correlatedRuns <= 100 && sameRecordedPath(run.source_cwd, target.session.cwd)) {
         target.matchingRuns++; target.runId = run.thread_id;
       }
     }
