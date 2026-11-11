@@ -85,23 +85,49 @@ function parseWorkbuddyDocument(snapshot, sourceFile) {
   return { ...snapshot, rows, id, cwd };
 }
 
-async function collectWorkbuddyFiles(root, signal, onDiagnostic) {
+async function readWorkbuddyDirectoryState(directory) {
+  const stat = await fsp.stat(directory, { bigint: true });
+  if (!stat.isDirectory()) {
+    const error = new Error('WorkBuddy project container is not a directory'); error.code = 'ENOTDIR'; throw error;
+  }
+  return [stat.dev, stat.ino, stat.mtimeNs, stat.ctimeNs].map(String).join(':');
+}
+
+async function collectWorkbuddyFiles(root, signal, onDiagnostic, { onMainScanIncomplete, onMainDirectoryState } = {}) {
   const files = [];
-  async function readDirectory(dir) {
-    abort(signal);
-    try { return await fsp.readdir(dir, { withFileTypes: true }); } catch (error) {
+  async function captureState(dir) {
+    try { return await readWorkbuddyDirectoryState(dir); } catch (error) {
+      abort(signal);
       if (!['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EIO', 'ELOOP'].includes(error.code)) throw error;
+      onMainScanIncomplete?.(); return null;
+    }
+  }
+  async function readDirectory(dir, mainSessionDirectory = false) {
+    abort(signal);
+    const capture = mainSessionDirectory && onMainDirectoryState;
+    const before = capture ? await captureState(dir) : null;
+    try {
+      const entries = await fsp.readdir(dir, { withFileTypes: true });
+      if (capture) {
+        const after = await captureState(dir);
+        if (before && after && before === after) onMainDirectoryState(dir, after);
+        else onMainScanIncomplete?.();
+      }
+      return entries;
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EIO', 'ELOOP'].includes(error.code)) throw error;
+      if (mainSessionDirectory) onMainScanIncomplete?.();
       onDiagnostic?.({ code: dir === root ? (error.code === 'ENOENT' ? 'SOURCE_ROOT_NOT_FOUND'
         : error.code === 'ENOTDIR' ? 'SOURCE_ROOT_NOT_DIRECTORY' : 'SOURCE_ROOT_UNREADABLE')
         : 'SOURCE_ARTIFACT_UNREADABLE', path: dir, message: error.message });
       return [];
     }
   }
-  const containers = (await readDirectory(root)).sort((a, b) => a.name.localeCompare(b.name));
+  const containers = (await readDirectory(root, true)).sort((a, b) => a.name.localeCompare(b.name));
   for (const container of containers) {
     if (!container.isDirectory()) continue;
     const directory = path.join(root, container.name);
-    for (const entry of (await readDirectory(directory)).sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const entry of (await readDirectory(directory, true)).sort((a, b) => a.name.localeCompare(b.name))) {
       if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(path.join(directory, entry.name));
       else if (entry.isDirectory()) {
         // Native Agent-tool descendants live in this exact owned layout.
@@ -119,4 +145,5 @@ async function collectWorkbuddyFiles(root, signal, onDiagnostic) {
   return files;
 }
 
-module.exports = { abort, collectWorkbuddyFiles, failure, hash, parseWorkbuddyDocument, readWorkbuddySnapshot, stale };
+module.exports = { abort, collectWorkbuddyFiles, failure, hash, parseWorkbuddyDocument,
+  readWorkbuddyDirectoryState, readWorkbuddySnapshot, stale };

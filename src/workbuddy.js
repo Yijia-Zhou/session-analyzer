@@ -6,11 +6,13 @@ const fsp = require('node:fs/promises');
 const { isDeepStrictEqual } = require('node:util');
 const { isPathInsideOrSame, resolveFsPath } = require('./shared/fs-path');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
+const i18n = require('./shared/i18n');
 const { createSessionQuery } = require('./session-query');
 const { createProjectQueryStoreBuilder } = require('./project-query-store');
 const { createSourceDiagnostics } = require('./source-diagnostics');
 const storage = require('./workbuddy-storage');
 const logical = require('./workbuddy-logical');
+const { readDesktopOrigins, validOrigin, originDependency } = require('./workbuddy-desktop-origin');
 const { buildWorkbuddyEventDetail } = require('./workbuddy-detail');
 
 const SOURCE_KIND = 'workbuddy';
@@ -32,7 +34,7 @@ function projectCarried(session) {
   const { rawEvents, logicalEvents, analysis, presentationIndexes, ...carried } = session;
   return structuredClone(carried);
 }
-function catalog(sessions) {
+function catalog(sessions, options = {}) {
   const maps = { main: new Map(), protocol: new Map(), raw: new Map() };
   for (const session of sessions) {
     for (const event of session.logicalEvents) {
@@ -42,14 +44,15 @@ function catalog(sessions) {
     for (const raw of session.rawEvents) maps.raw.set(raw.payloadType, (maps.raw.get(raw.payloadType) || 0) + 1);
   }
   return Object.fromEntries(Object.entries(maps).map(([layer, map]) => [layer,
-    [...map].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value, label: value, count }))]));
+    [...map].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value,
+      label: layer === 'protocol' && value === 'workbuddy_scheduled_input' ? i18n.eventKindLabel(value, options.locale) : value, count }))]));
 }
 const workbuddyQuery = createSessionQuery({ schemaVersion: CANONICAL_SCHEMA_VERSION, rawRef: logical.workbuddyRawRef, eventKindCatalog: catalog });
 
 async function parseWorkbuddySessionArtifact(filePath, relFile, _repoRoot, signal, options = {}) {
   const snapshot = await storage.readWorkbuddySnapshot(filePath, { ...options, signal });
   const document = storage.parseWorkbuddyDocument(snapshot, relFile);
-  return logical.makeWorkbuddySession(document, relFile);
+  return logical.makeWorkbuddySession(document, relFile, options.desktopOrigin);
 }
 
 async function discoverWorkbuddyProjects({ sourceHome, signal, onDiagnostic }) {
@@ -85,25 +88,53 @@ async function buildWorkbuddyIndex({ sourceHome, repoRoot, signal, onProgress, o
   const diagnostics = createSourceDiagnostics();
   const addDiagnostic = diagnostics.add;
   diagnostics.add = (value) => { addDiagnostic(value); onDiagnostic?.(value); };
-  const files = await storage.collectWorkbuddyFiles(sessionsRoot, signal, diagnostics.add);
-  const candidates = [];
+  let mainScanComplete = true; const mainDirectoryStates = new Map();
+  const files = await storage.collectWorkbuddyFiles(sessionsRoot, signal, diagnostics.add,
+    { onMainScanIncomplete: () => { mainScanComplete = false; },
+      onMainDirectoryState: (directory, state) => mainDirectoryStates.set(directory, state) });
+  const candidates = []; const physicalIdentities = new Map();
   let skippedFileCount = 0; let unknownFileCount = 0; let candidateBytes = 0;
   for (const file of files) {
     storage.abort(signal);
+    const relative = path.relative(sessionsRoot, file);
+    const sourceFile = relative.split(path.sep).join('/');
+    if (sourceFile.split('/').length === 2) {
+      const id = path.basename(file, '.jsonl');
+      physicalIdentities.set(id, (physicalIdentities.get(id) || 0) + 1);
+    }
     try {
-      const document = storage.parseWorkbuddyDocument(await storage.readWorkbuddySnapshot(file, { sessionsRoot, signal }), path.relative(sessionsRoot, file));
+      const document = storage.parseWorkbuddyDocument(await storage.readWorkbuddySnapshot(file, { sessionsRoot, signal }), relative);
       if (!document.cwd || !isPathInsideOrSame(resolveFsPath(document.cwd), resolvedRepo)) {
         if (!document.cwd) unknownFileCount++; else skippedFileCount++;
         continue;
       }
       if (document.torn) diagnostics.add({ code: 'WORKBUDDY_TORN_TAIL', path: file, message: 'Uncommitted final bytes were excluded from the indexed snapshot.' });
       candidateBytes += document.acceptedBytes;
-      candidates.push({ header: { id: document.id },
+      candidates.push({ header: { id: document.id, cwd: document.cwd },
         acceptedSnapshot: { acceptedBytes: document.acceptedBytes, digest: document.digest, fileIdentity: document.fileIdentity },
         // Normalize only host separators: a POSIX backslash is part of the
         // physical filename and must survive every later snapshot read.
-        sourceFile: path.relative(sessionsRoot, file).split(path.sep).join('/') });
+        sourceFile });
     } catch (error) { report(error, file, diagnostics.add, signal); skippedFileCount++; }
+  }
+  const desktopOrigins = await readDesktopOrigins(sourceHome, candidates, signal, diagnostics.add, physicalIdentities, mainScanComplete);
+  if (desktopOrigins.size) {
+    let stable = mainScanComplete;
+    for (const [directory, state] of mainDirectoryStates) {
+      storage.abort(signal);
+      try {
+        if (await storage.readWorkbuddyDirectoryState(directory) !== state) { stable = false; break; }
+      } catch (error) {
+        storage.abort(signal);
+        if (!['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EIO', 'ELOOP'].includes(error.code)) throw error;
+        diagnostics.add({ code: 'SOURCE_ARTIFACT_UNREADABLE', path: directory, message: error.message });
+        stable = false; break;
+      }
+    }
+    if (!stable) for (const { sourceFile } of candidates) {
+      if (desktopOrigins.delete(sourceFile)) diagnostics.add({ code: 'WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED', path: sourceFile,
+        message: 'Main-session directory evidence changed during capture; recorded JSONL identity is retained.' });
+    }
   }
   const builder = createProjectQueryStoreBuilder({ signal, presentationForEvent: workbuddyQuery.projectQueryPresentation,
     shareTextRanges: true });
@@ -120,10 +151,12 @@ async function buildWorkbuddyIndex({ sourceHome, repoRoot, signal, onProgress, o
         document = storage.parseWorkbuddyDocument(await storage.readWorkbuddySnapshot(path.resolve(sessionsRoot, sourceFile),
           { sessionsRoot, acceptedSnapshot, signal }), sourceFile);
       } catch (error) { report(error, sourceFile, diagnostics.add, signal); skippedFileCount++; continue; }
-      const nativeSessions = [logical.makeWorkbuddySession(document, sourceFile)];
+      const desktopOrigin = desktopOrigins.get(sourceFile);
+      const nativeSessions = [logical.makeWorkbuddySession(document, sourceFile, desktopOrigin)];
       const entries = [{ role: 'primary_transcript', pathIdentity: sourceFile, existence: 'present', kind: 'file',
         policy: 'accepted_prefix', acceptedBytes: document.acceptedBytes, lineCount: document.lines.length,
         digest: document.digest, directoryEntries: [], evidence: { fileIdentity: document.fileIdentity } }];
+      if (desktopOrigin) entries.push(originDependency(desktopOrigin));
       const dependencySet = { schemaVersion: 1, id: dependencyId(entries), sourceKind: SOURCE_KIND, entries };
       materializationDependencies.set(dependencySet.id, dependencySet);
       for (const session of nativeSessions) {
@@ -166,7 +199,14 @@ function validateWorkbuddyMaterializationDescriptor({ materializationContext, in
   const { sourceFile } = descriptor.payload;
   if (typeof sourceFile !== 'string' || !sourceFile || sourceFile !== indexedSession.sourceFile
       || !validSourceFile(sourceFile) || path.isAbsolute(sourceFile) || !isPathInsideOrSame(path.resolve(materializationContext.sessionsRoot, sourceFile), materializationContext.sessionsRoot)
-      || dependencySet.entries.length !== 1) throw new Error('Invalid WorkBuddy transcript descriptor');
+      || ![1, 2].includes(dependencySet.entries.length)) throw new Error('Invalid WorkBuddy transcript descriptor');
+  if (dependencySet.entries.length === 2) {
+    const originEntry = dependencySet.entries[1];
+    exactKeys(originEntry.evidence, ['origin']);
+    if (sourceFile.split('/').length !== 2
+      || !validOrigin(originEntry.evidence.origin, indexedSession.sourceSessionId, indexedSession.projectAssociation)
+      || !isDeepStrictEqual(originEntry, originDependency(originEntry.evidence.origin))) throw new Error('Invalid WorkBuddy desktop origin dependency');
+  }
   const entry = dependencySet.entries[0];
   exactKeys(entry, ['role', 'pathIdentity', 'existence', 'kind', 'policy', 'acceptedBytes', 'lineCount', 'digest', 'directoryEntries', 'evidence']);
   exactKeys(entry.evidence, ['fileIdentity']); exactKeys(entry.evidence.fileIdentity, ['device', 'inode']);
@@ -187,7 +227,7 @@ async function materializeWorkbuddySession({ materializationContext, indexedSess
   const payload = indexedSession.materializationDescriptor.payload;
   const session = await parseWorkbuddySessionArtifact(path.resolve(materializationContext.sessionsRoot, payload.sourceFile), payload.sourceFile,
     materializationContext.repoRoot, signal, { sessionsRoot: materializationContext.sessionsRoot,
-      acceptedSnapshot: accepted(dependencySet.entries[0]) });
+      acceptedSnapshot: accepted(dependencySet.entries[0]), desktopOrigin: dependencySet.entries[1]?.evidence.origin });
   if (!session || session.id !== indexedSession.id || session.rawEventCount !== indexedSession.rawEventCount || session.logicalEventCount !== indexedSession.logicalEventCount) throw storage.stale();
   return { ...session, materializationSnapshotId: indexedSession.materializationDescriptor.sourceSnapshotId };
 }

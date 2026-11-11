@@ -98,6 +98,7 @@
     "src/opencode-logical.js",
     "src/opencode-detail.js",
     "src/workbuddy.js",
+    "src/workbuddy-desktop-origin.js",
     "src/workbuddy-storage.js",
     "src/workbuddy-logical.js",
     "src/workbuddy-detail.js",

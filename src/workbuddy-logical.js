@@ -4,6 +4,7 @@ const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 const { createEmptyMaterializedPresentationIndexes, INDEXED_SESSION_COUNT_FIELDS } = require('./canonical-contract');
 const { sanitizeLogicalDetailValue, redactEmbeddedDataUrls } = require('./shared/logical-detail-sanitizer');
 const { projectSearchJson } = require('./search-json');
+const { fsPathApi, sameRecordedPath } = require('./shared/fs-path');
 const string = (value) => typeof value === 'string' ? value : '';
 const object = (value) => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const safe = (value) => sanitizeLogicalDetailValue(value, { maxDepth: 24, maxNodes: 2000, maxArrayItems: 128, maxObjectEntries: 128 });
@@ -18,11 +19,137 @@ function textOf(value, types = ['input_text', 'output_text', 'text']) {
   const blocks = Array.isArray(value) ? value : object(value) ? [value] : [];
   return blocks.filter((block) => object(block) && types.includes(block.type) && typeof block.text === 'string').map((block) => block.text).join('\n');
 }
+function imageReferences(record) {
+  if (!Array.isArray(record.content)) return [];
+  return record.content.filter((block) => object(block) && block.type === 'image_blob_ref'
+    && string(block.blob_id).trim() && /^image\/[a-z0-9.+-]+$/i.test(string(block.mime)));
+}
+function promptEnvelope(text) {
+  let rest = text; const contexts = [];
+  // Scan consecutive wrappers without a repeated wildcard regexp: failed
+  // matches on many reminders must not cause exponential backtracking.
+  while (/^<system-reminder\b[^>]*>/.test(rest)) {
+    const end = rest.indexOf('</system-reminder>');
+    if (end < 0) return null;
+    contexts.push(rest.slice(0, end + '</system-reminder>'.length));
+    rest = rest.slice(end + '</system-reminder>'.length).trimStart();
+  }
+  const query = contexts.length ? rest.match(/^<user_query>([\s\S]*)<\/user_query>\s*$/)?.[1] : undefined;
+  return query === undefined ? null : { query, contexts };
+}
+const imageTextBlock = (block) => object(block) && ['input_text', 'text'].includes(block.type) && typeof block.text === 'string';
+function nativeImageText(record, images) {
+  // Require the complete observed text + (image, absolute-path text) sequence.
+  // Extra prose blocks or unknown content cannot establish this envelope.
+  if (record.content.length !== 1 + 2 * images.length || !imageTextBlock(record.content[0])) return null;
+  let query = promptEnvelope(record.content[0].text)?.query;
+  if (query === undefined) return null;
+  for (const [n, image] of images.entries()) {
+    const localPath = record.content[2 + 2 * n];
+    const name = string(image.original_filename);
+    if (record.content[1 + 2 * n] !== image || !name.trim() || /["\r\n]/.test(name)
+      || !imageTextBlock(localPath)
+      || !/^<image_local_path>(?:[a-z]:[\\/]|\/)[^<>\r\n]+<\/image_local_path>\s*$/i.test(localPath.text)) return null;
+    query = query.trimStart();
+    const prefix = `@image#${n + 1}:`;
+    const marker = [`${prefix}"${name}"`, `${prefix}${name}`].find((value) => query.startsWith(value)
+      && (query.length === value.length || /\s/.test(query[value.length])));
+    if (!marker) return null;
+    query = query.slice(marker.length);
+  }
+  // Only the verified leading markers are removed. User query text, including
+  // literal markup, is retained. Clipboard and blob paths need not be equal.
+  return query.trim();
+}
+function imageMessage(record, images) {
+  const nativeText = nativeImageText(record, images);
+  if (nativeText !== null) return { text: nativeText, unmodeled: [] };
+  const texts = []; const unmodeled = [];
+  const imageSet = new Set(images);
+  for (const [index, block] of record.content.entries()) {
+    if (imageSet.has(block)) continue;
+    if (!imageTextBlock(block)) {
+      unmodeled.push(index); continue;
+    }
+    const text = block.text;
+    if (text.trim()) texts.push(text);
+  }
+  return { text: texts.join('\n\n'), unmodeled };
+}
+function fileReferenceMessage(record) {
+  if (!Array.isArray(record.content) || record.content.length !== 1 || !imageTextBlock(record.content[0])) return null;
+  const envelope = promptEnvelope(record.content[0].text);
+  if (!envelope) return null;
+  const contexts = envelope.contexts.filter((value) => /^<system-reminder data-role="additional-data">/.test(value));
+  const matches = contexts.flatMap((value) => [...value.matchAll(/<attached_files>([\s\S]*?)<\/attached_files>/g)]);
+  if (matches.length !== 1) return null;
+  const files = [];
+  for (const line of matches[0][1].trim().split(/\r?\n/)) {
+    const match = line.trim().match(/^<file path="([^"<>\r\n]+)" \/>$/);
+    if (!match || /&(?!amp;|quot;|apos;|lt;|gt;)/.test(match[1])) return null;
+    const entities = { '&amp;': '&', '&quot;': '"', '&apos;': "'", '&lt;': '<', '&gt;': '>' };
+    const file = match[1].replace(/&(amp|quot|apos|lt|gt);/g, (value) => entities[value]);
+    files.push(file);
+  }
+  if (!files.length) return null;
+  let query = envelope.query.trimStart();
+  for (const file of files) {
+    const marker = query.match(/^@"([^"\r\n]+)"(?=\s|$)/);
+    if (!marker || !sameRecordedPath(marker[1], file)) return null;
+    query = query.slice(marker[0].length).trimStart();
+  }
+  return { text: query.trim(), files };
+}
+function classifyMessage(record) {
+  const fallback = { kind: 'protocol', startsTurn: false, titleEligible: false };
+  const internal = { ...fallback, subtype: 'workbuddy_internal_message' };
+  if (record.type !== 'message' || !['user', 'assistant'].includes(record.role)) return fallback;
+  if (!string(record.id) || (record.parentId !== undefined && typeof record.parentId !== 'string')) return fallback;
+  if (record.providerData !== undefined && !object(record.providerData)) return fallback;
+  const data = record.providerData || {};
+  // These are persisted identity discriminators from the pinned producer's
+  // InputItemUtils and classifyUserMessageMarkers. Unknown discriminator
+  // values stay Protocol; unrelated extension metadata does not imply identity.
+  const booleans = ['isMeta', 'isCompactInternal', 'isCompacted', 'isSummary', 'isPtlRecovery', 'isMediaBodyRecovery', 'isPtlRetryMarker'];
+  if (record.role === 'user') booleans.push('skipRun', 'isAdditionalData', 'startsNewUserRequest', '__codebuddyAttachedContext');
+  if (booleans.some((key) => data[key] !== undefined && typeof data[key] !== 'boolean')
+    || (data.compactType !== undefined && typeof data.compactType !== 'string')
+    || (data.agent !== undefined && typeof data.agent !== 'string')) return fallback;
+  if (record.role === 'user') {
+    if ((data.__codebuddyInitiator !== undefined && !['user', 'agent'].includes(data.__codebuddyInitiator))
+      || (data.__codebuddyInteractionType !== undefined && !['prompt', 'schedule', 'notification', 'teammate'].includes(data.__codebuddyInteractionType))) return fallback;
+    // Explicit runtime markers win even over startsNewUserRequest / initiator.
+    // Scheduled prompts can be external to a run without being human input.
+    if (data.teammateMessage !== undefined || data.scheduledTaskTrigger !== undefined
+      || data.goalScopeId !== undefined || data.goalStatus !== undefined
+      || data.__codebuddyInitiator === 'agent'
+      || ['schedule', 'notification', 'teammate'].includes(data.__codebuddyInteractionType)) return internal;
+  }
+  if (data.isPtlRecovery === true || data.isMediaBodyRecovery === true || data.isPtlRetryMarker === true) return internal;
+  if (data.isSummary === true && data.isCompacted === true) return { ...fallback, kind: 'compaction' };
+  if (record.role === 'user' && (data.skipRun === true || data.isAdditionalData === true || data.__codebuddyAttachedContext === true)) return internal;
+  if (data.isCompactInternal === true || data.isCompacted === true || data.isSummary === true
+    || data.compactType !== undefined || data.agent === 'compact') return internal;
+  if (data.isMeta === true && !(record.role === 'user' && data.startsNewUserRequest === true)) return { ...fallback, subtype: 'workbuddy_meta_message' };
+  const user = record.role === 'user';
+  // Unsupported content remains Protocol/Raw and cannot manufacture a turn.
+  // Validated native image references also establish supported content.
+  if (user && typeof record.content !== 'string' && !(Array.isArray(record.content)
+    && record.content.some((block) => object(block) && ['input_text', 'text'].includes(block.type) && typeof block.text === 'string'))
+    && !imageReferences(record).length) return fallback;
+  // Queued/steer input remains a user message. startsNewUserRequest controls
+  // the turn boundary independently. A meta+new-request prompt is accepted as
+  // external input here, without claiming that its author is proven human.
+  return { kind: `${record.role}_message`, startsTurn: user && data.startsNewUserRequest !== false, titleEligible: user };
+}
 function workbuddyRawRef(raw) { return { file: raw.source.file, line: raw.source.line, rawId: raw.rawId, sourceLocator: raw.sourceLocator,
   sourceRecordType: raw.recordType, sourceEventType: raw.payloadType }; }
 function eventFor(session, raw, suffix, fields) {
   const rawRefs = fields.rawRefs || [workbuddyRawRef(raw)];
   const provider = raw.parsed?.providerData;
+  if (fields.kind === 'user_message' && session.parentSessionId) {
+    fields = { ...fields, label: 'Subagent input', workbuddy: { ...fields.workbuddy, inputScope: 'subagent' } };
+  }
   fields = { ...fields, workbuddy: { model: string(provider?.model), requestId: string(provider?.conversationRequestId),
     ...(object(provider?.error) ? { error: safe(provider.error) } : {}), ...fields.workbuddy } };
   return { id: `${session.id}:event:${raw.line}:${suffix}`, schemaVersion: CANONICAL_SCHEMA_VERSION, sourceKind: 'workbuddy',
@@ -53,7 +180,7 @@ function nativeTool(row, args) {
   if (['Agent', 'SendMessage', 'TeamCreate', 'TeamDelete'].includes(name)) return { activity: 'coordination', command: '', paths: [] };
   return { activity: '', command: '', paths: [] };
 }
-function makeSession(document, sourceFile) {
+function makeSession(document, sourceFile, desktopOrigin) {
   const session = { id: `workbuddy:${identityPart(sourceFile)}`, sourceKind: 'workbuddy', sourceSessionId: document.id,
     sourceDerivedId: '', sourceClientVersion: '', projectAssociation: document.cwd, sourceFile, title: '', agentNickname: '',
     primarySessionMetaKind: '', derivedRunId: '', startedAt: '', updatedAt: '', bytes: document.acceptedBytes, lineCount: document.lines.length,
@@ -67,10 +194,20 @@ function makeSession(document, sourceFile) {
     session.primarySessionMetaKind = 'subagent';
     session.parentSessionId = `workbuddy:${identityPart(`${location[0]}/${location[1]}.jsonl`)}`;
   }
+  const messageClasses = document.rows.map(({ parsed }) => classifyMessage(object(parsed) ? parsed : {}));
+  // Desktop automation is corroborated by copied SQLite session/run facts,
+  // never by the text of automation instructions. Only the initial input is
+  // automatic; subsequent accepted user messages keep their recorded identity.
+  const initialInput = desktopOrigin ? document.rows.findIndex(({ parsed }) => parsed?.type === 'message' && parsed.role === 'user') : -1;
+  const recordedSessionId = initialInput >= 0 ? document.rows[initialInput].parsed.sessionId : undefined;
+  if (initialInput >= 0 && messageClasses[initialInput].kind === 'user_message'
+    && (recordedSessionId === undefined || recordedSessionId === document.id)) {
+    messageClasses[initialInput] = { kind: 'protocol', subtype: 'workbuddy_scheduled_input', startsTurn: false, titleEligible: false };
+  }
   let turnId = '';
-  session.rawEvents = document.rows.map((row) => {
+  session.rawEvents = document.rows.map((row, index) => {
     const record = object(row.parsed) ? row.parsed : {};
-    if (record.type === 'message' && record.role === 'user' && record.providerData?.isMeta !== true && record.providerData?.isCompacted !== true && string(record.id)) turnId = record.id;
+    if (messageClasses[index].startsTurn) turnId = record.id;
     if (record.type === 'resend-fork-notice') turnId = '';
     const source = { file: sourceFile, line: row.line }; const sourceLocator = { type: 'jsonl_line', ...source };
     const text = row.parseError ? 'Malformed JSON record (content available in Raw)' : search(record);
@@ -125,8 +262,15 @@ function makeSession(document, sourceFile) {
       usage.workbuddy = { text: 'Recorded model usage', usage: safe(row.message?.usage ?? row.providerData.usage), model: string(row.providerData?.model) };
       session.logicalEvents.push(usage);
     }
-    if (row.type === 'message' && row.providerData?.isMeta === true && row.providerData?.isCompacted !== true) {
-      session.logicalEvents.push(protocol(session, raw, 'workbuddy_meta_message', 'Recorded runtime message')); continue;
+    const messageClass = messageClasses[i];
+    if (row.type === 'message' && messageClass.kind === 'protocol') {
+      if (messageClass.subtype === 'workbuddy_scheduled_input') {
+        const event = protocol(session, raw, messageClass.subtype, textOf(row.content));
+        event.workbuddy = { text: safe(textOf(row.content)), desktopOrigin: safe(desktopOrigin) };
+        session.logicalEvents.push(event); continue;
+      }
+      session.logicalEvents.push(protocol(session, raw, messageClass.subtype || raw.payloadType,
+        messageClass.subtype ? 'Recorded runtime message' : 'Unclassified saved message')); continue;
     }
     const identified = string(row.id) && (row.parentId === undefined || typeof row.parentId === 'string');
     if (row.type === 'message' && identified && ['user', 'assistant'].includes(row.role)) {
@@ -140,15 +284,40 @@ function makeSession(document, sourceFile) {
         else session.logicalEvents.push(protocol(session, raw));
         continue;
       }
+      const fileMessage = messageClass.kind === 'user_message' ? fileReferenceMessage(row) : null;
+      if (fileMessage) {
+        const text = redactEmbeddedDataUrls(fileMessage.text);
+        const attachmentText = fileMessage.files.map((file) => `File: ${fsPathApi(file).basename(file)}`).join('\n');
+        session.logicalEvents.push(eventFor(session, raw, 'file-message', {
+          kind: 'user_message', role: 'user', preview: text || attachmentText, searchText: search(row.content),
+          workbuddy: { text: safe(text), fileMessage: true, fileCount: fileMessage.files.length, files: safe(fileMessage.files) },
+        }));
+        if (messageClass.titleEligible && !session.title) session.title = preview(text || attachmentText);
+        continue;
+      }
+      const images = row.role === 'user' && messageClass.kind === 'user_message' ? imageReferences(row) : [];
+      if (images.length) {
+        const parts = imageMessage(row, images);
+        const attachmentText = images.map((image) => `Image: ${string(image.original_filename) || 'Unnamed image'} (${image.mime})`).join('\n');
+        const text = redactEmbeddedDataUrls(parts.text);
+        session.logicalEvents.push(eventFor(session, raw, 'image-message', {
+          kind: 'user_message', role: 'user', preview: text || attachmentText,
+          searchText: search(row.content), workbuddy: { text: safe(text), imageMessage: true,
+            imageCount: images.length, images: safe(images.map(({ original_filename, mime, size }) => ({ original_filename, mime, size }))) },
+        }));
+        for (const n of parts.unmodeled) session.logicalEvents.push(protocol(session, raw, `workbuddy_content_${n}`, 'Unmodeled saved message content'));
+        if (messageClass.titleEligible && !session.title) session.title = preview(text || attachmentText);
+        continue;
+      }
       for (const [n, block] of blocks.entries()) {
         const allowed = row.role === 'user' ? ['input_text', 'text'] : ['output_text', 'text'];
         if (object(block) && allowed.includes(block.type) && typeof block.text === 'string') {
           const text = redactEmbeddedDataUrls(block.text);
-          session.logicalEvents.push(eventFor(session, raw, `text:${n}`, { kind: row.providerData?.isSummary === true && row.providerData?.isCompacted === true ? 'compaction' : `${row.role}_message`, role: row.role, preview: text,
+          session.logicalEvents.push(eventFor(session, raw, `text:${n}`, { kind: messageClass.kind, role: row.role, preview: text,
             searchText: row.role === 'assistant' && string(row.providerData?.error?.message) ? `${text}\n${redactEmbeddedDataUrls(row.providerData.error.message)}` : text,
             status: row.role === 'assistant' ? (row.providerData?.error ? 'failed' : row.status === 'completed' ? 'success' : 'incomplete') : '',
             severity: row.providerData?.error ? 'error' : 'normal', workbuddy: { text: safe(text), blockIndex: n } }));
-          if (row.role === 'user' && !session.title && text.trim()) session.title = preview(text);
+          if (messageClass.titleEligible && !session.title && text.trim()) session.title = preview(text);
         } else session.logicalEvents.push(protocol(session, raw, `workbuddy_content_${n}`, 'Unmodeled saved message content'));
       }
     } else if (row.type === 'reasoning' && identified) {
@@ -174,16 +343,16 @@ function makeSession(document, sourceFile) {
       const args = argumentsFor(row); const native = nativeTool(row, args);
       const receipt = result?.providerData?.toolResult;
       const exitCode = receipt?.rawResponse?.exitCode;
-      const failed = Boolean(receipt?.error) || result?.status === 'failed' || (row.name === 'Bash' && Number.isInteger(exitCode) && exitCode !== 0);
+      const failed = receipt?.rawResponse?.is_error === true || Boolean(receipt?.error) || result?.status === 'failed' || (row.name === 'Bash' && Number.isInteger(exitCode) && exitCode !== 0);
       const status = result ? (failed ? 'failed' : receipt?.rawResponse?.interrupted === true ? 'incomplete' : result.status === 'completed' ? 'success' : 'incomplete') : 'incomplete';
       const output = textOf(result?.output); const refs = [workbuddyRawRef(raw)]; if (result) refs.push(workbuddyRawRef(session.rawEvents[resultIndex]));
       session.logicalEvents.push(eventFor(session, raw, 'call', { kind: native.activity === 'command' ? 'command' : 'other_tool_call', role: 'assistant',
         toolName: row.name, status, severity: status === 'failed' ? 'error' : 'normal', touchedFiles: native.paths,
-        preview: native.command || `${row.name}${native.paths.length ? ` ${native.paths[0]}` : ''}`,
+        preview: native.command || (row.name === 'DeferExecuteTool' && string(args?.toolName) ? `DeferExecuteTool: ${args.toolName}` : '') || `${row.name}${native.paths.length ? ` ${native.paths[0]}` : ''}`,
         outputStats: { ...(Number.isInteger(exitCode) ? { exitCode } : {}) },
         searchText: [row.name, search(row.arguments), search(result?.output), search(result?.providerData?.toolResult)].filter(Boolean).join('\n'), rawRefs: refs,
         workbuddy: { callId: row.callId, arguments: safe(args ?? row.arguments), argumentsValid: Boolean(args), command: safe(native.command),
-          activity: native.activity, output: safe(output), pairing: result ? 'exact_call_name_request_or_ancestry' : 'missing_or_ambiguous_result',
+          activity: native.activity, requestedToolName: row.name === 'DeferExecuteTool' ? string(args?.toolName) : '', output: safe(output), pairing: result ? 'exact_call_name_request_or_ancestry' : 'missing_or_ambiguous_result',
           resultStatus: string(result?.status), toolResult: safe(result?.providerData?.toolResult ?? null) } }));
     } else if (row.type === 'summary' && typeof row.summary === 'string') {
       session.logicalEvents.push(protocol(session, raw, 'summary', row.summary));
@@ -209,13 +378,18 @@ function makeSession(document, sourceFile) {
 }
 function summarize(session) {
   const counts = Object.fromEntries(INDEXED_SESSION_COUNT_FIELDS.map((name) => [name, 0]));
-  const tools = new Map(); const kinds = new Map(); const protocols = new Map(); const turns = new Set(); const failedCommands = [];
+  const tools = new Map(); const kinds = new Map(); const protocols = new Map(); const turns = new Set(); const messages = new Set(); const failedCommands = [];
   for (const event of session.logicalEvents) {
     if (event.turnId) turns.add(event.turnId);
     if (event.layer === 'protocol') { counts.protocol++; protocols.set(event.subtype, (protocols.get(event.subtype) || 0) + 1); continue; }
     kinds.set(event.kind, (kinds.get(event.kind) || 0) + 1);
-    if (event.kind === 'user_message') { counts.messages++; counts.userMessages++; }
-    if (event.kind === 'assistant_message') { counts.messages++; counts.assistantMessages++; }
+    // A physical message may have several independently readable text blocks.
+    // Keep every block event while counting its owning source record once.
+    if (['user_message', 'assistant_message'].includes(event.kind) && !messages.has(event.source.rawId)) {
+      messages.add(event.source.rawId); counts.messages++;
+      if (event.kind === 'user_message') counts.userMessages++;
+      else counts.assistantMessages++;
+    }
     if (event.kind === 'reasoning') counts.reasoning++;
     if (event.kind === 'compaction') counts.compactions++;
     if (event.kind === 'error') counts.errors++;

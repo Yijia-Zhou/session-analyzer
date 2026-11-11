@@ -33,6 +33,35 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
     { id: 'compact', parentId: 'task-result', type: 'message', role: 'assistant', status: 'completed',
       content: [{ type: 'output_text', text: 'WORKBUDDY_COMPACT_SUMMARY: the file has been inspected.' }],
       providerData: { conversationRequestId: 'request-1', isSummary: true, isCompacted: true, isCompactInternal: true, compactionKind: 'manual' } },
+    { id: 'continuation', parentId: 'compact', type: 'message', role: 'user',
+      content: [{ type: 'input_text', text: 'WORKBUDDY_INTERNAL_CONTEXT: continue from the recorded context.' }],
+      providerData: { isCompacted: true, isCompactInternal: true, isSummary: false } },
+    { id: 'image-input', type: 'message', role: 'user', content: [
+      { type: 'input_text', text: '<system-reminder>WORKBUDDY_IMAGE_CONTEXT</system-reminder><user_query>@image#1:WORKBUDDY_IMAGE.png</user_query>' },
+      { type: 'image_blob_ref', blob_id: 'synthetic-blob', original_filename: 'WORKBUDDY_IMAGE.png', mime: 'image/png', size: 123, blob_path: '/nonexistent/image.png' },
+      { type: 'input_text', text: '<image_local_path>/nonexistent/image.png</image_local_path>' },
+    ] },
+    { id: 'multi-image-input', type: 'message', role: 'user', content: [
+      { type: 'input_text', text: '<system-reminder>HIDDEN_MULTI_CONTEXT</system-reminder><user_query>@image#1:"WORKBUDDY_MULTI.png" @image#2:"second image.png"</user_query>' },
+      { type: 'image_blob_ref', blob_id: 'multi-1', original_filename: 'WORKBUDDY_MULTI.png', mime: 'image/png' },
+      { type: 'input_text', text: '<image_local_path>/nonexistent/first.png</image_local_path>' },
+      { type: 'image_blob_ref', blob_id: 'multi-2', original_filename: 'second image.png', mime: 'image/jpeg' },
+      { type: 'input_text', text: '<image_local_path>/nonexistent/second.jpg</image_local_path>' },
+    ] },
+    { id: 'mixed-image-input', type: 'message', role: 'user', content: [
+      { type: 'input_text', text: '<system-reminder>HIDDEN_MIXED_CONTEXT</system-reminder><user_query>@image#1:paste.png WORKBUDDY_MIXED: describe this landscape.</user_query>' },
+      { type: 'image_blob_ref', blob_id: 'mixed', original_filename: 'paste.png', mime: 'image/jpeg' },
+      { type: 'input_text', text: '<image_local_path>/nonexistent/paste.jpg</image_local_path>' },
+    ] },
+    { id: 'file-input', type: 'message', role: 'user', content: [{ type: 'input_text',
+      text: '<system-reminder data-role="additional-data"><attached_files>\n<file path="/synthetic/WORKBUDDY_FILE.txt" />\n</attached_files></system-reminder><user_query>@"/synthetic/WORKBUDDY_FILE.txt" WORKBUDDY_FILE_TEXT: summarize this file.</user_query>' }] },
+    { id: 'file-only', type: 'message', role: 'user', content: [{ type: 'input_text',
+      text: '<system-reminder data-role="additional-data"><attached_files>\n<file path="/synthetic/WORKBUDDY_ONLY_FILE.txt" />\n</attached_files></system-reminder><user_query>@"/synthetic/WORKBUDDY_ONLY_FILE.txt"</user_query>' }] },
+    { id: 'defer-call', parentId: 'image-input', type: 'function_call', callId: 'defer-1', name: 'DeferExecuteTool',
+      arguments: JSON.stringify({ toolName: 'im_list_conversations', arguments: {} }) },
+    { id: 'defer-result', parentId: 'defer-call', type: 'function_call_result', callId: 'defer-1', name: 'DeferExecuteTool', status: 'completed',
+      output: { type: 'text', text: 'WORKBUDDY_HEADLESS_UNAVAILABLE' },
+      providerData: { toolResult: { content: 'WORKBUDDY_HEADLESS_UNAVAILABLE', rawResponse: { is_error: true } } } },
   ].map((row, i) => ({ timestamp: 1790000000000 + i * 1000, sessionId, cwd: repo,
     providerData: { conversationRequestId: 'request-1' }, ...row }));
   const file = path.join(directory, `${sessionId}.jsonl`);
@@ -66,13 +95,169 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
   await page.locator('[data-main-presentation="trajectory"]').click();
   await page.waitForFunction(() => document.body.dataset.mainPresentation === 'trajectory');
   assert.match(await page.locator('#timeline').innerText(), /WORKBUDDY_FINAL|Read|example\.txt/);
-  for (const marker of ['WORKBUDDY_COMPLETED_TASK', 'WORKBUDDY_COMPACT_SUMMARY']) {
-    const matches = (await service.execute('search', { query: marker })).items;
+  for (const marker of ['WORKBUDDY_COMPLETED_TASK', 'WORKBUDDY_COMPACT_SUMMARY', 'WORKBUDDY_INTERNAL_CONTEXT', 'WORKBUDDY_IMAGE.png', 'WORKBUDDY_MULTI.png', 'WORKBUDDY_MIXED', 'WORKBUDDY_HEADLESS_UNAVAILABLE', 'WORKBUDDY_FILE_TEXT', 'WORKBUDDY_ONLY_FILE.txt']) {
+    const matches = (await service.execute('search', { query: marker, ...(marker === 'WORKBUDDY_INTERNAL_CONTEXT' ? { layer: 'protocol' } : {}) })).items;
     assert.equal(matches.length, 1);
     await page.goto(`http://127.0.0.1:${server.address().port}/#ref=${encodeURIComponent(matches[0].ref)}`);
     await page.waitForFunction((expected) => document.querySelector('#timeline article.selected')?.innerText.includes(expected), marker);
     if (marker === 'WORKBUDDY_COMPLETED_TASK') assert.match(await page.locator('#timeline article.selected').innerText(), /completed/i);
+    if (marker === 'WORKBUDDY_IMAGE.png') {
+      const text = await page.locator('#timeline article.selected').innerText();
+      assert.match(text, /Image attachment|image\/png/);
+      // Search-match evidence can quote the hidden source wrapper; the message
+      // content itself only presents the attachment metadata.
+      assert.doesNotMatch(text.split('Search match')[0], /WORKBUDDY_IMAGE_CONTEXT|image_local_path/);
+      if (width < 760) await page.getByRole('button', { name: 'Detail', exact: true }).click();
+      await page.locator('#detail [data-detail-action="raw"]').click();
+      await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('image_blob_ref'));
+      assert.match(await page.locator('#detail .rawRefsView').innerText(), /WORKBUDDY_IMAGE_CONTEXT/);
+      if (width < 760) await page.locator('button[data-mobile-view="events"]').click();
+    }
+    if (marker === 'WORKBUDDY_HEADLESS_UNAVAILABLE') {
+      assert.equal(matches[0].status, 'failed');
+      assert.match(await page.locator('#timeline article.selected').innerText(), /im_list_conversations/);
+    }
+    if (['WORKBUDDY_MULTI.png', 'WORKBUDDY_MIXED'].includes(marker)) {
+      const text = (await page.locator('#timeline article.selected').innerText()).split('Search match')[0];
+      assert.doesNotMatch(text, /HIDDEN_MULTI_CONTEXT|HIDDEN_MIXED_CONTEXT|image_local_path|@image#/);
+      if (marker === 'WORKBUDDY_MULTI.png') {
+        assert.match(text, /second image.png/);
+        assert.match(text, /image\/png/);
+        assert.match(text, /image\/jpeg/);
+      } else assert.match(text, /describe this landscape/);
+    }
+    if (['WORKBUDDY_FILE_TEXT', 'WORKBUDDY_ONLY_FILE.txt'].includes(marker)) {
+      const text = (await page.locator('#timeline article.selected').innerText()).split('Search match')[0];
+      assert.match(text, /FILE REFERENCE/); assert.doesNotMatch(text, /system-reminder|attached_files|user_query/);
+      if (marker === 'WORKBUDDY_FILE_TEXT') assert.match(text, /summarize this file/);
+    }
+  }
+  if (width === 1440) {
+    await page.locator('#localeSelect').selectOption('zh-CN', { force: true });
+    for (const [marker, expected] of [['WORKBUDDY_IMAGE.png', '图片附件'], ['WORKBUDDY_FILE_TEXT', '文件引用']]) {
+      const [match] = (await service.execute('search', { query: marker, layer: 'main' })).items;
+      await page.goto(`http://127.0.0.1:${server.address().port}/#ref=${encodeURIComponent(match.ref)}`);
+      await page.waitForFunction((value) => document.querySelector('#timeline article.selected')?.textContent.includes(value), expected);
+      const detail = (await page.locator('#timeline article.selected').innerText()).split('搜索命中')[0];
+      assert.match(detail, marker === 'WORKBUDDY_IMAGE.png' ? /无法预览/ : /文件内容不会被读取/);
+      assert.ok(detail.includes(marker === 'WORKBUDDY_IMAGE.png' ? 'WORKBUDDY_IMAGE.png' : 'summarize this file'));
+    }
   }
   assert.equal(await fs.readFile(file, 'utf8'), original, 'reading never rewrites native history');
+  assert.deepEqual(errors, []);
+});
+
+test('WorkBuddy runtime user envelopes stay in Protocol while real requests and steers retain identity', { timeout: 45000 }, async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'workbuddy-identity-browser-'));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const repo = path.join(home, 'project');
+  const directory = path.join(home, 'projects', 'synthetic-project');
+  await fs.mkdir(repo); await fs.mkdir(directory, { recursive: true });
+  const sessionId = 'synthetic-workbuddy-identity';
+  const internal = [
+    ['recovery', 'WB_RECOVERY_ONLY', { isCompactInternal: true, isPtlRecovery: true, isPtlRetryMarker: true, skipRun: false }],
+    ['media', 'WB_MEDIA_ONLY', { isCompactInternal: true, isMediaBodyRecovery: true, isPtlRetryMarker: true, skipRun: false }],
+    ['teammate', 'WB_TEAMMATE_ONLY', { teammateMessage: { from: 'agent-a', summary: 'Synthetic peer evidence' } }],
+    ['command', 'WB_COMMAND_ONLY', { skipRun: true }],
+    ['summary', 'WB_PARTIAL_SUMMARY_ONLY', { isSummary: true }],
+    ['compact-type', 'WB_PARTIAL_COMPACT_ONLY', { compactType: 'auto' }],
+  ];
+  const requestText = 'WB_REAL_REQUEST: explain literal <system-reminder> and <teammate-message> tags.';
+  const messages = [
+    ...internal.map(([id, text, providerData]) => ({ id, text, providerData })),
+    { id: 'request', text: requestText, providerData: { startsNewUserRequest: true } },
+    { id: 'steer', text: 'WB_REAL_STEER: also explain the closing tags.', providerData: { startsNewUserRequest: false } },
+    { id: 'external-meta', text: 'WB_EXTERNAL_META: inspect the next synthetic example.', providerData: { isMeta: true, startsNewUserRequest: true } },
+  ];
+  const rows = messages.map(({ id, text, providerData }, i) => ({ id, ...(i ? { parentId: messages[i - 1].id } : {}),
+    type: 'message', role: 'user', content: [{ type: 'input_text', text }], providerData,
+    sessionId, cwd: repo, timestamp: 1790000000000 + i * 1000 }));
+  const lines = rows.map((row) => JSON.stringify(row));
+  const file = path.join(directory, `${sessionId}.jsonl`);
+  const original = `${lines.join('\n')}\n`;
+  await fs.writeFile(file, original);
+  const service = await createHistoryService({ repo, source: 'workbuddy', workbuddyHome: home });
+  t.after(() => service.close());
+  const server = service.createViewerServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } });
+  page.setDefaultTimeout(10000);
+  const errors = []; page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(origin);
+  const session = page.locator('#sessionList .sessionItem').first();
+  await session.click();
+  await page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('WB_REAL_STEER'));
+  assert.equal(await session.locator('.sessionTitle').innerText(), requestText, 'runtime envelopes cannot supply the session title');
+  const mainText = await page.locator('#timeline').innerText();
+  for (const marker of ['WB_REAL_REQUEST', 'WB_REAL_STEER', 'WB_EXTERNAL_META']) assert.ok(mainText.includes(marker), marker);
+  for (const [, marker] of internal) assert.ok(!mainText.includes(marker), marker);
+  const indexedId = await session.getAttribute('data-session-id');
+  const analysis = await (await page.request.get(`${origin}/api/sessions/${encodeURIComponent(indexedId)}/analysis`)).json();
+  assert.equal(analysis.counts.userMessages, 3);
+  assert.equal(analysis.counts.turns, 2);
+  const main = await (await page.request.get(`${origin}/api/sessions/${encodeURIComponent(indexedId)}/timeline?layer=main&limit=150`)).json();
+  assert.deepEqual(main.events.map((event) => [event.kind, event.turnId]), [
+    ['user_message', 'request'], ['user_message', 'request'], ['user_message', 'external-meta'],
+  ], 'a genuine steer remains in its existing user turn');
+  for (const [index, [, marker]] of internal.entries()) {
+    assert.equal((await service.execute('search', { query: marker, layer: 'main' })).items.length, 0, marker);
+    const hits = (await service.execute('search', { query: marker, layer: 'protocol' })).items;
+    assert.equal(hits.length, 1, `${marker} has one Protocol owner`);
+    const hit = hits[0];
+    await page.goto(`${origin}/#ref=${encodeURIComponent(hit.ref)}`);
+    await page.waitForFunction((eventId) => document.querySelector('#timeline article.selected')?.dataset.eventId === eventId, hit.eventId);
+    assert.equal(await page.locator('#layerSelect').inputValue(), 'protocol');
+    await page.locator('#detail [data-detail-action="raw"]').waitFor();
+    assert.ok((await page.locator('#detail').textContent()).includes(marker), `${marker} remains inspectable in Detail`);
+    const rawResponse = page.waitForResponse((response) => new URL(response.url()).pathname.includes('/raw/'));
+    await page.locator('#detail [data-detail-action="raw"]').click();
+    const raw = await (await rawResponse).json();
+    assert.equal(raw.raw, lines[index], `${marker} resolves to its exact physical record`);
+    await page.waitForFunction((expected) => document.querySelector('#detail .rawRefsView pre')?.textContent.includes(expected), marker);
+    assert.equal(await page.locator('#detail .rawRefsView pre').count(), 1);
+    assert.deepEqual(JSON.parse(await page.locator('#detail .rawRefsView pre').textContent()), rows[index]);
+  }
+  assert.equal(await fs.readFile(file, 'utf8'), original);
+  assert.deepEqual(errors, []);
+});
+
+test('WorkBuddy desktop scheduled input is searchable in Protocol with copied provenance and exact Raw', { timeout: 45000 }, async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'workbuddy-automation-browser-'));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const repo = path.join(home, 'project'); const directory = path.join(home, 'projects', 'synthetic');
+  await fs.mkdir(repo); await fs.mkdir(directory, { recursive: true });
+  const row = { type: 'message', id: 'automatic', role: 'user', sessionId: 'scheduled', cwd: repo, timestamp: 1794300000000,
+    content: [{ type: 'input_text', text: 'WB_SCHEDULED_INPUT: perform the recorded task.' }], providerData: { startsNewUserRequest: true } };
+  const line = JSON.stringify(row);
+  await fs.writeFile(path.join(directory, 'scheduled.jsonl'), line + '\n');
+  const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(path.join(home, 'workbuddy.db'));
+  db.exec('CREATE TABLE sessions(id TEXT PRIMARY KEY, cwd TEXT, is_background_automation INTEGER, session_settings TEXT); CREATE TABLE automation_runs(thread_id TEXT PRIMARY KEY, automation_id TEXT, source_cwd TEXT, metadata_json TEXT)');
+  db.prepare('INSERT INTO sessions VALUES (?,?,?,?)').run('scheduled', repo, 1, JSON.stringify({ conversationTags: { automationId: 'auto-1' } }));
+  db.prepare('INSERT INTO automation_runs VALUES (?,?,?,?)').run('run-1', 'auto-1', repo, JSON.stringify({ sessionId: 'scheduled', conversationId: 'scheduled', runKind: 'scheduled' })); db.close();
+  const service = await createHistoryService({ repo, source: 'workbuddy', workbuddyHome: home }); t.after(() => service.close());
+  const hits = (await service.execute('search', { query: 'WB_SCHEDULED_INPUT', layer: 'protocol' })).items; assert.equal(hits.length, 1);
+  assert.equal((await service.execute('search', { query: 'WB_SCHEDULED_INPUT', kind: 'user_message' })).items.length, 0);
+  const server = service.createViewerServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined }); t.after(() => browser.close());
+  const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } }); page.setDefaultTimeout(10000);
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}/#ref=${encodeURIComponent(hits[0].ref)}`);
+  await page.waitForFunction(() => document.querySelector('#timeline article.selected')?.innerText.includes('WB_SCHEDULED_INPUT'));
+  assert.match(await page.locator('#timeline article.selected').innerText(), /not counted as a user message/);
+  assert.match(await page.locator('#detail').innerText(), /copied_value/);
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('WB_SCHEDULED_INPUT'));
+  assert.match(await page.locator('#detail .rawRefsView').innerText(), /startsNewUserRequest/);
+  await page.locator('#localeSelect').selectOption('zh-CN', { force: true });
+  await page.goto(`http://127.0.0.1:${server.address().port}/#ref=${encodeURIComponent(hits[0].ref)}`);
+  await page.waitForFunction(() => document.querySelector('#timeline article.selected')?.textContent.includes('不计为用户消息或新回合'));
+  assert.match(await page.locator('#timeline article.selected').innerText(), /定时自动化输入/);
+  assert.match(await page.locator('#detail').innerText(), /已记录的自动化来源/);
+  assert.match(await page.locator('#detail').innerText(), /auto-1/);
   assert.deepEqual(errors, []);
 });

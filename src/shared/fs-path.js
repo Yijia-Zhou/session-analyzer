@@ -25,6 +25,25 @@ function normalizeFsPath(input) {
   return fsPathFlavor(input) === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
+// Compare stored path evidence without borrowing the Analyzer process cwd or
+// Windows current drive. Double-leading separators are treated as UNC.
+function recordedPathIdentity(value) {
+  if (typeof value !== 'string' || !value) return '';
+  const api = /^[\\/]{2}/.test(value) ? path.win32 : fsPathApi(value);
+  if (!api.isAbsolute(value)) return '';
+  if (api === path.win32) {
+    const root = api.parse(value).root.replace(/\//g, '\\');
+    if (!/^[A-Za-z]:\\/.test(root) && !/^\\\\[^\\]+\\[^\\]+/.test(root)) return '';
+    return `windows:${api.resolve(value).toLowerCase()}`;
+  }
+  return `posix:${api.resolve(value)}`;
+}
+
+function sameRecordedPath(left, right) {
+  const identity = recordedPathIdentity(left);
+  return Boolean(identity) && identity === recordedPathIdentity(right);
+}
+
 function isPathInsideOrSame(child, parent) {
   if (!child || !parent || fsPathFlavor(child) !== fsPathFlavor(parent)) return false;
   const childPath = normalizeFsPath(child);
@@ -40,4 +59,5 @@ module.exports = {
   isPathInsideOrSame,
   normalizeFsPath,
   resolveFsPath,
+  sameRecordedPath,
 };

@@ -1,5 +1,11 @@
 # Tech Debt Tracker / 技术债跟踪器
 
+<a id="unc-project-path-association"></a>
+
+## UNC project path association / UNC 项目路径归属
+
+The shared path helper treats a forward-slash UNC path such as `//server/share/project` as POSIX, while a backslash UNC spelling is treated as Windows. A synthetic WorkBuddy index therefore admits a Session when the JSONL cwd and selected project both use the forward-slash spelling, but skips it when the selected project uses the equivalent backslash spelling. No normal producer occurrence has been established. Scheduled-origin evidence now compares the two UNC spellings after project association, without changing this existing project-selection boundary. A cross-source fix needs an audit of project discovery, containment and POSIX double-slash behavior across adapters and Windows. / 共享路径 helper 将 `//server/share/project` 这样的正斜杠 UNC 路径视为 POSIX，而反斜杠 UNC 写法视为 Windows。合成 WorkBuddy 索引中，JSONL cwd 与选定项目都使用正斜杠时可接纳 Session；选定项目改用等价反斜杠写法则会跳过。尚未确认正常 producer 会产生该情况。定时来源依据现在在项目归属之后比较两种 UNC 写法，但不改变现有项目选择边界。跨来源修复需要审查各 adapter 与 Windows 上的项目发现、路径包含及 POSIX 双斜杠行为。
+
 ## pi native reader follow-ups / pi 原生阅读器后续
 
 The [coverage matrix](../design-docs/pi-protocol-event-coverage.md) includes [native history navigation](../design-docs/pi-history-navigation.md) and [whole-native statistics](../design-docs/pi-native-statistics.md): durable entry links, branch/label/summary navigation, recorded-state/image reading, and physical record/usage accounting without shared-ancestor duplication. Remaining work includes physical search-hit deduplication, native patch/project aggregation, full recorded-context projection, evidence-backed extension displays and cross-file navigation. Existing snapshot-bound references keep their stricter semantics. / 覆盖矩阵包含原生历史导航及完整原生统计：持久 entry 链接、分支／标签／摘要导航、记录状态／图片阅读，以及不重复共享祖先的物理记录／用量核算。剩余工作含物理搜索命中去重、原生 patch／项目聚合、完整记录上下文投影、有依据扩展展示及跨文件导航；原有绑定快照引用保持更严格语义。
