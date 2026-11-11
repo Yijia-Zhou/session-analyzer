@@ -6,6 +6,7 @@ const fs = require('node:fs/promises');
 const { constants } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { setImmediate: yieldImmediate } = require('node:timers/promises');
 const { normalizeFsPath, isPathInsideOrSame, fsPathApi } = require('./shared/fs-path');
 const storage = require('./workbuddy-storage');
 const scalar = (value) => typeof value === 'string' && value.length > 0 && value.length <= 4096;
@@ -56,8 +57,12 @@ async function copyDatabaseFile(source, destination, expected, signal) {
 }
 async function readDesktopOrigins(sourceHome, candidates, signal, onDiagnostic) {
   const origins = new Map(); const filename = path.join(sourceHome, 'workbuddy.db');
-  const identities = new Map();
-  for (const candidate of candidates) if (candidate.sourceFile.split('/').length === 2) identities.set(candidate.header.id, (identities.get(candidate.header.id) || 0) + 1);
+  const identities = new Map(); let processed = 0;
+  for (const candidate of candidates) {
+    storage.abort(signal);
+    if (++processed % 128 === 0) { await yieldImmediate(); storage.abort(signal); }
+    if (candidate.sourceFile.split('/').length === 2) identities.set(candidate.header.id, (identities.get(candidate.header.id) || 0) + 1);
+  }
   let db; let temporary;
   try {
     storage.abort(signal);
@@ -81,33 +86,58 @@ async function readDesktopOrigins(sourceHome, candidates, signal, onDiagnostic) 
       if (schema?.type !== 'table' || columns.filter((column) => column.pk).length !== 1
         || !columns.some((column) => column.name === key && column.pk === 1)) throw new Error('Unsupported desktop identity table');
     }
-    const sessionQuery = db.prepare(`SELECT id, cwd, is_background_automation,
-      CASE WHEN length(session_settings) <= 16384 THEN session_settings END AS settings
+    const sessionQuery = db.prepare(`SELECT
+      CASE WHEN typeof(id) = 'text' AND length(id) <= 4096 THEN id END AS id,
+      CASE WHEN typeof(cwd) = 'text' AND length(cwd) <= 4096 THEN cwd END AS cwd,
+      CASE WHEN typeof(is_background_automation) IN ('integer', 'real') AND is_background_automation = 1 THEN 1
+        WHEN typeof(is_background_automation) IN ('integer', 'real') AND is_background_automation = 0 THEN 0 END AS is_background_automation,
+      CASE WHEN typeof(session_settings) = 'text' AND length(session_settings) <= 16384 THEN session_settings END AS settings
       FROM sessions WHERE id = ? LIMIT 2`);
-    const runQuery = db.prepare(`SELECT thread_id, automation_id, source_cwd,
-      CASE WHEN length(metadata_json) <= 16384 THEN metadata_json END AS metadata
-      FROM automation_runs WHERE automation_id = ? LIMIT 101`);
+    // Scan the copied run table once, rather than once per session. Guard
+    // returned types so an unsafe SQLite integer in one row cannot prevent
+    // independent candidates from being checked.
+    const runQuery = db.prepare(`SELECT
+      CASE WHEN typeof(thread_id) = 'text' AND length(thread_id) <= 4096 THEN thread_id END AS thread_id,
+      CASE WHEN typeof(automation_id) = 'text' AND length(automation_id) <= 4096 THEN automation_id END AS automation_id,
+      CASE WHEN typeof(source_cwd) = 'text' AND length(source_cwd) <= 16384 THEN source_cwd END AS source_cwd,
+      CASE WHEN typeof(metadata_json) = 'text' AND length(metadata_json) <= 16384 THEN metadata_json END AS metadata
+      FROM automation_runs`);
+    const groups = new Map();
     for (const candidate of candidates) {
       storage.abort(signal);
+      if (++processed % 128 === 0) { await yieldImmediate(); storage.abort(signal); }
       if (candidate.sourceFile.split('/').length !== 2) continue;
       const sessions = sessionQuery.all(candidate.header.id);
-      if (sessions.length !== 1 || sessions[0].is_background_automation !== 1) continue;
-      const session = sessions[0]; const tags = json(session.settings)?.conversationTags;
+      if (sessions.length !== 1 || sessions[0].is_background_automation === 0) continue;
+      const session = sessions[0];
       const unverified = () => onDiagnostic?.({ code: 'WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED', path: candidate.sourceFile,
         message: 'Background session metadata lacks a unique matching scheduled run; recorded JSONL identity is retained.' });
-      if (identities.get(candidate.header.id) !== 1 || !scalar(tags?.automationId)
+      const tags = json(session.settings)?.conversationTags;
+      if (session.is_background_automation !== 1 || session.id !== candidate.header.id
+        || identities.get(candidate.header.id) !== 1 || !scalar(tags?.automationId)
         || normalizeFsPath(session.cwd) !== normalizeFsPath(candidate.header.cwd)) { unverified(); continue; }
-      const runs = runQuery.all(tags.automationId);
-      if (runs.length > 100) throw new Error('Desktop automation lookup exceeded its bound');
-      const matches = runs.filter((run) => {
-        const meta = json(run.metadata);
-        return meta?.runKind === 'scheduled' && meta.sessionId === session.id && meta.conversationId === session.id
-          && normalizeFsPath(run.source_cwd) === normalizeFsPath(session.cwd);
-      });
-      if (matches.length !== 1) { unverified(); continue; }
-      const run = matches[0];
-      const value = { sessionId: session.id, cwd: session.cwd, automationId: run.automation_id,
-        runId: run.thread_id, runKind: 'scheduled' };
+      if (!groups.has(tags.automationId)) groups.set(tags.automationId, new Map());
+      groups.get(tags.automationId).set(session.id, { candidate, session, automationId: tags.automationId,
+        correlatedRuns: 0, matchingRuns: 0, runId: null, unverified });
+    }
+    if (groups.size) for (const run of runQuery.iterate()) {
+      storage.abort(signal);
+      if (++processed % 128 === 0) { await yieldImmediate(); storage.abort(signal); }
+      const group = groups.get(run.automation_id);
+      if (!group) continue;
+      const meta = json(run.metadata); const target = group.get(meta?.sessionId);
+      if (!target || meta?.runKind !== 'scheduled' || meta.conversationId !== target.session.id) continue;
+      target.correlatedRuns++;
+      if (target.correlatedRuns <= 100 && normalizeFsPath(run.source_cwd) === normalizeFsPath(target.session.cwd)) {
+        target.matchingRuns++; target.runId = run.thread_id;
+      }
+    }
+    for (const group of groups.values()) for (const target of group.values()) {
+      storage.abort(signal);
+      if (++processed % 128 === 0) { await yieldImmediate(); storage.abort(signal); }
+      const { candidate, session, automationId, correlatedRuns, matchingRuns, runId, unverified } = target;
+      if (correlatedRuns > 100 || matchingRuns !== 1) { unverified(); continue; }
+      const value = { sessionId: session.id, cwd: session.cwd, automationId, runId, runKind: 'scheduled' };
       if (validOrigin(value, candidate.header.id, candidate.header.cwd)) origins.set(candidate.sourceFile, value);
       else unverified();
     }

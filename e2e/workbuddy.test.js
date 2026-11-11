@@ -132,6 +132,17 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
       if (marker === 'WORKBUDDY_FILE_TEXT') assert.match(text, /summarize this file/);
     }
   }
+  if (width === 1440) {
+    await page.locator('#localeSelect').selectOption('zh-CN', { force: true });
+    for (const [marker, expected] of [['WORKBUDDY_IMAGE.png', '图片附件'], ['WORKBUDDY_FILE_TEXT', '文件引用']]) {
+      const [match] = (await service.execute('search', { query: marker, layer: 'main' })).items;
+      await page.goto(`http://127.0.0.1:${server.address().port}/#ref=${encodeURIComponent(match.ref)}`);
+      await page.waitForFunction((value) => document.querySelector('#timeline article.selected')?.textContent.includes(value), expected);
+      const detail = (await page.locator('#timeline article.selected').innerText()).split('搜索命中')[0];
+      assert.match(detail, marker === 'WORKBUDDY_IMAGE.png' ? /无法预览/ : /文件内容不会被读取/);
+      assert.ok(detail.includes(marker === 'WORKBUDDY_IMAGE.png' ? 'WORKBUDDY_IMAGE.png' : 'summarize this file'));
+    }
+  }
   assert.equal(await fs.readFile(file, 'utf8'), original, 'reading never rewrites native history');
   assert.deepEqual(errors, []);
 });
@@ -242,5 +253,11 @@ test('WorkBuddy desktop scheduled input is searchable in Protocol with copied pr
   await page.locator('#detail [data-detail-action="raw"]').click();
   await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('WB_SCHEDULED_INPUT'));
   assert.match(await page.locator('#detail .rawRefsView').innerText(), /startsNewUserRequest/);
+  await page.locator('#localeSelect').selectOption('zh-CN', { force: true });
+  await page.goto(`http://127.0.0.1:${server.address().port}/#ref=${encodeURIComponent(hits[0].ref)}`);
+  await page.waitForFunction(() => document.querySelector('#timeline article.selected')?.textContent.includes('不计为用户消息或新回合'));
+  assert.match(await page.locator('#timeline article.selected').innerText(), /定时自动化输入/);
+  assert.match(await page.locator('#detail').innerText(), /已记录的自动化来源/);
+  assert.match(await page.locator('#detail').innerText(), /auto-1/);
   assert.deepEqual(errors, []);
 });

@@ -2,6 +2,7 @@
 
 const MarkdownIt = require('markdown-it');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
+const i18n = require('./shared/i18n');
 const { sanitizeLogicalDetailValue, redactEmbeddedDataUrls } = require('./shared/logical-detail-sanitizer');
 const { workbuddyRawRef, sanitizeWorkbuddyValue: safe } = require('./workbuddy-logical');
 
@@ -45,10 +46,10 @@ function planSection(title, value, purpose) {
     ...(value.length > 64 ? { explanationHtml: '<p>Showing the first 64 recorded tasks; see Raw references for the complete list.</p>' } : {}) } : null;
 }
 
-function toolRequest(detail, event, facts) {
+function toolRequest(detail, event, facts, translate) {
   const args = object(facts.arguments) && facts.argumentsValid ? facts.arguments : null;
   const primary = detail.timelineSections;
-  if (facts.requestedToolName) primary.push(kv('Deferred tool request', [['Requested tool', facts.requestedToolName]], 'request'));
+  if (facts.requestedToolName) primary.push(kv(translate('deferredToolRequest'), [[translate('requestedTool'), facts.requestedToolName]], 'request'));
   if (typeof facts.command === 'string' && facts.command) primary.push(code('Command', facts.command, 'request', event.toolName === 'PowerShell' ? 'powershell' : 'bash'));
   else if (args && ['read', 'write', 'edit'].includes(facts.activity)) {
     primary.push(kv('Requested file operation', [['Operation', facts.activity], ['File', args.file_path],
@@ -84,12 +85,12 @@ function toolRequest(detail, event, facts) {
   if (facts.argumentsValid === false) detail.inspectorSections.push(notice('Arguments are not a valid JSON object; no native command or file operation is inferred.'));
 }
 
-function toolResult(detail, event, facts) {
+function toolResult(detail, event, facts, translate) {
   const result = object(facts.toolResult) ? facts.toolResult : {};
   const renderer = object(result.renderer) ? result.renderer : {};
   const primary = detail.timelineSections;
   let shown = false;
-  if (result.rawResponse?.is_error === true) primary.push({ type: 'notice', purpose: 'result', level: 'error', text: 'The recorded tool response reports an error.' });
+  if (result.rawResponse?.is_error === true) primary.push({ type: 'notice', purpose: 'result', level: 'error', text: translate('toolError') });
   const output = text(facts.output) || text(result.content);
   // The renderer hint alone does not prove a patch exists (native Edit commonly
   // records renderer.type=diff with only a success sentence).
@@ -270,44 +271,48 @@ async function buildWorkbuddyEventDetail(index, session, eventId, layer = 'main'
   const event = session.logicalEvents.find((item) => item.id === eventId && item.layer === layer);
   if (!event) return null;
   const facts = event.workbuddy || {};
+  const locale = i18n.resolveLocale(options.locale);
+  const translate = (key, vars) => i18n.t(locale, 'workbuddyDetail', key, vars);
   const raws = event.rawRefs.map((ref) => session.rawEvents.find((raw) => raw.rawId === ref.rawId)).filter(Boolean);
   const detail = { id: event.id, schemaVersion: event.schemaVersion, sourceKind: 'workbuddy', kind: event.kind,
-    subtype: event.subtype, layer: event.layer, title: event.label || event.toolName || event.kind,
+    subtype: event.subtype, layer: event.layer, title: facts.inputScope === 'subagent' ? i18n.knownLabel('Subagent input', locale)
+      : facts.desktopOrigin ? translate('scheduledInput')
+        : (facts.imageMessage || facts.fileMessage) ? i18n.eventKindLabel(event.kind, locale) : event.label || event.toolName || event.kind,
     sourceLocator: event.sourceLocator, meta: { source: event.source }, rawRefs: event.rawRefs,
     timelineSections: [], inspectorSections: [] };
   const context = [['Status', event.status], ['Tool', event.toolName], ['Tool call id', facts.callId],
     ['Pairing evidence', facts.pairing], ['Recorded result status', facts.resultStatus]];
   if (['command', 'other_tool_call'].includes(event.kind)) {
-    toolRequest(detail, event, facts);
-    toolResult(detail, event, facts);
+    toolRequest(detail, event, facts, translate);
+    toolResult(detail, event, facts, translate);
   } else if (['user_message', 'assistant_message', 'reasoning', 'compaction'].includes(event.kind)) {
     if (facts.fileMessage) {
       if (text(facts.text)) detail.timelineSections.push(...content(facts.text));
-      for (const file of (facts.files || []).slice(0, 16)) detail.timelineSections.push(kv('File reference', [['Path', file]], 'content'));
-      if (facts.fileCount > 16) detail.timelineSections.push(notice(`Showing 16 of ${facts.fileCount} file references; see Raw for the remainder.`, 'content'));
-      detail.timelineSections.push(notice('Only a file reference was recorded. File contents are not loaded.', 'content'));
+      for (const file of (facts.files || []).slice(0, 16)) detail.timelineSections.push(kv(translate('fileReference'), [[translate('path'), file]], 'content'));
+      if (facts.fileCount > 16) detail.timelineSections.push(notice(translate('fileRemainder', { count: facts.fileCount }), 'content'));
+      detail.timelineSections.push(notice(translate('fileNotice'), 'content'));
     } else if (facts.imageMessage) {
       if (text(facts.text)) detail.timelineSections.push(...content(facts.text));
       for (const image of (facts.images || []).slice(0, 16)) {
-        detail.timelineSections.push(kv('Image attachment', [['Name', image.original_filename || 'Unnamed image'],
-          ['Media type', image.mime], ['Bytes', Number.isSafeInteger(image.size) && image.size >= 0 ? image.size : undefined]], 'content'));
+        detail.timelineSections.push(kv(translate('imageAttachment'), [[translate('name'), image.original_filename || translate('unnamedImage')],
+          [translate('mediaType'), image.mime], [translate('bytes'), Number.isSafeInteger(image.size) && image.size >= 0 ? image.size : undefined]], 'content'));
       }
-      if (facts.imageCount > 16) detail.timelineSections.push(notice(`Showing 16 of ${facts.imageCount} image references; see Raw for the remainder.`, 'content'));
-      detail.timelineSections.push(notice('Image reference recorded; preview is not available.', 'content'));
+      if (facts.imageCount > 16) detail.timelineSections.push(notice(translate('imageRemainder', { count: facts.imageCount }), 'content'));
+      detail.timelineSections.push(notice(translate('imageNotice'), 'content'));
     } else detail.timelineSections.push(...content(text(facts.text) || event.preview));
-    if (event.kind === 'compaction') detail.inspectorSections.push(notice('This is a recorded compaction message. Earlier physical history remains visible as archival evidence.'));
+    if (event.kind === 'compaction') detail.inspectorSections.push(notice(translate('compactionNotice')));
   } else if (!protocolSections(detail, raws[0])) {
     detail.timelineSections.push(...content(text(facts.text) || event.preview));
   }
   if (facts.inputScope === 'subagent') {
-    detail.timelineSections.unshift(notice('Input to a subagent. The recorded user role does not establish human authorship.', 'content'));
-    context.push(['Parent session', session.parentSessionId]);
+    detail.timelineSections.unshift(notice(translate('subagentNotice'), 'content'));
+    context.push([translate('parentSession'), session.parentSessionId]);
   }
   if (facts.desktopOrigin) {
-    detail.timelineSections.unshift(notice('Scheduled automation input; not counted as a user message or a new user turn.', 'content'));
-    detail.inspectorSections.push(kv('Recorded automation origin', [['Source', 'workbuddy.db: sessions + automation_runs'],
-      ['Snapshot policy', 'copied_value'], ['Session', facts.desktopOrigin.sessionId], ['Automation', facts.desktopOrigin.automationId],
-      ['Run', facts.desktopOrigin.runId], ['Run kind', facts.desktopOrigin.runKind]], 'context'));
+    detail.timelineSections.unshift(notice(translate('scheduledNotice'), 'content'));
+    detail.inspectorSections.push(kv(translate('automationOrigin'), [[translate('source'), 'workbuddy.db: sessions + automation_runs'],
+      [translate('snapshotPolicy'), 'copied_value'], [translate('session'), facts.desktopOrigin.sessionId], [translate('automation'), facts.desktopOrigin.automationId],
+      [translate('run'), facts.desktopOrigin.runId], [translate('runKind'), facts.desktopOrigin.runKind]], 'context'));
   }
   recordedMetadata(detail, raws, facts, context);
   if (event.tokenUsage?.length) detail.inspectorSections.push({ type: 'token_usage', purpose: 'context', items: event.tokenUsage });

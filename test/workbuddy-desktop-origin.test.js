@@ -5,7 +5,8 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
-const { buildWorkbuddyIndex } = require('../src/workbuddy');
+const { buildWorkbuddyIndex, workbuddyAdapter } = require('../src/workbuddy');
+const { readDesktopOrigins } = require('../src/workbuddy-desktop-origin');
 const { materializeSessionForIndex, validateIndexOwnershipForCommit, buildEventDetailForSession, readIndexedRawRecord } = require('../src/source-adapters');
 const { disposeIndexResources } = require('../src/index-resources');
 const { validateLogicalDetailEnvelope, validateStructuredLogicalDetailDto } = require('../src/shared/logical-detail-contract');
@@ -40,6 +41,18 @@ async function indexFor(t, f) {
   const index = await buildWorkbuddyIndex({ sourceHome: f.home, repoRoot: f.repo });
   t.after(() => disposeIndexResources(index)); await validateIndexOwnershipForCommit(index); return index;
 }
+async function addIndependentScheduledSession(f) {
+  const sessionId = 'a-other'; const automationId = 'other-automation';
+  const rows = f.lines.map((line) => JSON.stringify({ ...JSON.parse(line), sessionId }));
+  await fs.writeFile(path.join(path.dirname(f.file), sessionId + '.jsonl'), rows.join('\n') + '\n');
+  const db = new DatabaseSync(f.dbFile);
+  try {
+    db.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?)').run(sessionId, f.repo, 1,
+      JSON.stringify({ conversationTags: { automationId } }));
+    db.prepare('INSERT INTO automation_runs VALUES (?, ?, ?, ?)').run('other-run', automationId, f.repo,
+      JSON.stringify({ sessionId, conversationId: sessionId, runKind: 'scheduled' }));
+  } finally { db.close(); }
+}
 
 test('desktop scheduled origin excludes only initial input and preserves query, detail and exact JSONL Raw', async (t) => {
   const f = await fixture(t); const dbBefore = await fs.readFile(f.dbFile);
@@ -54,6 +67,15 @@ test('desktop scheduled origin excludes only initial input and preserves query, 
   validateStructuredLogicalDetailDto(detail); validateLogicalDetailEnvelope(detail, event);
   assert.match(JSON.stringify(detail.timelineSections), /AUTOMATIC_INPUT_MARKER/);
   assert.match(JSON.stringify(detail.inspectorSections), /workbuddy.db: sessions \+ automation_runs.*copied_value.*automation-1.*run-1/);
+  const chinese = await buildEventDetailForSession(index, session, event.id, event.layer, { locale: 'zh-CN' });
+  assert.equal(chinese.title, '定时自动化输入');
+  assert.match(JSON.stringify(chinese.timelineSections), /不计为用户消息或新回合/);
+  assert.match(JSON.stringify(chinese.inspectorSections), /已记录的自动化来源.*automation-1.*run-1/);
+  const timeline = workbuddyAdapter.query.getTimeline(index, session, { layer: 'protocol', locale: 'zh-CN' });
+  const localizedEvent = timeline.events.find((item) => item.subtype === 'workbuddy_scheduled_input');
+  assert.equal(localizedEvent.label, '定时自动化输入');
+  assert.equal(localizedEvent.preview, 'AUTOMATIC_INPUT_MARKER');
+  assert.equal(timeline.eventKinds.protocol.find((item) => item.value === 'workbuddy_scheduled_input').label, '定时自动化输入');
   assert.equal((await readIndexedRawRecord(index, session, event.rawRefs[0].rawId)).raw, f.lines[0]);
   const service = await createHistoryService({ source: 'workbuddy', workbuddyHome: f.home, repo: f.repo });
   t.after(() => service.close());
@@ -82,6 +104,92 @@ test('missing, ambiguous, mismatched and malformed desktop provenance never crea
     assert.equal(index.sessions[0].counts.userMessages, 2);
     const session = await materializeSessionForIndex(index, index.sessions[0]);
     assert.ok(session.logicalEvents.every(e => e.subtype !== 'workbuddy_scheduled_input'));
+  }
+});
+
+test('recurring automation history does not hide its current scheduled run or other origins', async (t) => {
+  const f = await fixture(t); await addIndependentScheduledSession(f);
+  const db = new DatabaseSync(f.dbFile);
+  try {
+    const insert = db.prepare('INSERT INTO automation_runs VALUES (?, ?, ?, ?)');
+    for (let i = 0; i < 101; i++) {
+      const sessionId = 'old-session-' + i;
+      insert.run('old-run-' + i, 'automation-1', f.repo, JSON.stringify({ sessionId, conversationId: sessionId, runKind: 'scheduled' }));
+    }
+    insert.run('malformed-run', 'automation-1', f.repo, '{broken');
+    insert.run('oversized-run', 'automation-1', f.repo, JSON.stringify({ padding: 'x'.repeat(16385) }));
+  } finally { db.close(); }
+  const index = await indexFor(t, f);
+  assert.equal(index.sessions.length, 2);
+  assert.equal(index.sourceDiagnostics.totalCount, 0);
+  assert.ok(index.sessions.every((session) => session.counts.userMessages === 1 && session.counts.turns === 1));
+  for (const indexed of index.sessions) {
+    const session = await materializeSessionForIndex(index, indexed);
+    assert.ok(session.logicalEvents.some((event) => event.subtype === 'workbuddy_scheduled_input'));
+  }
+});
+
+test('an overflowing correlated run lookup preserves other verified scheduled origins', async (t) => {
+  const f = await fixture(t); await addIndependentScheduledSession(f);
+  const db = new DatabaseSync(f.dbFile);
+  try {
+    const insert = db.prepare('INSERT INTO automation_runs VALUES (?, ?, ?, ?)');
+    for (let i = 0; i < 101; i++) {
+      insert.run('mismatched-run-' + i, 'automation-1', path.join(f.home, 'different'),
+        JSON.stringify({ sessionId: 'scheduled', conversationId: 'scheduled', runKind: 'scheduled' }));
+    }
+  } finally { db.close(); }
+  const index = await indexFor(t, f);
+  const busy = index.sessions.find((session) => session.sourceSessionId === 'scheduled');
+  const other = index.sessions.find((session) => session.sourceSessionId === 'a-other');
+  assert.equal(busy.counts.userMessages, 2);
+  assert.equal(other.counts.userMessages, 1);
+  assert.equal(index.sourceDiagnostics.counts.WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED, 1);
+  assert.equal(index.sourceDiagnostics.totalCount, 1);
+  const otherSession = await materializeSessionForIndex(index, other);
+  assert.ok(otherSession.logicalEvents.some((event) => event.subtype === 'workbuddy_scheduled_input'));
+});
+
+test('invalid desktop session values do not discard other verified origins', async (t) => {
+  const f = await fixture(t); await addIndependentScheduledSession(f);
+  const db = new DatabaseSync(f.dbFile);
+  try { db.exec("UPDATE sessions SET is_background_automation = 9223372036854775807 WHERE id = 'scheduled'"); }
+  finally { db.close(); }
+  const index = await indexFor(t, f);
+  const invalid = index.sessions.find((session) => session.sourceSessionId === 'scheduled');
+  const other = index.sessions.find((session) => session.sourceSessionId === 'a-other');
+  assert.equal(invalid.counts.userMessages, 2);
+  assert.equal(other.counts.userMessages, 1);
+  assert.equal(index.sourceDiagnostics.counts.WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED, 1);
+  assert.equal(index.sourceDiagnostics.totalCount, 1);
+});
+
+test('desktop candidate and run scans yield so cancellation stops the scan', async (t) => {
+  for (const phase of ['candidates', 'runs']) {
+    const f = await fixture(t);
+    if (phase === 'runs') {
+      const db = new DatabaseSync(f.dbFile);
+      try {
+        db.exec('BEGIN');
+        const insert = db.prepare('INSERT INTO automation_runs VALUES (?, ?, ?, ?)');
+        for (let i = 0; i < 600; i++) {
+          const sessionId = 'old-' + i;
+          insert.run('old-' + i, 'automation-1', f.repo, JSON.stringify({ sessionId, conversationId: sessionId, runKind: 'scheduled' }));
+        }
+        db.exec('COMMIT');
+      } finally { db.close(); }
+    }
+    const ids = phase === 'candidates' ? Array.from({ length: 600 }, (_, i) => 'absent-' + i) : ['scheduled'];
+    const candidates = ids.map((id) => ({ sourceFile: `synthetic/${id}.jsonl`, header: { id, cwd: f.repo } }));
+    const controller = new AbortController(); let checks = 0;
+    const signal = { throwIfAborted() {
+      if (++checks === 40) setImmediate(() => controller.abort());
+      controller.signal.throwIfAborted();
+    } };
+    const diagnostics = [];
+    await assert.rejects(readDesktopOrigins(f.home, candidates, signal, (diagnostic) => diagnostics.push(diagnostic)), { name: 'AbortError' }, phase);
+    assert.ok(checks < 300, phase + ' should stop before exhausting the scan');
+    assert.deepEqual(diagnostics, []);
   }
 });
 

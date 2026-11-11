@@ -264,7 +264,7 @@ function makeSession(document, sourceFile, desktopOrigin) {
     const messageClass = messageClasses[i];
     if (row.type === 'message' && messageClass.kind === 'protocol') {
       if (messageClass.subtype === 'workbuddy_scheduled_input') {
-        const event = protocol(session, raw, messageClass.subtype, 'Scheduled automation input');
+        const event = protocol(session, raw, messageClass.subtype, textOf(row.content));
         event.workbuddy = { text: safe(textOf(row.content)), desktopOrigin: safe(desktopOrigin) };
         session.logicalEvents.push(event); continue;
       }

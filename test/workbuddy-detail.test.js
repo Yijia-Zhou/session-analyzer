@@ -39,9 +39,9 @@ async function fixture(t, rows) {
   const session = await materializeSessionForIndex(index, index.sessions[0]);
   return { index, session, file, lines };
 }
-async function detailFor(f, event) {
+async function detailFor(f, event, options = {}) {
   assert.ok(event, 'the expected event must be represented');
-  const detail = await buildEventDetailForSession(f.index, f.session, event.id, event.layer);
+  const detail = await buildEventDetailForSession(f.index, f.session, event.id, event.layer, options);
   validateStructuredLogicalDetailDto(detail);
   validateLogicalDetailEnvelope(detail, event);
   return detail;
@@ -116,6 +116,43 @@ test('native nested error receipts override completed delivery without interpret
 
 const imageRef = (fields = {}) => ({ type: 'image_blob_ref', blob_id: 'synthetic-blob', mime: 'image/png',
   original_filename: 'SYNTHETIC_IMAGE.png', size: 123, blob_path: '/nonexistent/synthetic-image.png', ...fields });
+
+test('WorkBuddy attachment and deferred-tool details honor locale without translating source values', async (t) => {
+  const paths = Array.from({ length: 17 }, (_, i) => `/synthetic/file-${i}.txt`);
+  const fileText = `<system-reminder data-role="additional-data"><attached_files>${paths.map((file) => `\n<file path="${file}" />`).join('')}\n</attached_files></system-reminder>`
+    + `<user_query>${paths.map((file) => `@"${file}"`).join(' ')} File reference</user_query>`;
+  const f = await fixture(t, [
+    { ...user(), content: [{ type: 'input_text', text: 'Image attachment' },
+      ...Array.from({ length: 17 }, (_, i) => imageRef({ blob_id: `blob-${i}`, original_filename: i ? '' : 'Name' }))] },
+    { ...user(fileText), id: 'files' },
+    ...tool('translated', 'DeferExecuteTool', { toolName: 'File reference' },
+      { title: 'Image attachment', content: 'Recorded result', rawResponse: { is_error: true } }),
+  ]);
+  const image = f.session.logicalEvents.find((event) => event.workbuddy?.imageMessage);
+  const imageDetail = await detailFor(f, image, { locale: 'zh-CN' });
+  const imageSections = imageDetail.timelineSections.filter((section) => section.title === '图片附件');
+  assert.equal(imageSections.length, 16);
+  assert.deepEqual(imageSections[0].entries.map((entry) => entry.key), ['名称', '媒体类型', '字节数']);
+  assert.equal(imageSections[0].entries[0].value, 'Name');
+  assert.equal(imageSections[1].entries[0].value, '未命名图片');
+  assert.match(primary(imageDetail), /Image attachment/);
+  assert.match(primary(imageDetail), /显示 17 个图片引用中的 16 个/);
+  assert.match(primary(imageDetail), /无法预览/);
+
+  const file = f.session.logicalEvents.find((event) => event.workbuddy?.fileMessage);
+  const fileDetail = await detailFor(f, file, { locale: 'zh-CN' });
+  assert.equal(fileDetail.timelineSections.filter((section) => section.title === '文件引用').length, 16);
+  assert.match(primary(fileDetail), /显示 17 个文件引用中的 16 个/);
+  assert.match(primary(fileDetail), /文件内容不会被读取/);
+  assert.match(primary(fileDetail), /File reference/);
+  assert.match(primary(fileDetail), /\/synthetic\/file-0\.txt/);
+
+  const toolDetail = await detailFor(f, toolEvent(f, 'translated'), { locale: 'zh-CN' });
+  assert.match(primary(toolDetail), /延迟工具请求/);
+  assert.match(primary(toolDetail), /工具响应报告错误/);
+  assert.match(primary(toolDetail), /File reference/);
+  assert.match(primary(toolDetail), /Image attachment/);
+});
 
 test('native image-only envelope has one searchable user event and keeps wrappers in inspection and exact Raw', async (t) => {
   const f = await fixture(t, [{ ...user(), content: [
@@ -392,6 +429,8 @@ test('compaction details retain readable summaries, execution model and recorded
   }]);
   const event = f.session.logicalEvents.find((item) => item.kind === 'compaction');
   const detail = await detailFor(f, event);
+  const chinese = await detailFor(f, event, { locale: 'zh-CN' });
+  assert.match(JSON.stringify(chinese.inspectorSections), /已记录的压缩消息/);
   assert.match(primary(detail), /RECORDED_COMPACTION_SUMMARY/);
   const metadata = JSON.stringify(detail.inspectorSections);
   for (const value of ['execution-model', 'selected-model', 'synthetic-compaction', 'synthetic-request', 'Input tokens', '42', 'Output tokens', '7']) {

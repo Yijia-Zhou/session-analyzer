@@ -6,6 +6,7 @@ const fsp = require('node:fs/promises');
 const { isDeepStrictEqual } = require('node:util');
 const { isPathInsideOrSame, resolveFsPath } = require('./shared/fs-path');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
+const i18n = require('./shared/i18n');
 const { createSessionQuery } = require('./session-query');
 const { createProjectQueryStoreBuilder } = require('./project-query-store');
 const { createSourceDiagnostics } = require('./source-diagnostics');
@@ -33,7 +34,7 @@ function projectCarried(session) {
   const { rawEvents, logicalEvents, analysis, presentationIndexes, ...carried } = session;
   return structuredClone(carried);
 }
-function catalog(sessions) {
+function catalog(sessions, options = {}) {
   const maps = { main: new Map(), protocol: new Map(), raw: new Map() };
   for (const session of sessions) {
     for (const event of session.logicalEvents) {
@@ -43,7 +44,8 @@ function catalog(sessions) {
     for (const raw of session.rawEvents) maps.raw.set(raw.payloadType, (maps.raw.get(raw.payloadType) || 0) + 1);
   }
   return Object.fromEntries(Object.entries(maps).map(([layer, map]) => [layer,
-    [...map].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value, label: value, count }))]));
+    [...map].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value,
+      label: layer === 'protocol' && value === 'workbuddy_scheduled_input' ? i18n.eventKindLabel(value, options.locale) : value, count }))]));
 }
 const workbuddyQuery = createSessionQuery({ schemaVersion: CANONICAL_SCHEMA_VERSION, rawRef: logical.workbuddyRawRef, eventKindCatalog: catalog });
 

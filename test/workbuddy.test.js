@@ -45,6 +45,10 @@ test('native catalog discovers recorded cwd, includes owned subagents and never 
   const detail = await buildEventDetailForSession(index, childSession, input.id, input.layer);
   assert.match(JSON.stringify(detail.timelineSections), /does not establish human authorship/);
   assert.match(JSON.stringify(detail.inspectorSections), /Parent session/);
+  const chinese = await buildEventDetailForSession(index, childSession, input.id, input.layer, { locale: 'zh-CN' });
+  assert.equal(chinese.title, '子代理输入');
+  assert.match(JSON.stringify(chinese.timelineSections), /不能证明由人工发送/);
+  assert.match(JSON.stringify(chinese.inspectorSections), /父会话/);
   assert.equal(await projectQueryProjectionDigestAsync(childSession, workbuddyAdapter.query.projectQueryPresentation), child.queryProjectionDigest);
   assert.notEqual(session.logicalEvents.find((event) => event.kind === 'user_message').label, 'Subagent input');
   assert.equal(Object.hasOwn(index.sessions[0], 'logicalEvents'), false);
