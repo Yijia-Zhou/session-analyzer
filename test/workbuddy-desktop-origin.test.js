@@ -359,6 +359,193 @@ test('duplicate physical session names cannot borrow a unique desktop origin', a
   assert.equal(index.sourceDiagnostics.counts.WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED, 2);
 });
 
+test('duplicate main-session names outside the selected project cannot establish desktop origin', async (t) => {
+  for (const malformed of [false, true]) {
+    const f = await fixture(t); const otherRepo = path.join(f.home, 'other-project');
+    const other = path.join(f.home, 'projects', 'another-container');
+    await fs.mkdir(otherRepo); await fs.mkdir(other);
+    const duplicate = f.lines.map((line) => JSON.stringify({ ...JSON.parse(line), cwd: otherRepo }));
+    await fs.writeFile(path.join(other, 'scheduled.jsonl'), malformed ? '{broken\n' : duplicate.join('\n') + '\n');
+    const index = await indexFor(t, f);
+    assert.equal(index.sessions.length, 1);
+    assert.equal(index.sessions[0].counts.userMessages, 2);
+    assert.equal(index.sessions[0].counts.turns, 2);
+    assert.equal(index.sessions[0].title, 'AUTOMATIC_INPUT_MARKER');
+    assert.equal(index.sourceDiagnostics.counts.WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED, 1);
+    const session = await materializeSessionForIndex(index, index.sessions[0]);
+    assert.ok(session.logicalEvents.every((event) => event.subtype !== 'workbuddy_scheduled_input'));
+    const first = session.logicalEvents.find((event) => event.kind === 'user_message');
+    assert.equal((await readIndexedRawRecord(index, session, first.rawRefs[0].rawId)).raw, f.lines[0]);
+  }
+});
+
+test('a same-named subagent does not make the main desktop session ambiguous', async (t) => {
+  const f = await fixture(t); const otherRepo = path.join(f.home, 'other-project');
+  const children = path.join(f.home, 'projects', 'synthetic', 'scheduled', 'subagents');
+  await fs.mkdir(otherRepo); await fs.mkdir(children, { recursive: true });
+  const child = f.lines.map((line) => JSON.stringify({ ...JSON.parse(line), cwd: otherRepo }));
+  await fs.writeFile(path.join(children, 'scheduled.jsonl'), child.join('\n') + '\n');
+  const index = await indexFor(t, f);
+  assert.equal(index.sessions.length, 1);
+  assert.equal(index.sessions[0].counts.userMessages, 1);
+  assert.equal(index.sourceDiagnostics.totalCount, 0);
+  const session = await materializeSessionForIndex(index, index.sessions[0]);
+  assert.ok(session.logicalEvents.some((event) => event.subtype === 'workbuddy_scheduled_input'));
+});
+
+function indexWithUnreadableDirectory(f, unreadable) {
+  const script = `
+    const fs = require('node:fs/promises');
+    const readdir = fs.readdir;
+    fs.readdir = async (directory, ...options) => {
+      if (directory === process.argv[6]) {
+        const error = new Error('Synthetic unreadable directory'); error.code = 'EACCES'; throw error;
+      }
+      return readdir(directory, ...options);
+    };
+    const { buildWorkbuddyIndex } = require(process.argv[1]);
+    const { validateIndexOwnershipForCommit, materializeSessionForIndex } = require(process.argv[2]);
+    const { disposeIndexResources } = require(process.argv[3]);
+    (async () => {
+      const index = await buildWorkbuddyIndex({ sourceHome: process.argv[4], repoRoot: process.argv[5] });
+      try {
+        await validateIndexOwnershipForCommit(index);
+        if (index.sessions.length !== 1) throw new Error('Expected one selected Session');
+        const session = await materializeSessionForIndex(index, index.sessions[0]);
+        process.stdout.write(JSON.stringify({ counts: session.counts, title: session.title,
+          diagnostics: index.sourceDiagnostics.counts,
+          scheduled: session.logicalEvents.some((event) => event.subtype === 'workbuddy_scheduled_input') }));
+      } finally { await disposeIndexResources(index); }
+    })().catch((error) => { console.error(error); process.exitCode = 1; });
+  `;
+  const child = spawnSync(process.execPath, ['--no-warnings', '-e', script,
+    require.resolve('../src/workbuddy'), require.resolve('../src/source-adapters'), require.resolve('../src/index-resources'),
+    f.home, f.repo, unreadable], { encoding: 'utf8', timeout: 15000 });
+  assert.ifError(child.error); assert.equal(child.status, 0, child.stderr);
+  return JSON.parse(child.stdout);
+}
+
+test('an unreadable project container leaves desktop origin unverified', async (t) => {
+  const f = await fixture(t); const otherRepo = path.join(f.home, 'other-project');
+  const other = path.join(f.home, 'projects', 'unreadable-container');
+  await fs.mkdir(otherRepo); await fs.mkdir(other);
+  const duplicate = f.lines.map((line) => JSON.stringify({ ...JSON.parse(line), cwd: otherRepo }));
+  await fs.writeFile(path.join(other, 'scheduled.jsonl'), duplicate.join('\n') + '\n');
+  const result = indexWithUnreadableDirectory(f, other);
+  assert.equal(result.counts.userMessages, 2);
+  assert.equal(result.counts.turns, 2);
+  assert.equal(result.title, 'AUTOMATIC_INPUT_MARKER');
+  assert.equal(result.scheduled, false);
+  assert.equal(result.diagnostics.SOURCE_ARTIFACT_UNREADABLE, 1);
+  assert.equal(result.diagnostics.WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED, 1);
+});
+
+test('an unreadable subagent directory does not invalidate main-session name evidence', async (t) => {
+  const f = await fixture(t); const children = path.join(f.home, 'projects', 'synthetic', 'scheduled', 'subagents');
+  await fs.mkdir(children, { recursive: true });
+  const result = indexWithUnreadableDirectory(f, children);
+  assert.equal(result.counts.userMessages, 1);
+  assert.equal(result.scheduled, true);
+  assert.equal(result.diagnostics.SOURCE_ARTIFACT_UNREADABLE, 1);
+  assert.equal(result.diagnostics.WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED, undefined);
+});
+
+test('desktop origin requires stable main-session directories through database capture', async (t) => {
+  for (const mode of ['duplicate', 'unrelated', 'unreadable', 'aba', 'unchanged']) {
+    const f = await fixture(t, { flag: 0 });
+    const other = path.join(f.home, 'projects', 'another-container'); await fs.mkdir(other);
+    const script = `
+      const fs = require('node:fs/promises'); const path = require('node:path');
+      const { DatabaseSync } = require('node:sqlite');
+      const storage = require(process.argv[1]);
+      const snapshot = storage.readWorkbuddySnapshot; const stat = fs.stat;
+      let changed = false; let removed = false;
+      fs.stat = async (directory, ...options) => {
+        if (changed && process.argv[8] === 'unreadable' && directory === process.argv[6]) {
+          const error = new Error('Synthetic unreadable directory'); error.code = 'EACCES'; throw error;
+        }
+        if (changed && !removed && process.argv[8] === 'aba' && directory === process.argv[6]) {
+          removed = true;
+          await fs.rm(path.join(directory, 'scheduled.jsonl'));
+          await fs.utimes(directory, new Date(0), new Date(0));
+        }
+        return stat(directory, ...options);
+      };
+      storage.readWorkbuddySnapshot = async (...args) => {
+        const result = await snapshot(...args);
+        if (!changed) {
+          changed = true;
+          const name = ['duplicate', 'aba'].includes(process.argv[8]) ? 'scheduled.jsonl' : 'unrelated.jsonl';
+          if (process.argv[8] !== 'unchanged') await fs.copyFile(process.argv[7], path.join(process.argv[6], name));
+          const db = new DatabaseSync(path.join(process.argv[4], 'workbuddy.db'));
+          try { db.exec('UPDATE sessions SET is_background_automation=1'); } finally { db.close(); }
+        }
+        return result;
+      };
+      const { buildWorkbuddyIndex } = require(process.argv[2]);
+      const { validateIndexOwnershipForCommit, materializeSessionForIndex } = require(process.argv[3]);
+      const { disposeIndexResources } = require(process.argv[9]);
+      (async () => {
+        const index = await buildWorkbuddyIndex({ sourceHome: process.argv[4], repoRoot: process.argv[5] });
+        try {
+          await validateIndexOwnershipForCommit(index);
+          if (index.sessions.length !== 1) throw new Error('Expected the original discovery snapshot');
+          const session = await materializeSessionForIndex(index, index.sessions[0]);
+          process.stdout.write(JSON.stringify({ userMessages: session.counts.userMessages,
+            scheduled: session.logicalEvents.some((event) => event.subtype === 'workbuddy_scheduled_input'),
+            diagnostics: index.sourceDiagnostics.counts }));
+        } finally { await disposeIndexResources(index); }
+      })().catch((error) => { console.error(error); process.exitCode = 1; });
+    `;
+    const child = spawnSync(process.execPath, ['--no-warnings', '-e', script,
+      require.resolve('../src/workbuddy-storage'), require.resolve('../src/workbuddy'), require.resolve('../src/source-adapters'),
+      f.home, f.repo, other, f.file, mode, require.resolve('../src/index-resources')], { encoding: 'utf8', timeout: 15000 });
+    assert.ifError(child.error); assert.equal(child.status, 0, child.stderr);
+    const result = JSON.parse(child.stdout); const accepted = mode === 'unchanged';
+    assert.equal(result.userMessages, accepted ? 1 : 2, mode);
+    assert.equal(result.scheduled, accepted, mode);
+    assert.equal(result.diagnostics.WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED, accepted ? undefined : 1, mode);
+    if (mode === 'unreadable') assert.equal(result.diagnostics.SOURCE_ARTIFACT_UNREADABLE, 1);
+  }
+});
+
+test('a leading protocol user record does not transfer scheduled identity to later input', async (t) => {
+  for (const providerData of [{ skipRun: true }, { scheduledTaskTrigger: { taskId: 'synthetic' } }]) {
+    const f = await fixture(t);
+    const first = JSON.stringify({ type: 'message', id: 'internal', role: 'user', sessionId: 'scheduled', cwd: f.repo,
+      content: [{ type: 'input_text', text: 'INTERNAL_PREFIX' }], providerData });
+    await fs.writeFile(f.file, [first, ...f.lines].join('\n') + '\n');
+    const index = await indexFor(t, f); const session = await materializeSessionForIndex(index, index.sessions[0]);
+    assert.equal(session.counts.userMessages, 2);
+    assert.equal(session.counts.turns, 2);
+    assert.equal(session.title, 'AUTOMATIC_INPUT_MARKER');
+    assert.ok(session.logicalEvents.every((event) => event.subtype !== 'workbuddy_scheduled_input'));
+    assert.ok(session.logicalEvents.some((event) => event.layer === 'protocol' && event.searchText.includes('INTERNAL_PREFIX')));
+    assert.equal(index.sourceDiagnostics.totalCount, 0);
+  }
+});
+
+test('a conflicting first record sessionId cannot acquire scheduled identity', async (t) => {
+  for (const conflicting of ['foreign-session', '', null, 42]) {
+    const f = await fixture(t);
+    const first = JSON.stringify({ ...JSON.parse(f.lines[0]), sessionId: conflicting });
+    await fs.writeFile(f.file, [first, ...f.lines.slice(1)].join('\n') + '\n');
+    const index = await indexFor(t, f); const session = await materializeSessionForIndex(index, index.sessions[0]);
+    assert.equal(session.counts.userMessages, 2, JSON.stringify(conflicting));
+    assert.equal(session.counts.turns, 2);
+    assert.equal(session.title, 'AUTOMATIC_INPUT_MARKER');
+    assert.ok(session.logicalEvents.every((event) => event.subtype !== 'workbuddy_scheduled_input'));
+    const event = session.logicalEvents.find((item) => item.kind === 'user_message');
+    assert.equal((await readIndexedRawRecord(index, session, event.rawRefs[0].rawId)).raw, first);
+  }
+  const f = await fixture(t);
+  const record = JSON.parse(f.lines[0]); delete record.sessionId;
+  await fs.writeFile(f.file, [JSON.stringify(record), ...f.lines.slice(1)].join('\n') + '\n');
+  const index = await indexFor(t, f); const session = await materializeSessionForIndex(index, index.sessions[0]);
+  assert.equal(session.counts.userMessages, 1, 'a missing optional sessionId remains supported');
+  assert.ok(session.logicalEvents.some((event) => event.subtype === 'workbuddy_scheduled_input'));
+});
+
 test('WAL capture preserves committed WAL evidence without creating or changing source side files', async (t) => {
   for (const live of [false, true]) {
     const f = await fixture(t, { flag: 0 }); const writer = new DatabaseSync(f.dbFile);

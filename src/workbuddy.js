@@ -88,13 +88,22 @@ async function buildWorkbuddyIndex({ sourceHome, repoRoot, signal, onProgress, o
   const diagnostics = createSourceDiagnostics();
   const addDiagnostic = diagnostics.add;
   diagnostics.add = (value) => { addDiagnostic(value); onDiagnostic?.(value); };
-  const files = await storage.collectWorkbuddyFiles(sessionsRoot, signal, diagnostics.add);
-  const candidates = [];
+  let mainScanComplete = true; const mainDirectoryStates = new Map();
+  const files = await storage.collectWorkbuddyFiles(sessionsRoot, signal, diagnostics.add,
+    { onMainScanIncomplete: () => { mainScanComplete = false; },
+      onMainDirectoryState: (directory, state) => mainDirectoryStates.set(directory, state) });
+  const candidates = []; const physicalIdentities = new Map();
   let skippedFileCount = 0; let unknownFileCount = 0; let candidateBytes = 0;
   for (const file of files) {
     storage.abort(signal);
+    const relative = path.relative(sessionsRoot, file);
+    const sourceFile = relative.split(path.sep).join('/');
+    if (sourceFile.split('/').length === 2) {
+      const id = path.basename(file, '.jsonl');
+      physicalIdentities.set(id, (physicalIdentities.get(id) || 0) + 1);
+    }
     try {
-      const document = storage.parseWorkbuddyDocument(await storage.readWorkbuddySnapshot(file, { sessionsRoot, signal }), path.relative(sessionsRoot, file));
+      const document = storage.parseWorkbuddyDocument(await storage.readWorkbuddySnapshot(file, { sessionsRoot, signal }), relative);
       if (!document.cwd || !isPathInsideOrSame(resolveFsPath(document.cwd), resolvedRepo)) {
         if (!document.cwd) unknownFileCount++; else skippedFileCount++;
         continue;
@@ -105,10 +114,28 @@ async function buildWorkbuddyIndex({ sourceHome, repoRoot, signal, onProgress, o
         acceptedSnapshot: { acceptedBytes: document.acceptedBytes, digest: document.digest, fileIdentity: document.fileIdentity },
         // Normalize only host separators: a POSIX backslash is part of the
         // physical filename and must survive every later snapshot read.
-        sourceFile: path.relative(sessionsRoot, file).split(path.sep).join('/') });
+        sourceFile });
     } catch (error) { report(error, file, diagnostics.add, signal); skippedFileCount++; }
   }
-  const desktopOrigins = await readDesktopOrigins(sourceHome, candidates, signal, diagnostics.add);
+  const desktopOrigins = await readDesktopOrigins(sourceHome, candidates, signal, diagnostics.add, physicalIdentities, mainScanComplete);
+  if (desktopOrigins.size) {
+    let stable = mainScanComplete;
+    for (const [directory, state] of mainDirectoryStates) {
+      storage.abort(signal);
+      try {
+        if (await storage.readWorkbuddyDirectoryState(directory) !== state) { stable = false; break; }
+      } catch (error) {
+        storage.abort(signal);
+        if (!['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EIO', 'ELOOP'].includes(error.code)) throw error;
+        diagnostics.add({ code: 'SOURCE_ARTIFACT_UNREADABLE', path: directory, message: error.message });
+        stable = false; break;
+      }
+    }
+    if (!stable) for (const { sourceFile } of candidates) {
+      if (desktopOrigins.delete(sourceFile)) diagnostics.add({ code: 'WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED', path: sourceFile,
+        message: 'Main-session directory evidence changed during capture; recorded JSONL identity is retained.' });
+    }
+  }
   const builder = createProjectQueryStoreBuilder({ signal, presentationForEvent: workbuddyQuery.projectQueryPresentation,
     shareTextRanges: true });
   try {

@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -84,6 +85,62 @@ test('file-like literal text and incomplete or mismatched envelopes do not acqui
     assert.equal(event.workbuddy.text, value);
     assert.equal(f.session.counts.userMessages, 1);
     await detailFor(f, event);
+  }
+});
+
+test('file references require fully qualified matching paths without conflating UNC and POSIX', async (t) => {
+  const cases = [
+    ['\\project\\file.txt', '\\project\\file.txt', false],
+    ['C:\\project\\file.txt', '\\project\\file.txt', false],
+    ['\\project\\file.txt', 'C:\\project\\file.txt', false],
+    ['C:project\\file.txt', 'C:project\\file.txt', false],
+    ['//server/share/file.txt', '/server/share/file.txt', false],
+    ['/server/share/file.txt', '//server/share/file.txt', false],
+    ['//server', '//server', false],
+    ['C:\\project\\file.txt', 'c:/PROJECT/file.txt', true],
+    ['\\\\server\\share\\file.txt', '//SERVER/share/file.txt', true],
+    ['/project/file.txt', '/project/file.txt', true],
+  ];
+  const texts = cases.map(([attached, query]) =>
+    `<system-reminder data-role="additional-data"><attached_files><file path="${attached}" /></attached_files></system-reminder><user_query>@"${query}" EXPLANATION</user_query>`);
+  const f = await fixture(t, texts.map((text, i) => ({ ...user(text), id: `input-${i}` })));
+  const events = f.session.logicalEvents.filter((event) => event.kind === 'user_message');
+  assert.equal(events.length, cases.length);
+  for (const [i, [, , accepted]] of cases.entries()) {
+    const event = events[i];
+    assert.equal(event.workbuddy.fileMessage === true, accepted, JSON.stringify(cases[i]));
+    assert.equal(event.workbuddy.text, accepted ? 'EXPLANATION' : texts[i]);
+    assert.equal((await readIndexedRawRecord(f.index, f.session, event.rawRefs[0].rawId)).raw, f.lines[i]);
+  }
+});
+
+test('Windows root-relative file references preserve the complete literal input', () => {
+  // Run in a separate process so Windows flavor selection can be exercised on
+  // Linux without changing the platform seen by other tests.
+  const script = `
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const { makeWorkbuddySession } = require(process.argv[1]);
+    const paths = JSON.parse(process.argv[2]);
+    const result = paths.map(([attached, query]) => {
+      const text = '<system-reminder data-role="additional-data"><attached_files><file path="' + attached
+        + '" /></attached_files></system-reminder><user_query>@"' + query + '" EXPLANATION</user_query>';
+      const record = { type: 'message', id: 'input', role: 'user', content: [{ type: 'input_text', text }] };
+      const line = JSON.stringify(record);
+      const session = makeWorkbuddySession({ id: 'synthetic', cwd: 'C:\\\\project', acceptedBytes: line.length,
+        lines: [line], rows: [{ line: 1, parsed: record }] }, 'synthetic/synthetic.jsonl');
+      const event = session.logicalEvents.find((item) => item.kind === 'user_message');
+      return { fileMessage: event.workbuddy.fileMessage === true, text: event.workbuddy.text, literal: text };
+    });
+    process.stdout.write(JSON.stringify(result));
+  `;
+  const paths = [['\\project\\file.txt', '\\project\\file.txt'], ['C:\\project\\file.txt', '\\project\\file.txt'],
+    ['\\project\\file.txt', 'C:\\project\\file.txt']];
+  const child = spawnSync(process.execPath, ['-e', script, require.resolve('../src/workbuddy-logical'), JSON.stringify(paths)],
+    { encoding: 'utf8', timeout: 15000 });
+  assert.ifError(child.error); assert.equal(child.status, 0, child.stderr);
+  for (const result of JSON.parse(child.stdout)) {
+    assert.equal(result.fileMessage, false);
+    assert.equal(result.text, result.literal);
   }
 });
 

@@ -7,28 +7,9 @@ const { constants } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { setImmediate: yieldImmediate } = require('node:timers/promises');
-const { isPathInsideOrSame, fsPathApi } = require('./shared/fs-path');
+const { isPathInsideOrSame, sameRecordedPath } = require('./shared/fs-path');
 const storage = require('./workbuddy-storage');
 const scalar = (value) => typeof value === 'string' && value.length > 0 && value.length <= 4096;
-function recordedPathIdentity(value) {
-  if (typeof value !== 'string' || !value) return '';
-  // Treat both slash spellings of a UNC path as Windows paths. The shared
-  // path helper otherwise treats a forward-slash UNC as a POSIX path.
-  const api = /^[\\/]{2}/.test(value) ? path.win32 : fsPathApi(value);
-  if (!api.isAbsolute(value)) return '';
-  // Windows root-relative paths without a drive still borrow the process's
-  // current drive even though path.win32.isAbsolute returns true.
-  if (api === path.win32) {
-    const root = api.parse(value).root.replace(/\//g, '\\');
-    if (!/^[A-Za-z]:\\/.test(root) && !/^\\\\[^\\]+\\[^\\]+/.test(root)) return '';
-    return `windows:${api.resolve(value).toLowerCase()}`;
-  }
-  return `posix:${api.resolve(value)}`;
-}
-function sameRecordedPath(left, right) {
-  const identity = recordedPathIdentity(left);
-  return Boolean(identity) && identity === recordedPathIdentity(right);
-}
 function validOrigin(value, sessionId, cwd) {
   return value && Object.getPrototypeOf(value) === Object.prototype
     && Object.keys(value).sort().join(',') === 'automationId,cwd,runId,runKind,sessionId'
@@ -73,18 +54,20 @@ async function copyDatabaseFile(source, destination, expected, signal) {
     if (!sameFile(expected, await input.stat({ bigint: true }))) throw new Error('Desktop database changed during copy');
   } finally { await input?.close(); await output?.close(); }
 }
-async function readDesktopOrigins(sourceHome, candidates, signal, onDiagnostic) {
+async function readDesktopOrigins(sourceHome, candidates, signal, onDiagnostic, physicalIdentities, mainScanComplete = true) {
   const origins = new Map(); const filename = path.join(sourceHome, 'workbuddy.db');
-  const identities = new Map(); let processed = 0;
+  const identities = physicalIdentities || new Map(); let processed = 0; let hasMainCandidate = false;
   for (const candidate of candidates) {
     storage.abort(signal);
     if (++processed % 128 === 0) { await yieldImmediate(); storage.abort(signal); }
-    if (candidate.sourceFile.split('/').length === 2) identities.set(candidate.header.id, (identities.get(candidate.header.id) || 0) + 1);
+    if (candidate.sourceFile.split('/').length !== 2) continue;
+    hasMainCandidate = true;
+    if (!physicalIdentities) identities.set(candidate.header.id, (identities.get(candidate.header.id) || 0) + 1);
   }
   let db; let temporary;
   try {
     storage.abort(signal);
-    if (!identities.size) return origins;
+    if (!hasMainCandidate) return origins;
     try { await fs.lstat(filename); } catch (error) { if (error.code === 'ENOENT') return origins; throw error; }
     const root = await fs.realpath(sourceHome);
     const before = await inspectDatabase(filename, root);
@@ -131,7 +114,7 @@ async function readDesktopOrigins(sourceHome, candidates, signal, onDiagnostic) 
       const unverified = () => onDiagnostic?.({ code: 'WORKBUDDY_DESKTOP_ORIGIN_UNVERIFIED', path: candidate.sourceFile,
         message: 'Background session metadata lacks a unique matching scheduled run; recorded JSONL identity is retained.' });
       const tags = json(session.settings)?.conversationTags;
-      if (session.is_background_automation !== 1 || session.id !== candidate.header.id
+      if (session.is_background_automation !== 1 || session.id !== candidate.header.id || !mainScanComplete
         || identities.get(candidate.header.id) !== 1 || !scalar(tags?.automationId)
         || !scalar(session.cwd) || !sameRecordedPath(session.cwd, candidate.header.cwd)) { unverified(); continue; }
       if (!groups.has(tags.automationId)) groups.set(tags.automationId, new Map());

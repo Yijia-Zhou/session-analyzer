@@ -4,7 +4,7 @@ const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 const { createEmptyMaterializedPresentationIndexes, INDEXED_SESSION_COUNT_FIELDS } = require('./canonical-contract');
 const { sanitizeLogicalDetailValue, redactEmbeddedDataUrls } = require('./shared/logical-detail-sanitizer');
 const { projectSearchJson } = require('./search-json');
-const { fsPathApi, normalizeFsPath } = require('./shared/fs-path');
+const { fsPathApi, sameRecordedPath } = require('./shared/fs-path');
 const string = (value) => typeof value === 'string' ? value : '';
 const object = (value) => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const safe = (value) => sanitizeLogicalDetailValue(value, { maxDepth: 24, maxNodes: 2000, maxArrayItems: 128, maxObjectEntries: 128 });
@@ -89,14 +89,13 @@ function fileReferenceMessage(record) {
     if (!match || /&(?!amp;|quot;|apos;|lt;|gt;)/.test(match[1])) return null;
     const entities = { '&amp;': '&', '&quot;': '"', '&apos;': "'", '&lt;': '<', '&gt;': '>' };
     const file = match[1].replace(/&(amp|quot|apos|lt|gt);/g, (value) => entities[value]);
-    if (!fsPathApi(file).isAbsolute(file)) return null;
     files.push(file);
   }
   if (!files.length) return null;
   let query = envelope.query.trimStart();
   for (const file of files) {
     const marker = query.match(/^@"([^"\r\n]+)"(?=\s|$)/);
-    if (!marker || !fsPathApi(marker[1]).isAbsolute(marker[1]) || normalizeFsPath(marker[1]) !== normalizeFsPath(file)) return null;
+    if (!marker || !sameRecordedPath(marker[1], file)) return null;
     query = query.slice(marker[0].length).trimStart();
   }
   return { text: query.trim(), files };
@@ -200,7 +199,9 @@ function makeSession(document, sourceFile, desktopOrigin) {
   // never by the text of automation instructions. Only the initial input is
   // automatic; subsequent accepted user messages keep their recorded identity.
   const initialInput = desktopOrigin ? document.rows.findIndex(({ parsed }) => parsed?.type === 'message' && parsed.role === 'user') : -1;
-  if (initialInput >= 0 && messageClasses[initialInput].kind === 'user_message') {
+  const recordedSessionId = initialInput >= 0 ? document.rows[initialInput].parsed.sessionId : undefined;
+  if (initialInput >= 0 && messageClasses[initialInput].kind === 'user_message'
+    && (recordedSessionId === undefined || recordedSessionId === document.id)) {
     messageClasses[initialInput] = { kind: 'protocol', subtype: 'workbuddy_scheduled_input', startsTurn: false, titleEligible: false };
   }
   let turnId = '';
