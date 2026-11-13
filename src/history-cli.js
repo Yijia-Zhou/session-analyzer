@@ -4,7 +4,7 @@ const { OPERATIONS, MAX_BODY_BYTES, MAX_RESPONSE_BYTES, historyError, errorEnvel
 const { supportedSourceKinds } = require('./source-adapters');
 const { openViewerBrowser, validateViewerUrl } = require('./history-browser-open');
 
-const SERVE_OPTIONS = { '--repo': 'repo', '--source': 'source', '--codex-home': 'codexHome', '--claude-home': 'claudeHome', '--dsh-home': 'dshHome', '--pi-home': 'piHome', '--opencode-home': 'opencodeHome', '--workbuddy-home': 'workbuddyHome', '--port': 'port' };
+const SERVE_OPTIONS = { '--repo': 'repo', '--source': 'source', '--codex-home': 'codexHome', '--claude-home': 'claudeHome', '--dsh-home': 'dshHome', '--pi-home': 'piHome', '--opencode-home': 'opencodeHome', '--workbuddy-home': 'workbuddyHome', '--path-config': 'pathConfig', '--project-path-semantics': 'projectPathSemantics', '--port': 'port' };
 const INPUT_OPTIONS = { '--context': 'contextRef', '--cursor': 'cursor', '--order': 'order', '--session': 'session', '--caller-session': 'callerSessionId', '--max-files': 'maxFiles', '--layer': 'layer', '--kind': 'kind', '--status': 'status', '--tool': 'tool', '--file': 'file', '--retrieval-artifacts': 'retrievalArtifacts', '--presentation': 'presentation', '--view': 'view', '--text-format': 'textFormat', '--from': 'from', '--to': 'to', '--limit': 'limit', '--max-bytes': 'maxBytes', '--offset': 'offset', '--length': 'length', '--parts': 'parts', '--query': 'queries', '--exclude': 'exclude', '--ref': 'refs' };
 const REPEATED = new Set(['queries', 'exclude', 'refs']);
 const LITERAL_VALUES = new Set(['queries', 'exclude', 'file', 'tool', 'kind', 'status', 'session', 'callerSessionId']);
@@ -22,6 +22,8 @@ function formatHistoryHelp() {
     '  session-analyzer history open --ref <reference> [--context <contextRef>] [--no-browser]',
     '    [--endpoint http://127.0.0.1:17891]    Reuse the original search service.', '',
     'Options:',
+    '  --path-config <file>   Serve: Analyzer sourceConfigs JSON with home and scoped projectPathRules.',
+    '  --project-path-semantics <windows|posix> Serve: explicit --repo interpretation, separate from historical cwd rules.',
     '  --input <JSON>         Query object; cannot overlap fields supplied by flags.',
     '    search groups: {"groups":[{"id":"specific","query":"abc123","limit":3}]}',
     '    read locator: {"source":{"sourcePath":"<indexed-path>","locator":{"type":"jsonl-line","line":3}}}',
@@ -118,6 +120,9 @@ function parseHistoryArgs(args) {
   if (operation === 'serve') {
     if (!options.repo || !options.source) throw historyError('INVALID_OPTION', 'serve requires explicit --repo and --source.');
     if (!supportedSourceKinds().includes(options.source)) throw historyError('INVALID_OPTION', 'Unknown transcript source.');
+    if (options.projectPathSemantics !== undefined && !['windows', 'posix'].includes(options.projectPathSemantics)) {
+      throw historyError('INVALID_OPTION', '--project-path-semantics requires windows or posix.');
+    }
     options.port ??= 17891;
     if (options.port < 1 || options.port > 65535) throw historyError('INVALID_OPTION', '--port must be between 1 and 65535.');
   } else {

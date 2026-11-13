@@ -5,7 +5,9 @@ const os = require('node:os');
 const { fileURLToPath } = require('node:url');
 const fsp = require('node:fs/promises');
 const { isDeepStrictEqual } = require('node:util');
-const { isPathInsideOrSame, resolveFsPath } = require('./shared/fs-path');
+const { isPathInsideOrSame } = require('./shared/fs-path');
+const { projectPathContains } = require('./shared/project-path');
+const { createProjectPathContext, projectPathFor, projectSelection, projectContextIndexFields } = require('./project-path-context');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 const { createSessionQuery } = require('./session-query');
 const { createProjectQueryStoreBuilder } = require('./project-query-store');
@@ -68,7 +70,10 @@ async function parsePiSessionArtifact(filePath, relFile, _repoRoot, signal, opti
   return logical.sessionsFromPiDocument(document, relFile, options.leafId);
 }
 
-async function discoverPiProjects({ sourceHome, signal, onDiagnostic }) {
+async function discoverPiProjects(options) {
+  const { signal, onDiagnostic } = options;
+  const context = createProjectPathContext({ ...options, sourceKind: SOURCE_KIND });
+  const sourceHome = context.sourceHome;
   const sessionsRoot = rootFor(sourceHome);
   const files = await storage.collectPiFiles(sessionsRoot, signal, onDiagnostic);
   const projects = new Map();
@@ -77,13 +82,19 @@ async function discoverPiProjects({ sourceHome, signal, onDiagnostic }) {
     try {
       const document = storage.parsePiDocument(await storage.readPiSnapshot(file, { sessionsRoot, signal }));
       if (!document.header.cwd) continue;
-      const repoRoot = resolveFsPath(document.header.cwd);
-      const project = projects.get(repoRoot) || { repoRoot, sessionCount: 0, updatedAt: '', bytes: 0, exists: false, source: 'pi-sessions' };
+      const projectPath = projectPathFor(document.header.cwd, context, file, onDiagnostic);
+      if (projectPath.status !== 'valid') continue;
+      const repoRoot = projectPath.path;
+      const project = projects.get(projectPath.key) || { repoRoot, projectPath,
+        projectPathPolicyId: context.digest, projectPathEvidence: [], legacyAssumption: false,
+        sessionCount: 0, updatedAt: '', bytes: 0, exists: false, source: 'pi-sessions' };
+      project.projectPathEvidence = [...new Set([...project.projectPathEvidence, projectPath.evidence])].sort();
+      project.legacyAssumption ||= projectPath.legacyAssumption;
       project.sessionCount += document.invalidTree ? 1 : Math.max(document.leaves.length, 1);
       project.bytes += document.acceptedBytes;
       const updatedAt = logical.lastRecordedTimestamp(document.entries, document.header.timestamp);
       if (updatedAt > project.updatedAt) project.updatedAt = updatedAt;
-      projects.set(repoRoot, project);
+      projects.set(projectPath.key, project);
     } catch (error) { report(error, file, onDiagnostic, signal); }
   }
   for (const project of projects.values()) {
@@ -95,9 +106,14 @@ async function discoverPiProjects({ sourceHome, signal, onDiagnostic }) {
 const dependencyId = (entries) => `pi-dependencies:${storage.hash(JSON.stringify(entries))}`;
 const snapshotId = (dependencySet, payload) => `pi-snapshot:${storage.hash(JSON.stringify({ dependencySet, payload }))}`;
 
-async function buildPiIndex({ sourceHome, repoRoot, signal, onProgress, onDiagnostic }) {
+async function buildPiIndex(options) {
+  const { repoRoot, signal, onProgress, onDiagnostic } = options;
+  const context = createProjectPathContext({ ...options, sourceKind: SOURCE_KIND });
+  const sourceHome = context.sourceHome;
+  const selection = projectSelection(repoRoot, undefined, options.projectPathSemantics);
+  const projectFields = { ...projectContextIndexFields(context, selection.path), projectPath: selection };
   const started = Date.now();
-  const sessionsRoot = rootFor(sourceHome); const resolvedRepo = resolveFsPath(repoRoot);
+  const sessionsRoot = rootFor(sourceHome); const resolvedRepo = projectFields.projectPath.path;
   const diagnostics = createSourceDiagnostics();
   const addDiagnostic = diagnostics.add;
   diagnostics.add = (value) => { addDiagnostic(value); onDiagnostic?.(value); };
@@ -108,7 +124,8 @@ async function buildPiIndex({ sourceHome, repoRoot, signal, onProgress, onDiagno
     storage.abort(signal);
     try {
       const document = storage.parsePiDocument(await storage.readPiSnapshot(file, { sessionsRoot, signal }));
-      if (!document.header.cwd || !isPathInsideOrSame(resolveFsPath(document.header.cwd), resolvedRepo)) {
+      const projectPath = document.header.cwd && projectPathFor(document.header.cwd, context, file, diagnostics.add);
+      if (!projectPath || !projectPathContains(projectPath, projectFields.projectPath)) {
         if (!document.header.cwd) unknownFileCount++; else skippedFileCount++;
         continue;
       }
@@ -171,6 +188,7 @@ async function buildPiIndex({ sourceHome, repoRoot, signal, onProgress, onDiagno
   const eventKinds = Object.fromEntries(Object.entries(kindCounts).map(([layer, map]) => [layer,
     [...map].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value, label: value, count }))]));
   return { sourceKind: SOURCE_KIND, sourceHome: path.resolve(sourceHome), sourceRoot: sessionsRoot, sessionsRoot,
+    ...projectFields,
     repoRoot: resolvedRepo, generatedAt: new Date().toISOString(), sourceDiagnostics: diagnostics.summary,
     sessions, sessionsById, materializationDependencies, projectQueryStore: builder.finish(), eventKinds,
     legacyRawOwners: { schemaVersion: 1, sourceKind: SOURCE_KIND, entryCount: 0, accountedBytes: 2, payload: {} },

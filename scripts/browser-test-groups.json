@@ -18,7 +18,8 @@
     "browser-handoffs.test.js",
     "browser-pagination.test.js",
     "browser-search.test.js",
-    "browser-source-switching.test.js"
+    "browser-source-switching.test.js",
+    "project-path-policy.test.js"
   ],
   "navigation-evidence": [
     "browser-navigation.test.js",

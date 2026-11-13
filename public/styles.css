@@ -1306,6 +1306,34 @@ body[data-project-mode='selecting'] .searchAssist {
   font-size: 0.78rem;
 }
 
+.projectPathPolicyBody {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.projectPathPolicySource,
+.projectPathRulePath {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.projectPathRule {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+}
+
+.projectPathRulePath {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.projectPathRuleWholeRoot {
+  color: var(--warn);
+}
+
 .projectHomeEditor summary {
   align-items: center;
   color: var(--ink);

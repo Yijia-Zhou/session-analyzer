@@ -503,6 +503,9 @@ test('runtime initialization keeps canonical source configs authoritative and re
     sourceHome: codexFixtureHome,
   });
   initialIndex.sourceConfigs = { codex: { home: canonicalHome } };
+  assert.throws(() => createServer(initialIndex, 0, { codexHome: legacyHome, sourceHome: conflictingActiveHome }),
+    { code: 'PROJECT_PATH_SCOPE_MISMATCH' }, 'an initial Index cannot acquire the policy of another source root');
+  initialIndex.sourceConfigs = { codex: { home: codexFixtureHome } };
   const initialIndexServer = createServer(initialIndex, 0, {
     codexHome: legacyHome,
     sourceHome: conflictingActiveHome,
@@ -516,8 +519,8 @@ test('runtime initialization keeps canonical source configs authoritative and re
     '/api/state',
   );
   assert.equal(initialState.status, 200);
-  assert.equal(initialState.json.sourceHome, path.resolve(canonicalHome));
-  assert.equal(initialState.json.sourceConfigs.codex.home, path.resolve(canonicalHome));
+  assert.equal(initialState.json.sourceHome, path.resolve(codexFixtureHome));
+  assert.equal(initialState.json.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
 
   for (const sourceConfigs of [
     { codex: {} },

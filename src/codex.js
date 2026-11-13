@@ -16,6 +16,8 @@ const { terminalSourceEvidence, parseTerminalReceipt, parseNativeCommandOutput, 
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const { createProjectPathContext, projectPathFor, projectSelection, projectContextIndexFields, projectPathMatches } = require('./project-path-context');
+const { projectPathContains, sameProjectPath } = require('./shared/project-path');
 const readline = require('node:readline');
 const { performance } = require('node:perf_hooks');
 const { isDeepStrictEqual } = require('node:util');
@@ -1712,6 +1714,8 @@ function applyCodexSessionRelationshipMetadata(
   payload,
   repoRoot,
   primarySessionMetaSeen,
+  projectPathContext,
+  physicalArtifact,
 ) {
   let primarySeen = primarySessionMetaSeen;
   if (recordType === 'session_meta') {
@@ -1731,13 +1735,13 @@ function applyCodexSessionRelationshipMetadata(
     }
     if (typeof payload.cwd === 'string' && payload.cwd) {
       session.cwdSet.add(payload.cwd);
-      if (isPathInsideOrSame(payload.cwd, repoRoot)) session.matchesRepo = true;
+      if (projectPathMatches(payload.cwd, repoRoot, physicalArtifact, projectPathContext)) session.matchesRepo = true;
     }
   }
   if (recordType === 'event_msg' && payload.type === 'session_configured') {
     if (typeof payload.cwd === 'string' && payload.cwd) {
       session.cwdSet.add(payload.cwd);
-      if (isPathInsideOrSame(payload.cwd, repoRoot)) session.matchesRepo = true;
+      if (projectPathMatches(payload.cwd, repoRoot, physicalArtifact, projectPathContext)) session.matchesRepo = true;
     }
     if (!primarySeen) {
       if (!session.forkedFromSessionId) {
@@ -1908,7 +1912,8 @@ function parseProjectConfigHeader(line) {
   return parts[1].value;
 }
 
-async function discoverConfiguredProjects({ codexHome }) {
+async function discoverConfiguredProjects({ codexHome, ...options }) {
+  const context = createProjectPathContext({ ...options, sourceKind: CODEX_SOURCE_KIND, sourceHome: codexHome });
   const configPath = path.join(path.resolve(codexHome), 'config.toml');
   let text = '';
   try {
@@ -1924,8 +1929,10 @@ async function discoverConfiguredProjects({ codexHome }) {
   for (const line of text.split(/\r?\n/)) {
     const parsed = parseProjectConfigHeader(line);
     if (!parsed) continue;
-    const repoRoot = resolveFsPath(stripExtendedPathPrefix(expandEnvironmentVariables(parsed)));
-    const key = normalizeFsPath(repoRoot);
+    const projectPath = projectPathFor(expandEnvironmentVariables(parsed), context, configPath, options.onDiagnostic);
+    if (projectPath.status !== 'valid') continue;
+    const repoRoot = projectPath.path;
+    const key = projectPath.key;
     if (!key || projects.has(key)) continue;
     projects.set(key, {
       repoRoot,
@@ -1934,6 +1941,8 @@ async function discoverConfiguredProjects({ codexHome }) {
       exists: false,
       statsPending: true,
       source: 'config',
+      projectPath, projectPathPolicyId: context.digest,
+      legacyAssumption: projectPath.legacyAssumption, projectPathEvidence: [projectPath.evidence],
     });
   }
 
@@ -1949,7 +1958,7 @@ async function discoverConfiguredProjects({ codexHome }) {
 
 async function inspectSessionFile(filePath, options = {}) {
   const signal = options.signal;
-  const repoRoot = options.repoRoot ? resolveFsPath(options.repoRoot) : '';
+  const repoRoot = options.repoRoot ? projectSelection(options.repoRoot).path : '';
   throwIfAborted(signal);
   const descriptor = codexRolloutDescriptor(filePath);
   const stat = await codexRolloutStorage.acquireRolloutStat(descriptor);
@@ -1988,9 +1997,8 @@ async function inspectSessionFile(filePath, options = {}) {
       const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
       const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
       if (typeof cwd === 'string' && cwd) {
-        const resolvedCwd = resolveFsPath(cwd);
-        cwdSet.add(resolvedCwd);
-        if (repoRoot && isPathInsideOrSame(resolvedCwd, repoRoot)) {
+        cwdSet.add(cwd);
+        if (repoRoot && projectPathMatches(cwd, repoRoot, filePath, options.projectPathContext)) {
           matchedRepo = true;
           if (descriptor.compression === 'none') {
             rl.close();
@@ -2053,7 +2061,8 @@ function materializedForkDigestFilePaths(candidateFiles, inspectionsByFile) {
   return digestFilePaths;
 }
 
-async function discoverProjects({ codexHome, signal, onDiagnostic } = {}) {
+async function discoverProjects({ codexHome, signal, onDiagnostic, ...options } = {}) {
+  const context = createProjectPathContext({ ...options, sourceKind: CODEX_SOURCE_KIND, sourceHome: codexHome });
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
   const files = await collectJsonlFiles(sessionsRoot, { signal, onDiagnostic });
@@ -2072,16 +2081,27 @@ async function discoverProjects({ codexHome, signal, onDiagnostic } = {}) {
     }
     const { bytes, cwdSet, updatedAt } = inspected;
 
-    for (const repoRoot of cwdSet) {
-      const key = normalizeFsPath(repoRoot);
+    const countedProjects = new Set();
+    for (const rawCwd of cwdSet) {
+      const projectPath = projectPathFor(rawCwd, context, filePath, onDiagnostic);
+      if (projectPath.status !== 'valid') continue;
+      const repoRoot = projectPath.path;
+      const key = projectPath.key;
       const project = projects.get(key) || {
         repoRoot,
         sessionCount: 0,
         updatedAt: '',
         exists: false,
+        projectPath, projectPathPolicyId: context.digest,
+        legacyAssumption: false, projectPathEvidence: [],
       };
-      project.sessionCount += 1;
-      project.bytes = (project.bytes || 0) + bytes;
+      project.legacyAssumption ||= projectPath.legacyAssumption;
+      project.projectPathEvidence = [...new Set([...project.projectPathEvidence, projectPath.evidence])].sort();
+      if (!countedProjects.has(key)) {
+        project.sessionCount += 1;
+        project.bytes = (project.bytes || 0) + bytes;
+        countedProjects.add(key);
+      }
       if (updatedAt && updatedAt > project.updatedAt) project.updatedAt = updatedAt;
       projects.set(key, project);
     }
@@ -4999,6 +5019,8 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
         payload,
         repoRoot,
         primarySessionMetaSeen,
+        options.projectPathContext,
+        filePath,
       );
       if (recordType === 'event_msg' && payload.type === 'session_configured') {
         if (!session.title && typeof payload.thread_name === 'string' && payload.thread_name) {
@@ -5243,7 +5265,7 @@ async function parseSessionHistory(plan, sessionsRoot, repoRoot, signal, options
   session.logicalEvents = session._logicalEvents;
   session.sourceFingerprint = hashCodexMaterializationValue(snapshots);
   session._canonicalRawDigests = session.rawEvents.map((raw) => raw._canonicalRawDigest);
-  session.matchesRepo = [...session.cwdSet].some((cwd) => isPathInsideOrSame(cwd, repoRoot));
+  session.matchesRepo = parts.some((part) => part.matchesRepo);
   session._parsedAncestry = { forkedFromSessionId: String(session.forkedFromSessionId || '') };
   if (options.captureCacheObservationSeeds) {
     session._cacheObservationSeeds = session.rawEvents.filter((raw) => !raw.subagentInherited)
@@ -5438,6 +5460,8 @@ async function scanCodexRelationshipEvidence(
         payload,
         repoRoot,
         primarySessionMetaSeen,
+        options.projectPathContext,
+        filePath,
       );
       if (!relationshipState.sourceClientVersion
           && typeof record.version === 'string'
@@ -6072,7 +6096,7 @@ async function canReuseWholeSourceBackedIndex({
   signal,
 }) {
   if (previousIndex?.sourceKind !== CODEX_SOURCE_KIND
-      || normalizeFsPath(previousIndex.repoRoot || '') !== normalizeFsPath(resolvedRepo)
+      || !sameProjectPath(previousIndex.projectPath || previousIndex.repoRoot, projectSelection(resolvedRepo))
       || path.resolve(previousIndex.codexHome || '') !== resolvedCodex
       || !Array.isArray(previousIndex.sessions)
       || previousIndex.sessions.length !== candidates.length
@@ -6270,13 +6294,16 @@ async function buildIndex({
   beforeSourceSnapshotVerificationForTests = null,
   cacheObservationForTests = false,
   currentRolloutPathsForTests = null,
+  ...pathOptions
 }) {
   const sourceDiagnostics = createSourceDiagnostics();
   const onDiagnostic = (diagnostic) => {
     sourceDiagnostics.add(diagnostic);
     observeDiagnostic?.(diagnostic);
   };
-  const resolvedRepo = resolveFsPath(repoRoot);
+  const context = createProjectPathContext({ ...pathOptions, sourceKind: CODEX_SOURCE_KIND, sourceHome: codexHome });
+  const resolvedRepo = projectSelection(repoRoot, undefined, pathOptions.projectPathSemantics).path;
+  if (previousIndex?.projectPathContext !== context.serialized) previousIndex = null;
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
   const startedAt = Date.now();
@@ -6319,7 +6346,7 @@ async function buildIndex({
     throwIfAborted(signal);
     let inspected;
     try {
-      inspected = await inspectSessionFile(filePath, { repoRoot: resolvedRepo, signal });
+      inspected = await inspectSessionFile(filePath, { repoRoot: resolvedRepo, signal, projectPathContext: context.serialized });
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
       if (!codexRolloutStorage.isStorageFailure(error)) throw error;
@@ -6329,7 +6356,7 @@ async function buildIndex({
     }
     candidateInspections.set(filePath, inspected);
     const hasCwd = inspected.cwdSet.size > 0;
-    const matchesRepo = [...inspected.cwdSet].some((cwd) => isPathInsideOrSame(cwd, resolvedRepo));
+    const matchesRepo = [...inspected.cwdSet].some((cwd) => projectPathContains(projectPathFor(cwd, context, filePath, onDiagnostic), projectSelection(resolvedRepo)));
     if (matchesRepo) {
       candidates.push(filePath);
       candidateBytes += inspected.bytes;
@@ -6368,7 +6395,7 @@ async function buildIndex({
   let parsedBytes = 0;
   const canReusePrevious = previousIndex
     && Array.isArray(previousIndex.sessions)
-    && normalizeFsPath(previousIndex.repoRoot || '') === normalizeFsPath(resolvedRepo)
+    && sameProjectPath(previousIndex.projectPath || previousIndex.repoRoot, projectSelection(resolvedRepo))
     && path.resolve(previousIndex.codexHome || '') === resolvedCodex;
   const previousSessionsBySource = canReusePrevious
     ? new Map(previousIndex.sessions.map((session) => [session.sourceFile, session]))
@@ -6433,6 +6460,7 @@ async function buildIndex({
         : parseSessionFile;
       try {
       session = await parse(filePath, relFile, resolvedRepo, signal, {
+        projectPathContext: context.serialized,
         canonicalRawDigests: requiresCanonicalRawDigests,
         retainFullSourceRecordsForTests,
         acceptedLogicalBytes: codexRolloutStorage.compressionForArtifact(filePath) === 'zstd'
@@ -6514,6 +6542,7 @@ async function buildIndex({
     elapsedMs: Date.now() - startedAt,
   });
   return {
+    ...projectContextIndexFields(context, resolvedRepo),
     sourceKind: CODEX_SOURCE_KIND,
     sourceHome: resolvedCodex,
     sourceRoot: sessionsRoot,
@@ -6560,13 +6589,16 @@ async function buildSourceBackedIndex({
   legacyRawOwnerPolicyForTests = undefined,
   onLegacyRawCapacity = null,
   currentRolloutPathsForTests = null,
+  ...pathOptions
 }) {
   const sourceDiagnostics = createSourceDiagnostics();
   const onDiagnostic = (diagnostic) => {
     sourceDiagnostics.add(diagnostic);
     observeDiagnostic?.(diagnostic);
   };
-  const resolvedRepo = resolveFsPath(repoRoot);
+  const context = createProjectPathContext({ ...pathOptions, sourceKind: CODEX_SOURCE_KIND, sourceHome: codexHome });
+  const resolvedRepo = projectSelection(repoRoot, undefined, pathOptions.projectPathSemantics).path;
+  if (previousIndex?.projectPathContext !== context.serialized) previousIndex = null;
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
   const startedAt = Date.now();
@@ -6608,7 +6640,7 @@ async function buildSourceBackedIndex({
     throwIfAborted(signal);
     let inspected;
     try {
-      inspected = await inspectSessionFile(filePath, { repoRoot: resolvedRepo, signal });
+      inspected = await inspectSessionFile(filePath, { repoRoot: resolvedRepo, signal, projectPathContext: context.serialized });
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
       if (!codexRolloutStorage.isStorageFailure(error)) throw error;
@@ -6618,7 +6650,7 @@ async function buildSourceBackedIndex({
     }
     candidateInspections.set(filePath, inspected);
     const hasCwd = inspected.cwdSet.size > 0;
-    const matchesRepo = [...inspected.cwdSet].some((cwd) => isPathInsideOrSame(cwd, resolvedRepo));
+    const matchesRepo = [...inspected.cwdSet].some((cwd) => projectPathContains(projectPathFor(cwd, context, filePath, onDiagnostic), projectSelection(resolvedRepo)));
     if (matchesRepo) {
       candidates.push(filePath);
       candidateBytes += inspected.bytes;
@@ -6686,6 +6718,7 @@ async function buildSourceBackedIndex({
       elapsedMs: Date.now() - startedAt,
     });
     return {
+      ...projectContextIndexFields(context, resolvedRepo),
       sourceKind: CODEX_SOURCE_KIND,
       sourceHome: resolvedCodex,
       sourceRoot: sessionsRoot,
@@ -6748,6 +6781,7 @@ async function buildSourceBackedIndex({
   ) => {
     let planningProjection = null;
     const parseOptions = {
+      projectPathContext: context.serialized,
       canonicalRawDigests: retainForkEvidence,
       acceptedLogicalBytes: acceptedEvidence
         ? undefined
@@ -6812,6 +6846,7 @@ async function buildSourceBackedIndex({
         resolvedRepo,
         signal,
         {
+          projectPathContext: context.serialized,
           beforeSourceSnapshotVerificationForTests,
           acceptedLogicalBytes: codexRolloutStorage.compressionForArtifact(filePath) === 'zstd'
             ? candidateInspections.get(filePath)?.bytes
@@ -6910,7 +6945,7 @@ async function buildSourceBackedIndex({
   inferCodexIndexedEarlierBranches(relationshipEvidence);
 
   const canReusePrevious = previousIndex?.sourceKind === CODEX_SOURCE_KIND
-    && normalizeFsPath(previousIndex.repoRoot || '') === normalizeFsPath(resolvedRepo)
+    && sameProjectPath(previousIndex.projectPath || previousIndex.repoRoot, projectSelection(resolvedRepo))
     && path.resolve(previousIndex.codexHome || '') === resolvedCodex
     && Array.isArray(previousIndex.sessions)
     && previousIndex.sessionsById instanceof Map
@@ -6966,6 +7001,7 @@ async function buildSourceBackedIndex({
           { ...opts, acceptedSourceSnapshot: null, historySnapshots: evidence._historySnapshots })
         : parseSessionFile;
       session = await parse(filePath, evidence.sourceFile, resolvedRepo, signal, {
+        projectPathContext: context.serialized,
         sourceDescriptor: descriptor,
         acceptedSourceSnapshot: {
           acceptedBytes: evidence.bytes,
@@ -7140,6 +7176,7 @@ async function buildSourceBackedIndex({
     elapsedMs: Date.now() - startedAt,
   });
   return {
+    ...projectContextIndexFields(context, resolvedRepo),
     sourceKind: CODEX_SOURCE_KIND,
     sourceHome: resolvedCodex,
     sourceRoot: sessionsRoot,
@@ -7212,6 +7249,7 @@ async function materializeCodexSessionInternal(
   if (!isPathInsideOrSame(target, index.sessionsRoot)) throw indexedSourceStaleError();
   const session = descriptor.payload.kind === 'rollout-history-v1'
     ? await parseSessionHistory(descriptor.payload.historyPlan, index.sessionsRoot, index.repoRoot, signal, {
+      projectPathContext: index.projectPathContext,
       historySnapshots: descriptor.payload.historySnapshots,
       canonicalRawDigests: indexedSession.forkStorageMode === 'materialized',
       captureCacheObservationSeeds: cacheObservation,
@@ -7221,6 +7259,7 @@ async function materializeCodexSessionInternal(
     index.repoRoot,
     signal,
     {
+      projectPathContext: index.projectPathContext,
       acceptedSourceSnapshot: {
         acceptedBytes: entry.acceptedBytes,
         digest: entry.digest,

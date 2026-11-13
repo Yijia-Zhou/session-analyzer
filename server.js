@@ -6,7 +6,7 @@ const { createSourceDiagnostics } = require('./src/source-diagnostics');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
-const { parseArgs, formatHelp } = require('./src/cli');
+const { parseArgs, formatHelp, loadPathConfig } = require('./src/cli');
 const url = require('node:url');
 const {
   SOURCE_KIND,
@@ -39,6 +39,8 @@ const {
 const { SESSION_LIFECYCLE } = require('./src/source-adapter-contract');
 const { scheduleBoundedSessionPrewarm } = require('./src/session-prewarm');
 const { isPathInsideOrSame, normalizeFsPath } = require('./src/shared/fs-path');
+const { interpretProjectPath, PROJECT_PATH_VERSION } = require('./src/shared/project-path');
+const { createProjectPathContext, normalizeProjectPathRules, projectSelection } = require('./src/project-path-context');
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
 const { createIndexDiagnostics } = require('./src/runtime-diagnostics');
@@ -177,6 +179,7 @@ function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
     locale: resolvedLocale,
     supportedLocales: i18n.SUPPORTED_LOCALES,
     repoRoot: state.index.repoRoot,
+    projectPath: state.index.projectPath || projectSelection(state.index.repoRoot, state.localInputBase),
     generatedAt: state.index.generatedAt,
     indexRevision: state.indexRevision,
     buildMs: state.buildMs,
@@ -200,11 +203,24 @@ function statePayload(state, locale = i18n.DEFAULT_LOCALE) {
 }
 
 function sameProjectJobScope(state, job) {
+  const context = activeProjectPathContext(state);
   return Boolean(state.index && state.revisionLease && !state.revisionLease.retirementController.signal.aborted
     && job.activeSourceRevision === state.activeSourceRevision
     && job.sourceKind === state.sourceKind
     && normalizeFsPath(job.sourceHome) === normalizeFsPath(activeSourceHome(state))
-    && normalizeFsPath(job.repoRoot) === normalizeFsPath(state.index.repoRoot));
+    && job.projectPathPolicyId === context.digest
+    && indexProjectContextMatches(state.index, context)
+    && job.projectPath.key === projectSelection(state.index.repoRoot, state.localInputBase).key);
+}
+
+function activeProjectPathContext(state, sourceConfigs = sourceConfigsFromState(state), sourceKind = state.sourceKind) {
+  return createProjectPathContext({ sourceKind, sourceHome: activeSourceHome(state, sourceKind, sourceConfigs), sourceConfigs });
+}
+
+function indexProjectContextMatches(index, context) {
+  if (!index) return false;
+  const captured = Object.getOwnPropertyDescriptor(index, 'projectPathContext');
+  return captured ? Object.hasOwn(captured, 'value') && captured.value === context.serialized : context.rules.length === 0;
 }
 
 function activeProjectJob(state) {
@@ -261,6 +277,9 @@ function projectJobPayload(job) {
   return {
     id: job.id,
     repoRoot: job.repoRoot,
+    projectPath: job.projectPath,
+    projectPathPolicyId: job.projectPathPolicyId,
+    projectPathVersion: PROJECT_PATH_VERSION,
     locale: job.locale || i18n.DEFAULT_LOCALE,
     status: job.status,
     startedAt: job.startedAt,
@@ -284,11 +303,12 @@ function mergeProjectLists(configProjects = [], scannedProjects = [], options = 
   const map = new Map();
   const order = [];
   const put = (project, override = true) => {
-    const key = normalizeFsPath(project.repoRoot);
+    const descriptor = project.projectPath || interpretProjectPath(project.repoRoot);
+    const key = descriptor.status === 'valid' ? descriptor.key : '';
     if (!key) return;
     if (!map.has(key)) order.push(key);
     if (!override && map.has(key)) return;
-    map.set(key, { ...project });
+    map.set(key, { ...project, projectPath: descriptor });
   };
 
   const putScanned = (project) => {
@@ -366,9 +386,20 @@ function cloneSourceConfigs(sourceConfigs = {}) {
     const adapter = requireSourceAdapter(kind);
     const configured = sourceConfigEntryHome(configuredSourceConfigs, kind);
     const home = configured ?? adapter.defaultHome();
-    result[kind] = { home: path.resolve(home) };
+    result[kind] = normalizedSourceConfig(configuredSourceConfigs[kind], home);
   }
   return result;
+}
+
+function normalizedSourceConfig(config, home, previous) {
+  const resolvedHome = path.resolve(home);
+  if (config && Object.keys(config).some((key) => !['home', 'projectPathRules'].includes(key))) {
+    throw invalidSourceConfigError('Source configuration');
+  }
+  const rules = config && Object.hasOwn(config, 'projectPathRules') ? config.projectPathRules
+    : (previous?.home === resolvedHome ? previous.projectPathRules : undefined);
+  return { home: resolvedHome, ...(rules !== undefined
+    ? { projectPathRules: normalizeProjectPathRules(rules, resolvedHome) } : {}) };
 }
 
 function sourceConfigsFromState(state) {
@@ -412,7 +443,7 @@ function createInitialSourceConfigs(initialIndex, options, sourceKind) {
         home = initialIndex?.sourceHome || options.sourceHome || home;
       }
     }
-    result[kind] = { home: path.resolve(home) };
+    result[kind] = normalizedSourceConfig(canonicalSourceConfigs?.[kind], home);
   }
   return result;
 }
@@ -428,10 +459,13 @@ function legacySourceHomePayload(sourceConfigs) {
 
 function sourceConfigurationPayload(state) {
   const sourceConfigs = sourceConfigsFromState(state);
+  const context = activeProjectPathContext(state, sourceConfigs);
   return {
     sourceKind: state.sourceKind,
     sourceHome: activeSourceHome(state, state.sourceKind, sourceConfigs),
     sourceConfigs,
+    projectPathPolicyId: context.digest,
+    projectPathVersion: PROJECT_PATH_VERSION,
     ...legacySourceHomePayload(sourceConfigs),
     supportedSources: supportedSourceKinds(),
     sourceOptions: supportedSourceOptions(),
@@ -458,6 +492,7 @@ async function discoverProjectsForSource(state, mode) {
     sourceKind: state.sourceKind,
     sourceHome: activeSourceHome(state, state.sourceKind, sourceConfigs),
     sourceConfigs,
+    projectPathContext: activeProjectPathContext(state, sourceConfigs).serialized,
   };
   const configuredProjects = await adapter.discoverConfiguredProjects(context);
   if (revision !== state.sourceRevision) return { stale: true };
@@ -542,7 +577,11 @@ function resolveSourceMutation(state, body) {
           errors.push(`${kind}.home must be an explicitly provided non-empty string.`);
           continue;
         }
-        nextSourceConfigs[kind] = { home: path.resolve(config.home) };
+        try {
+          nextSourceConfigs[kind] = normalizedSourceConfig(config, config.home, currentSourceConfigs[kind]);
+        } catch (error) {
+          errors.push(`${kind}: ${error.message}`);
+        }
       }
     }
 
@@ -553,7 +592,7 @@ function resolveSourceMutation(state, body) {
       if (nextHome === null) {
         errors.push(`${adapter.homeOption} must be a non-empty string when provided.`);
       } else {
-        nextSourceConfigs[kind] = { home: nextHome };
+        nextSourceConfigs[kind] = normalizedSourceConfig({ home: nextHome }, nextHome, currentSourceConfigs[kind]);
       }
     }
   } else {
@@ -564,7 +603,7 @@ function resolveSourceMutation(state, body) {
       if (nextHome === null) {
         errors.push(`${adapter.homeOption} must be a non-empty string when provided.`);
       } else {
-        nextSourceConfigs[kind] = { home: nextHome };
+        nextSourceConfigs[kind] = normalizedSourceConfig({ home: nextHome }, nextHome, currentSourceConfigs[kind]);
       }
     }
   }
@@ -572,13 +611,19 @@ function resolveSourceMutation(state, body) {
 
   const nextSourceKind = normalizeSourceKind(rawSource);
   const configChanged = nextSourceKind !== state.sourceKind
+    || supportedKinds.some((kind) => Object.hasOwn(nextSourceConfigs[kind], 'projectPathRules')
+      !== Object.hasOwn(currentSourceConfigs[kind], 'projectPathRules'))
     || supportedKinds.some((kind) => (
       normalizeFsPath(nextSourceConfigs[kind].home) !== normalizeFsPath(currentSourceConfigs[kind].home)
+      || activeProjectPathContext(state, nextSourceConfigs, kind).digest
+        !== activeProjectPathContext(state, currentSourceConfigs, kind).digest
     ));
   if (configChanged) {
     const nextActiveHome = activeSourceHome(state, nextSourceKind, nextSourceConfigs);
     const activeIdentityChanged = nextSourceKind !== state.sourceKind
-      || normalizeFsPath(nextActiveHome) !== normalizeFsPath(activeSourceHome(state, state.sourceKind, currentSourceConfigs));
+      || normalizeFsPath(nextActiveHome) !== normalizeFsPath(activeSourceHome(state, state.sourceKind, currentSourceConfigs))
+      || activeProjectPathContext(state, nextSourceConfigs, nextSourceKind).digest
+        !== activeProjectPathContext(state, currentSourceConfigs).digest;
     if (activeIdentityChanged) {
       state.activeSourceRevision = (state.activeSourceRevision || 0) + 1;
       cancelProjectJob(state.activeProjectJob);
@@ -602,7 +647,16 @@ function resolveSourceMutation(state, body) {
   };
 }
 
-function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
+function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE, semantics) {
+  const jobSourceConfigs = sourceConfigsFromState(state);
+  const jobSourceKind = state.sourceKind;
+  const jobSourceHome = activeSourceHome(state, jobSourceKind, jobSourceConfigs);
+  const projectPathContext = activeProjectPathContext(state, jobSourceConfigs);
+  const projectPath = projectSelection(repoRoot, state.localInputBase, semantics);
+  const previousIndex = indexProjectContextMatches(state.index, projectPathContext)
+    && projectSelection(state.index.repoRoot, state.localInputBase).key === projectPath.key ? state.index : null;
+  const jobAdapter = state.adapter;
+  repoRoot = projectPath.path;
   cancelProjectJob(state.activeProjectJob);
 
   const id = String(state.nextProjectJobId++);
@@ -612,6 +666,9 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   const job = {
     id,
     repoRoot,
+    projectPath,
+    projectPathContext: projectPathContext.serialized,
+    projectPathPolicyId: projectPathContext.digest,
     locale: resolvedLocale,
     controller,
     status: 'running',
@@ -644,19 +701,17 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
   });
   state.activeProjectJob = job;
 
-  const jobSourceConfigs = sourceConfigsFromState(state);
-  const jobSourceKind = state.sourceKind;
-  const jobSourceHome = activeSourceHome(state, jobSourceKind, jobSourceConfigs);
   job.sourceKind = jobSourceKind;
   job.sourceHome = jobSourceHome;
   job.activeSourceRevision = state.activeSourceRevision || 0;
-  const buildIndex = state.buildIndexOverride || ((context) => state.adapter.buildIndex(context));
+  const buildIndex = state.buildIndexOverride || ((context) => jobAdapter.buildIndex(context));
   job.promise = withIndexResourceBuildScope(() => withQueryStoreBuildScope(() => Promise.resolve().then(() => buildIndex({
     repoRoot,
     sourceKind: jobSourceKind,
     sourceHome: jobSourceHome,
     sourceConfigs: jobSourceConfigs,
-    previousIndex: state.index,
+    projectPathContext: projectPathContext.serialized,
+    previousIndex,
     signal: controller.signal,
     onProgress: (progress) => {
       job.progress = { ...job.progress, ...progress };
@@ -678,12 +733,22 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE) {
       error.code = 'SOURCE_OWNERSHIP_MISMATCH';
       throw error;
     }
+    if (!indexProjectContextMatches(index, projectPathContext)
+        || projectSelection(index.repoRoot, state.localInputBase).key !== projectPath.key) {
+      throw Object.assign(new Error('Project path ownership does not match the captured job context.'), { code: 'PROJECT_PATH_SCOPE_MISMATCH' });
+    }
     await validateIndexOwnershipForCommit(index, {
       signal: controller.signal,
       onChunk: state.onIndexValidationChunk,
       legacyRawOwnerPolicyForTests: state.legacyRawOwnerPolicyForTests,
     });
-    if (controller.signal.aborted) {
+    if (!indexProjectContextMatches(index, projectPathContext)
+        || projectSelection(index.repoRoot, state.localInputBase).key !== projectPath.key) {
+      throw Object.assign(new Error('Project path ownership changed during Index validation.'), { code: 'PROJECT_PATH_SCOPE_MISMATCH' });
+    }
+    if (controller.signal.aborted || state.activeProjectJob !== job
+        || state.activeSourceRevision !== job.activeSourceRevision
+        || activeProjectPathContext(state).digest !== projectPathContext.digest) {
       job.status = 'cancelled';
       job.error = 'Indexing cancelled';
       job.completedAt ||= new Date().toISOString();
@@ -782,6 +847,10 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     : normalizeSourceKind(options.sourceKind || options.source);
   const adapter = requireSourceAdapter(sourceKind);
   const sourceConfigs = createInitialSourceConfigs(initialIndex, options, sourceKind);
+  if (initialIndex?.repoRoot && !indexProjectContextMatches(initialIndex,
+    createProjectPathContext({ sourceKind, sourceHome: activeSourceHome({ sourceKind }, sourceKind, sourceConfigs), sourceConfigs }))) {
+    throw Object.assign(new Error('Initial Index belongs to another project path policy.'), { code: 'PROJECT_PATH_SCOPE_MISMATCH' });
+  }
   const state = {
     index: initialIndex?.repoRoot ? initialIndex : null,
     buildMs: initialIndex?.repoRoot ? buildMs : 0,
@@ -790,6 +859,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     adapter,
     sourceRevision: 0,
     activeSourceRevision: 0,
+    localInputBase: process.cwd(),
     buildIndexOverride: options.buildIndex || null,
     onProjectJobSettled: options.onProjectJobSettled || null,
     onIndexValidationChunk: options.onIndexValidationChunk || null,
@@ -807,7 +877,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     historyViewer: options.historyViewer || null,
   };
   initializeIndexRevisionState(state, state.index);
-  if (options.repo && !state.historyViewer) startProjectJob(state, options.repo, options.locale);
+  if (options.repo && !state.historyViewer) startProjectJob(state, options.repo, options.locale, options.projectPathSemantics);
 
   const server = http.createServer(async (req, res) => {
     const requestAbort = requestAbortContext(req, res);
@@ -874,12 +944,28 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
 
       if (pathname === '/api/project' && req.method === 'POST') {
         const body = await readJsonBody(req);
-        const repoRoot = String(body.repoRoot || '').trim();
+        const repoRoot = typeof body?.repoRoot === 'string' ? body.repoRoot.trim() : '';
         if (!repoRoot) {
           sendError(res, 400, 'repoRoot is required');
           return;
         }
-        const job = startProjectJob(state, repoRoot, body.locale || locale);
+        if (body.projectPathSemantics !== undefined && !['windows', 'posix'].includes(body.projectPathSemantics)) {
+          sendError(res, 400, 'projectPathSemantics must be windows or posix.', undefined, 'INVALID_PROJECT_PATH_POLICY');
+          return;
+        }
+        let selection;
+        try {
+          selection = projectSelection(repoRoot, state.localInputBase, body.projectPathSemantics);
+        } catch (error) {
+          sendError(res, 400, error.message, undefined, error.code);
+          return;
+        }
+        if ((body.projectPathPolicyId !== undefined && body.projectPathPolicyId !== activeProjectPathContext(state).digest)
+            || (body.projectPathKey !== undefined && body.projectPathKey !== selection.key)) {
+          sendError(res, 409, 'Project path interpretation changed; refresh the project list.', undefined, 'PROJECT_PATH_SCOPE_MISMATCH');
+          return;
+        }
+        const job = startProjectJob(state, repoRoot, body.locale || locale, body.projectPathSemantics);
         sendJson(res, 202, { job: projectJobPayload(job) });
         return;
       }
@@ -892,8 +978,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           return;
         }
         const payload = { job: projectJobPayload(job) };
-        if (job.status === 'succeeded'
-            && normalizeFsPath(state.index?.repoRoot) === normalizeFsPath(job.repoRoot)) {
+        if (job.status === 'succeeded' && sameProjectJobScope(state, job)) {
           const stateLocale = searchParams.has('locale') ? locale : (job.locale || locale);
           payload.state = statePayload(state, stateLocale);
         }
@@ -1340,6 +1425,7 @@ async function main() {
     return;
   }
 
+  const sourceConfigs = opts.pathConfig ? await loadPathConfig(opts.pathConfig) : undefined;
   const server = createServer(null, 0, {
     source: opts.source,
     codexHome: opts.codexHome,
@@ -1349,6 +1435,8 @@ async function main() {
     opencodeHome: opts.opencodeHome,
     workbuddyHome: opts.workbuddyHome,
     repo: opts.repo,
+    projectPathSemantics: opts.projectPathSemantics,
+    ...(sourceConfigs ? { sourceConfigs } : {}),
     logDir: opts.logDir,
     onProjectJobSettled(job) {
       if (job.status === 'succeeded') {
@@ -1368,16 +1456,17 @@ async function main() {
       }
     },
   });
-  const startupSourceConfigs = createInitialSourceConfigs(null, opts, opts.source);
+  const startupSourceConfigs = createInitialSourceConfigs(null, { ...opts, ...(sourceConfigs ? { sourceConfigs } : {}) }, opts.source);
   const startupAdapter = requireSourceAdapter(opts.source);
   const startupSourceHome = activeSourceHome({ sourceKind: opts.source }, opts.source, startupSourceConfigs);
+  const startupProject = opts.repo ? projectSelection(opts.repo, process.cwd(), opts.projectPathSemantics) : null;
 
   server.listen(opts.port, opts.host, () => {
     console.log(`Session Analyzer: http://${opts.host}:${opts.port}`);
     console.log(`Transcript source: ${opts.source}`);
     console.log(`${startupAdapter.homeLabel}: ${startupSourceHome}`);
     if (opts.repo) {
-      console.log(`Repo: indexing ${path.resolve(opts.repo)}`);
+      console.log(`Repo: indexing ${startupProject.path}`);
     } else {
       console.log('Repo: select in browser');
     }

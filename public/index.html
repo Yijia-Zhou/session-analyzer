@@ -154,6 +154,7 @@
         <button id="projectCancelBtn" class="ghostBtn projectCancelBtn" type="button" hidden>Cancel indexing</button>
         <div id="projectPollRecovery" class="notice warning" role="status" hidden></div>
         <div id="projectFailure" class="notice warning" role="status" hidden></div>
+        <div id="projectPathNotice" class="notice warning" role="status" hidden></div>
         <div id="projectSourceSwitch" class="projectSourceSwitch" hidden>
           <div class="projectSourceRow">
             <div class="projectSourceIdentity">
@@ -183,6 +184,27 @@
                 <button id="projectHomeApplyBtn" class="primaryBtn projectHomeApplyBtn" type="button">Apply paths</button>
                 <span id="projectSourceError" class="projectSourceError" aria-live="polite"></span>
               </div>
+            </div>
+          </details>
+          <details id="projectPathPolicyEditor" class="projectHomeEditor">
+            <summary>Interpret recorded project paths</summary>
+            <div class="projectHomeBody projectPathPolicyBody">
+              <p id="projectPathPolicyHelp"></p>
+              <p id="projectPathPolicySource" class="projectPathPolicySource"></p>
+              <div id="projectPathRulesList"></div>
+              <div class="projectHomeFields projectPathRuleFields">
+                <label class="projectHomeField"><span id="projectPathRuleScopeLabel"></span><select id="projectPathRuleScope"><option value="container">Container and its artifacts</option><option value="artifact">Exact artifact</option></select></label>
+                <label class="projectHomeField"><span id="projectPathRulePathLabel"></span><input id="projectPathRulePath" type="text" autocomplete="off" spellcheck="false" aria-describedby="projectPathRulePathHelp projectPathRuleWholeRoot"></label>
+                <label class="projectHomeField"><span id="projectPathRuleInterpretationLabel"></span><select id="projectPathRuleInterpretation"><option value="unc">Ordinary Windows UNC</option><option value="posix">POSIX</option></select></label>
+              </div>
+              <p id="projectPathRulePathHelp"></p>
+              <p id="projectPathRuleWholeRoot" class="projectPathRuleWholeRoot"></p>
+              <p id="projectPathRuleClosesProject" hidden></p>
+              <div class="projectHomeActions">
+                <button id="projectPathRuleAdd" class="ghostBtn" type="button">Add rule</button>
+                <button id="projectPathRuleApply" class="primaryBtn" type="button">Save rules and rediscover</button>
+              </div>
+              <p id="projectPathRuleError" class="projectSourceError" role="status"></p>
             </div>
           </details>
         </div>

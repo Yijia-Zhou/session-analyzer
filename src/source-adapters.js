@@ -6,6 +6,7 @@ const { setImmediate: yieldImmediate } = require('node:timers/promises');
 const os = require('node:os');
 const path = require('node:path');
 const fsPath = require('./shared/fs-path');
+const { createProjectPathContext } = require('./project-path-context');
 const { PROFILE: LEGACY_RAW_PROFILE, createBudget: createLegacyRawBudget } = require('./legacy-raw-owner-budget');
 const codex = require('./codex');
 const claude = require('./claude');
@@ -714,6 +715,28 @@ function createStrictMaterializationContext(index, adapter) {
     throw strictBoundaryError(`${adapter.kind} Index materialization ownership is invalid`);
   }
   const context = { sourceKind, repoRoot };
+  if (Object.hasOwn(index, 'projectPathContext')) {
+    const captured = captureOwnDataProperty(index, 'projectPathContext', owner);
+    if (typeof captured !== 'string' || !captured || Buffer.byteLength(captured, 'utf8') > 64 * 1024) {
+      throw strictBoundaryError(`${owner}.projectPathContext must be a bounded canonical string`);
+    }
+    try {
+      const parsed = JSON.parse(captured);
+      createProjectPathContext({ sourceKind, sourceHome: parsed.sourceHome, projectPathContext: captured });
+    } catch {
+      throw strictBoundaryError(`${owner}.projectPathContext is invalid`);
+    }
+    context.projectPathContext = captured;
+  }
+  if (Object.hasOwn(index, 'projectPathScopeRoot')) {
+    const scopeRoot = captureOwnDataProperty(index, 'projectPathScopeRoot', owner);
+    if (typeof scopeRoot !== 'string' || !scopeRoot || scopeRoot.includes('\0')
+        || Buffer.byteLength(scopeRoot, 'utf8') > 64 * 1024
+        || !path.isAbsolute(scopeRoot) || path.resolve(scopeRoot) !== scopeRoot) {
+      throw strictBoundaryError(`${owner}.projectPathScopeRoot must be a bounded canonical absolute path`);
+    }
+    context.projectPathScopeRoot = scopeRoot;
+  }
   for (const field of adapter.materializationContextFields) {
     const value = captureOwnDataProperty(index, field, owner);
     if (typeof value !== 'string'
@@ -758,6 +781,12 @@ function strictOwnershipMatches(index, indexedSession, dependencySet, captured) 
         === captured.materializationContext.sourceKind
       && captureOwnDataProperty(index, 'repoRoot', owner)
         === captured.materializationContext.repoRoot
+      && Object.hasOwn(index, 'projectPathContext') === Object.hasOwn(captured.materializationContext, 'projectPathContext')
+      && (!Object.hasOwn(captured.materializationContext, 'projectPathContext')
+        || captureOwnDataProperty(index, 'projectPathContext', owner) === captured.materializationContext.projectPathContext)
+      && Object.hasOwn(index, 'projectPathScopeRoot') === Object.hasOwn(captured.materializationContext, 'projectPathScopeRoot')
+      && (!Object.hasOwn(captured.materializationContext, 'projectPathScopeRoot')
+        || captureOwnDataProperty(index, 'projectPathScopeRoot', owner) === captured.materializationContext.projectPathScopeRoot)
       && captured.adapter.materializationContextFields.every((field) => (
         captureOwnDataProperty(index, field, owner) === captured.materializationContext[field]
       ))
@@ -801,10 +830,11 @@ const codexAdapter = {
     defaultHome: () => path.join(os.homedir(), '.codex'),
     query: codex.query,
     async discoverConfiguredProjects(context) {
-      return codex.discoverConfiguredProjects({ codexHome: context.sourceHome });
+      return codex.discoverConfiguredProjects({ ...context, codexHome: context.sourceHome });
     },
     async discoverProjects(context) {
       return codex.discoverProjects({
+        ...context,
         codexHome: context.sourceHome,
         signal: context.signal,
         onDiagnostic: context.onDiagnostic,
@@ -858,12 +888,14 @@ const claudeAdapter = {
     query: claude.query,
     async discoverConfiguredProjects(context) {
       return claude.discoverClaudeConfiguredProjects({
+        ...context,
         claudeHome: context.sourceHome,
         signal: context.signal,
       });
     },
     async discoverProjects(context) {
       return claude.discoverClaudeProjects({
+        ...context,
         claudeHome: context.sourceHome,
         signal: context.signal,
         onDiagnostic: context.onDiagnostic,

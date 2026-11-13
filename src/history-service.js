@@ -2,6 +2,7 @@
 
 const { createHash, createHmac, randomBytes, timingSafeEqual } = require('node:crypto');
 const path = require('node:path');
+const process = require('node:process');
 const fs = require('node:fs/promises');
 const { requireSourceAdapter, materializeSessionForIndex, buildEventDetailForSession,
   readIndexedRawRecord, validateIndexOwnershipForCommit } = require('./source-adapters');
@@ -16,6 +17,9 @@ const { groupedSearch, validateGroups } = require('./history-search-groups');
 const { createHistorySourceLocator } = require('./history-source-locator');
 const { createHistorySourceObservation } = require('./history-source-observation');
 const { matchText, containsText, excerptText } = require('./history-search-text');
+const { loadPathConfig } = require('./cli');
+const { createProjectPathContext, projectSelection } = require('./project-path-context');
+const { interpretProjectPath, PROJECT_PATH_VERSION } = require('./shared/project-path');
 
 const VERSION = 1;
 const LAYERS = ['main', 'protocol', 'raw'];
@@ -74,13 +78,26 @@ function outputBudgetMessage(operation, input, reason, groupId) {
 async function createHistoryService(options = {}) {
   if (typeof options.repo !== 'string' || !options.repo.trim()) fail('INVALID_ARGUMENT', 'A fixed --repo is required');
   const adapter = requireSourceAdapter(options.source || 'codex');
-  const sourceHome = path.resolve(options[adapter.homeOption] || adapter.defaultHome());
+  const sourceConfigs = options.pathConfig ? await loadPathConfig(options.pathConfig) : options.sourceConfigs;
+  const configured = sourceConfigs?.[adapter.kind];
+  if (configured !== undefined && (!configured || typeof configured.home !== 'string' || !configured.home.trim())) {
+    fail('INVALID_PROJECT_PATH_POLICY', 'Configured source home must be a non-empty string.');
+  }
+  const sourceHome = path.resolve(configured?.home || options[adapter.homeOption] || adapter.defaultHome());
+  const projectPathContext = createProjectPathContext({ sourceKind: adapter.kind, sourceHome, sourceConfigs });
+  const projectPath = projectSelection(options.repo, process.cwd(), options.projectPathSemantics);
   const diagnostics = createSourceDiagnostics();
   const sourceObservation = adapter.kind === 'codex' ? await createHistorySourceObservation({ sourceHome }) : null;
   const indexStartedAt = new Date().toISOString();
   const index = await withIndexResourceBuildScope(() => withQueryStoreBuildScope(async () => {
-    const candidate = await adapter.buildIndex({ repoRoot: options.repo, sourceHome,
+    const candidate = await adapter.buildIndex({ repoRoot: projectPath.path, sourceHome, sourceConfigs,
+      projectPathContext: projectPathContext.serialized,
       onDiagnostic: (entry) => diagnostics.add(entry) });
+    if ((candidate.projectPathContext !== undefined && candidate.projectPathContext !== projectPathContext.serialized)
+        || (candidate.projectPathContext === undefined && projectPathContext.rules.length > 0)
+        || projectSelection(candidate.repoRoot).key !== projectPath.key) {
+      fail('PROJECT_PATH_SCOPE_MISMATCH', 'History Index does not match its captured project path interpretation.');
+    }
     if (hasIndexResources(candidate)) await validateIndexOwnershipForCommit(candidate);
     return candidate;
   }));
@@ -91,7 +108,18 @@ async function createHistoryService(options = {}) {
   if (sourceObservation) await sourceObservation.bindIndex(index, { startedAt: indexStartedAt, endedAt: indexEndedAt });
   const sourceRoot = index.sourceRoot || sourceHome;
   const sourceRootAccessible = await fs.stat(sourceRoot).then((stat) => stat.isDirectory(), () => false);
-  const scope = digest([index.repoRoot, adapter.kind, sourceHome]);
+  const scope = digest([projectPath.key, adapter.kind, sourceHome, projectPathContext.digest]);
+  // Old references did not encode a path policy. Preserve them only where the
+  // default, unambiguous interpretation has the same recorded-path meaning.
+  // A scoped rule or ambiguous/unsupported recorded cwd cannot acquire this
+  // alias, even when the current bytes happen to be unchanged.
+  const unambiguousDefault = projectPathContext.rules.length === 0
+    && !/^\/{2}/.test(options.repo) && !projectPath.legacyAssumption
+    && index.sessions.every((session) => [...(session.cwdSet || [])].every((cwd) => {
+      const descriptor = interpretProjectPath(cwd);
+      return descriptor.status === 'valid' && !descriptor.legacyAssumption;
+    }));
+  const legacyScope = unambiguousDefault ? digest([index.repoRoot, adapter.kind, sourceHome]) : null;
   const contextRef = `hc1.${randomBytes(18).toString('base64url')}`;
   const presentation = createHistoryPresentation(contextRef);
   const secret = randomBytes(32);
@@ -112,6 +140,8 @@ async function createHistoryService(options = {}) {
   if (!sourceRootAccessible) gaps.push('source_root_unavailable');
   const coverage = {
     repo: index.repoRoot, source: adapter.kind, sourceRoot, sourceRootAccessible,
+    projectPathIdentity: { version: PROJECT_PATH_VERSION, digest: digest(projectPath.key) },
+    projectPathPolicyId: projectPathContext.digest,
     indexedAt: index.generatedAt, sessionCount: sessions.length, indexing: 'complete',
     sourceCoverage: diagnostics.summary.totalCount || !sourceRootAccessible ? 'incomplete' : 'configured_scope_only',
     knownGaps: gaps, diagnostics: { totalCount: diagnostics.summary.totalCount, counts: diagnostics.summary.counts },
@@ -137,7 +167,7 @@ async function createHistoryService(options = {}) {
       const [prefix, p, s, v, l, type, a, b, extra] = value.split('.');
       if (extra !== undefined || ![p, s, v].every((part) => /^[A-Za-z0-9_-]{22}$/u.test(part || ''))
           || !LAYERS.includes(l) || !['e', 'f', 'b'].includes(type)) fail('INVALID_REFERENCE', 'Malformed compact reference');
-      if (p !== scope.slice(0, 22)) fail('REFERENCE_SCOPE_MISMATCH', 'Evidence belongs to another project/source/root');
+      if (p !== scope.slice(0, 22) && p !== legacyScope?.slice(0, 22)) fail('REFERENCE_SCOPE_MISMATCH', 'Evidence belongs to another project/source/root');
       const session = sessionsByRef.get(s);
       if (!session || v !== snapshot(session).slice(0, 22)) fail('STALE_REFERENCE', 'Source snapshot changed; search again');
       const numeric = (text) => /^\d+$/u.test(text || '') && Number.isSafeInteger(Number(text));
@@ -150,7 +180,7 @@ async function createHistoryService(options = {}) {
     }
     // Keep pre-release evidence readable across the compact-locator migration.
     const r = decode('er1.', value);
-    if (!r || r.p !== scope) fail('REFERENCE_SCOPE_MISMATCH', 'Evidence belongs to another project/source/root');
+    if (!r || (r.p !== scope && (!legacyScope || r.p !== legacyScope))) fail('REFERENCE_SCOPE_MISMATCH', 'Evidence belongs to another project/source/root');
     const session = index.sessionsById.get(r.s);
     if (!session || r.v !== snapshot(session)) fail('STALE_REFERENCE', 'Source snapshot changed; search again');
     if (!LAYERS.includes(r.l) || (typeof r.e !== 'string' && !(Number.isSafeInteger(r.a) && Number.isSafeInteger(r.b) && r.a >= 0 && r.b >= r.a))) {
@@ -166,6 +196,17 @@ async function createHistoryService(options = {}) {
     });
     if (indexes.length > 1) fail('AMBIGUOUS_REFERENCE', 'Event locator collision');
     return indexes[0] ?? -1;
+  }
+  function sourceInputForCurrentPolicy(input) {
+    if (!legacyScope || typeof input.sourceRef !== 'string' || input.sourceRef.length > 8192
+        || !/^sr1\.[A-Za-z0-9_-]+$/u.test(input.sourceRef)) return input;
+    let parsed;
+    try { parsed = JSON.parse(Buffer.from(input.sourceRef.slice(4), 'base64url').toString('utf8')); }
+    catch { return input; }
+    if (!parsed || typeof parsed !== 'object' || parsed.p !== digest(legacyScope)) return input;
+    // The locator still validates the exact admitted file, snapshot and Raw
+    // owner. Only the proven compatible scope envelope is migrated here.
+    return { ...input, sourceRef: 'sr1.' + Buffer.from(JSON.stringify({ ...parsed, p: digest(scope) })).toString('base64url') };
   }
   function cursor(operation, input, offset) {
     const payload = encode('', { c: contextRef, o: operation, q: digest(input), n: offset });
@@ -436,7 +477,7 @@ async function createHistoryService(options = {}) {
       if (!input.source || typeof input.source !== 'object' || Array.isArray(input.source)) fail('INVALID_ARGUMENT', 'source must be an object');
       for (const key of Object.keys(input.source)) if (!['sourceRef', 'sourcePath', 'locator', 'logicalOffset'].includes(key)) fail('INVALID_ARGUMENT', `Unknown source field: ${key}`);
       integer(input.source.logicalOffset, 0, 0, Number.MAX_SAFE_INTEGER, 'source.logicalOffset');
-      sourceResolution = await createHistorySourceLocator({ index, scope, materialize, makeEvidenceRef: ref }).resolveLocator(input.source);
+      sourceResolution = await createHistorySourceLocator({ index, scope, materialize, makeEvidenceRef: ref }).resolveLocator(sourceInputForCurrentPolicy(input.source));
       const { matches, ...sourceInfo } = sourceResolution;
       response.source = { ...sourceInfo, matchedRawRecords: matches.length };
     }
@@ -647,6 +688,8 @@ async function createHistoryService(options = {}) {
       if (closed) fail('CONTEXT_EXPIRED', 'The retrieval service is closed');
       return require('../server').createServer(index, 0, {
         [adapter.homeOption]: sourceHome, sessionPrewarm: false,
+        sourceConfigs: { ...sourceConfigs, [adapter.kind]: { home: sourceHome,
+          projectPathRules: projectPathContext.rules.map((rule) => ({ ...rule })) } },
         historyViewer: { resolve: (value) => run(resolveEvidence, [{ refs: [value] }]) },
       });
     },

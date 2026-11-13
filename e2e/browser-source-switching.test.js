@@ -33,6 +33,7 @@ async function openPollingRecoveryChooser(t, respond) {
     beforeGoto: async (page) => {
       await page.route('**/api/project', async (route) => {
         counts.posts += 1;
+        counts.projectPathPolicyId = route.request().postDataJSON().projectPathPolicyId;
         await route.continue();
       });
       await page.route('**/api/project/status*', async (route) => {
@@ -265,7 +266,7 @@ test('browser hydration prefers canonical source configs over conflicting legacy
   };
   const { page } = await openSourceSwitchChooser(t, {
     beforeGoto: async (p) => {
-      await p.route('**/api/state', async (route) => {
+      await p.route('**/api/state*', async (route) => {
         await route.fulfill({
           status: 409,
           contentType: 'application/json',
@@ -307,7 +308,7 @@ test('browser does not fall back to a legacy home when a canonical source config
   };
   const { page } = await openSourceSwitchChooser(t, {
     beforeGoto: async (p) => {
-      await p.route('**/api/state', async (route) => {
+      await p.route('**/api/state*', async (route) => {
         await route.fulfill({
           status: 409,
           contentType: 'application/json',
@@ -357,7 +358,7 @@ test('browser clears stale source config and active home after a later malformed
   };
   const { page } = await openSourceSwitchChooser(t, {
     beforeGoto: async (p) => {
-      await p.route('**/api/state', async (route) => {
+      await p.route('**/api/state*', async (route) => {
         await route.fulfill({
           status: 409,
           contentType: 'application/json',
@@ -535,14 +536,14 @@ test('browser last-selected repo is scoped per source and migrates legacy Codex 
     codex: localStorage.getItem('sessionAnalyzer.repoRoot.codex'),
     claude: localStorage.getItem('sessionAnalyzer.repoRoot.claude-code'),
   }));
-  assert.equal(migrated.legacy, null);
+  assert.equal(migrated.legacy, repoRoot);
   assert.equal(migrated.codex, repoRoot);
   assert.equal(migrated.claude, null);
 
   await page.evaluate(() => localStorage.setItem('sessionAnalyzer.repoRoot', 'stale-legacy-repo'));
   await page.locator('#projectSwitchControl').click();
   await page.waitForFunction(() => document.body.dataset.projectMode === 'selecting');
-  await page.waitForFunction(() => localStorage.getItem('sessionAnalyzer.repoRoot') === null);
+  assert.equal(await page.evaluate(() => localStorage.getItem('sessionAnalyzer.repoRoot')), 'stale-legacy-repo');
   await page.locator('[data-source-choice="claude-code"]').click();
   await confirmSourceAction(page, 'Confirm switch to Claude Code');
   await waitForProjectRoot(page, fixture.claudeRepo);
@@ -1290,6 +1291,7 @@ test('browser onboarding preserves failed startup across reload and retries the 
       await p.route('**/api/state*', async (route) => {
         const response = await route.fetch();
         const payload = await response.json();
+        failure.projectPathPolicyId = (payload.details || payload).projectPathPolicyId;
         await route.fulfill({ status: 200, json: { ...(payload.details || payload), projectSelected: false, job: failure } });
       });
       await p.route('**/api/project', async (route) => {
@@ -1374,7 +1376,7 @@ for (const firstFailure of [false, true]) {
   test(`browser polling recovery resumes original job after ${firstFailure ? 'initial' : 'scheduled'} transport failure`, async (t) => {
     const { page, counts } = await openPollingRecoveryChooser(t, async (route, counts, jobId) => {
       if (!firstFailure && counts.gets === 1) {
-        await route.fulfill({ json: { job: { id: jobId, status: 'running', repoRoot } } });
+        await route.fulfill({ json: { job: { id: jobId, status: 'running', repoRoot, projectPathPolicyId: counts.projectPathPolicyId } } });
       } else if (counts.gets === (firstFailure ? 1 : 2)) await route.abort('failed');
       else await route.continue();
     });
@@ -1428,7 +1430,7 @@ for (const invalid of ['404', '404-null', 'malformed', 'unknown', 'wrong-job']) 
 test('browser polling recovery observes original job after cancellation transport failure', async (t) => {
   const { page, counts } = await openPollingRecoveryChooser(t, async (route, counts, jobId) => {
     if (route.request().method() === 'DELETE') await route.abort('failed');
-    else if (!counts.deletes) await route.fulfill({ json: { job: { id: jobId, status: 'running', repoRoot } } });
+    else if (!counts.deletes) await route.fulfill({ json: { job: { id: jobId, status: 'running', repoRoot, projectPathPolicyId: counts.projectPathPolicyId } } });
     else await route.continue();
   });
   await page.locator('#projectCancelBtn').click();
@@ -1445,7 +1447,7 @@ test('browser polling recovery ignores a delayed success after cancellation', as
   const observed = new Promise((resolve) => { pending = resolve; });
   const { page, counts } = await openPollingRecoveryChooser(t, async (route, counts, jobId) => {
     if (route.request().method() === 'DELETE') {
-      await route.fulfill({ json: { job: { id: jobId, status: 'cancelled', repoRoot } } });
+      await route.fulfill({ json: { job: { id: jobId, status: 'cancelled', repoRoot, projectPathPolicyId: counts.projectPathPolicyId } } });
     } else {
       const response = await route.fetch();
       pending();
@@ -1474,14 +1476,14 @@ test('browser polling recovery resumes startup job after initial query failure w
       await page.route('**/api/state*', async (route) => {
         const response = await route.fetch();
         appState = await response.json();
-        await route.fulfill({ json: { ...appState, projectSelected: false, job: { id: 'startup-job', status: 'running', repoRoot } } });
+        await route.fulfill({ json: { ...appState, projectSelected: false, job: { id: 'startup-job', status: 'running', repoRoot, projectPathPolicyId: appState.projectPathPolicyId } } });
       });
       await page.route('**/api/project', async (route) => { posts += 1; await route.continue(); });
       await page.route('**/api/project/status*', async (route) => {
         gets += 1;
         assert.equal(new URL(route.request().url()).searchParams.get('jobId'), 'startup-job');
         if (gets === 1) await route.abort('failed');
-        else await route.fulfill({ json: { job: { id: 'startup-job', status: 'succeeded', repoRoot }, state: appState } });
+        else await route.fulfill({ json: { job: { id: 'startup-job', status: 'succeeded', repoRoot, projectPathPolicyId: appState.projectPathPolicyId }, state: appState } });
       });
     },
   });
@@ -1497,7 +1499,7 @@ test('browser polling recovery ignores delayed fallback state after cancellation
   const observed = new Promise((resolve) => { pending = resolve; });
   const { page, counts } = await openPollingRecoveryChooser(t, async (route, counts, jobId) => {
     if (route.request().method() === 'DELETE') {
-      await route.fulfill({ json: { job: { id: jobId, status: 'cancelled', repoRoot } } });
+      await route.fulfill({ json: { job: { id: jobId, status: 'cancelled', repoRoot, projectPathPolicyId: counts.projectPathPolicyId } } });
     } else {
       const response = await route.fetch();
       const data = await response.json();
@@ -1539,7 +1541,7 @@ test('browser polling recovery retries non-JSON temporary HTTP response', async 
 test('browser polling recovery resets consecutive error budget after valid running status', async (t) => {
   const { page, counts } = await openPollingRecoveryChooser(t, async (route, counts, jobId) => {
     if (counts.gets === 4) {
-      await route.fulfill({ json: { job: { id: jobId, status: 'running', repoRoot } } });
+      await route.fulfill({ json: { job: { id: jobId, status: 'running', repoRoot, projectPathPolicyId: counts.projectPathPolicyId } } });
     } else if (counts.gets < 8) await route.abort('failed');
     else await route.continue();
   });

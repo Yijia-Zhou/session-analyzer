@@ -233,7 +233,7 @@ test('UNC origin evidence survives indexing and materialization without matching
   t.after(() => disposeIndexResources(index)); await validateIndexOwnershipForCommit(index);
   const session = await materializeSessionForIndex(index, index.sessions[0]);
   assert.equal(session.counts.userMessages, 1);
-  assert.equal(index.sourceDiagnostics.totalCount, 0);
+  assert.deepEqual(index.sourceDiagnostics.counts, { PROJECT_PATH_LEGACY_ASSUMPTION: 1 });
   const event = session.logicalEvents.find((item) => item.subtype === 'workbuddy_scheduled_input');
   assert.ok(event);
   assert.equal((await readIndexedRawRecord(index, session, event.rawRefs[0].rawId)).raw, lines[0]);

@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const { createProjectPathContext, projectContextIndexFields, projectSelection } = require('./project-path-context');
 const { createHash } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
@@ -46,12 +47,14 @@ function metadataFromDescriptor(descriptor, dependencySet) {
     snapshotId: descriptor.payload.storageSnapshotId, bytes: entry.acceptedBytes, digest: entry.digest };
 }
 
-async function buildOpenCodeIndex({ sourceHome = storage.defaultOpenCodeHome(), repoRoot, signal, onProgress, onDiagnostic, limits, snapshotBase } = {}) {
+async function buildOpenCodeIndex({ sourceHome = storage.defaultOpenCodeHome(), repoRoot, signal, onProgress, onDiagnostic, limits, snapshotBase, ...options } = {}) {
+  const paths = createProjectPathContext({ ...options, sourceKind: SOURCE_KIND, sourceHome });
+  repoRoot = projectSelection(repoRoot, undefined, options.projectPathSemantics).path;
   const started = Date.now();
   const diagnostics = createSourceDiagnostics();
   const report = (value) => { diagnostics.add(value); onDiagnostic?.(value); };
   const captured = await storage.captureOpenCodeProject({
-    sourceHome, repoRoot, signal, limits, snapshotBase, onProgress, onDiagnostic: report,
+    sourceHome, repoRoot, signal, limits, snapshotBase, onProgress, onDiagnostic: report, projectPathContext: paths.serialized,
   });
   const resource = registerIndexResource({
     label: 'OpenCode immutable project snapshot',
@@ -119,6 +122,7 @@ async function buildOpenCodeIndex({ sourceHome = storage.defaultOpenCodeHome(), 
     signal?.throwIfAborted();
     sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
     const index = {
+      ...projectContextIndexFields(paths, repoRoot),
       sourceKind: SOURCE_KIND, sourceHome: path.resolve(sourceHome),
       sourceRoot: path.dirname(captured.source.databasePath), sourceDatabase: captured.source.databasePath,
       snapshotRoot: captured.snapshotRoot,

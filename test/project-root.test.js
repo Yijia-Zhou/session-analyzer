@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { sameProjectRoot } = require('../src/shared/project-root');
+const { interpretProjectPath } = require('../src/shared/project-path');
 
 test('project root comparison preserves POSIX case and literal separators', () => {
   assert.equal(sameProjectRoot('/work/Foo', '/work/foo'), false);
@@ -13,6 +14,14 @@ test('project root comparison preserves POSIX case and literal separators', () =
 test('project root comparison follows Windows case and separator equivalence', () => {
   assert.equal(sameProjectRoot('C:\\work\\Foo', 'c:/WORK/foo/'), true);
   assert.equal(sameProjectRoot('C:\\', 'c:/'), true);
-  assert.equal(sameProjectRoot('\\\\Server\\Share\\Foo', '//server/share/foo/'), true);
+  assert.equal(sameProjectRoot('\\\\Server\\Share\\Foo', '//server/share/foo/'), false);
+  assert.equal(sameProjectRoot('\\\\Server\\Share\\Foo', interpretProjectPath('//server/share/foo/', { doubleSlash: 'unc' })), true);
   assert.equal(sameProjectRoot('C:\\work\\Foo', '/work/Foo'), false);
+});
+
+test('project root comparison uses the same fixed interpretation as project identity', () => {
+  assert.equal(sameProjectRoot('//work/Project', '/work/Project'), true);
+  assert.equal(sameProjectRoot('//work/Project', '//work/project'), false);
+  assert.equal(sameProjectRoot('/work/Project-2', '/work/Project'), false);
+  assert.equal(sameProjectRoot('\\\\server\\share\\Project', '\\\\server\\share-2\\Project'), false);
 });
