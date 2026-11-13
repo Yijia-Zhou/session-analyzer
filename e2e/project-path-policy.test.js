@@ -430,6 +430,7 @@ test('native POSIX case-distinct projects stay distinct in browser discovery and
   assert.equal(new Set(keys).size, 2);
   await chooseProject(page, upper);
   assert.equal(await page.locator('#sessionList .sessionItem').count(), 1);
+  await page.waitForFunction(() => document.querySelector('#timeline')?.textContent.includes('SYNTHETIC_PATH_upper'));
   assert.match(await page.locator('#timeline').innerText(), /SYNTHETIC_PATH_upper/);
   assert.doesNotMatch(await page.locator('#timeline').innerText(), /SYNTHETIC_PATH_lower/);
   await f.unchanged();
