@@ -2156,6 +2156,142 @@ test('browser Layer transitions abort an in-flight selected detail instead of re
   ));
 });
 
+for (const [stage, action] of [
+  ['suggestions', 'event'], ['suggestions', 'session'], ['suggestions', 'close'],
+  ['suggestions', 'mobile surface'],
+  ['navigation', 'event'], ['target-page', 'event'],
+]) test(`browser Layer focus restoration yields to newer ${action} intent during ${stage}`, async (t) => {
+  const { fixture, index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [180] });
+  const { page } = await openApp(t, index, {
+    locale: 'en',
+    ...(action === 'mobile surface' ? { viewport: { width: 390, height: 800 } } : {}),
+  });
+  if (action === 'mobile surface') await page.locator('button[data-mobile-view="events"]').click();
+  if (stage === 'target-page') {
+    await page.locator('#loadMoreBtn').click();
+    await assertEventCount(page, 200);
+  }
+  await page.locator('#timeline .event[data-event-id]').nth(stage === 'target-page' ? 190 : 80).click();
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await page.locator('#detail .rawRefsView pre').first().waitFor();
+  const gate = deferred();
+  const started = deferred();
+  let held = false;
+  const routeMatches = (url) => {
+    const parsed = new URL(String(url));
+    if (parsed.searchParams.get('layer') !== 'raw') return false;
+    if (stage === 'suggestions') return parsed.pathname === '/api/file-suggestions';
+    return parsed.pathname === `/api/sessions/${fixture.longSessionId}/timeline`
+      && (stage === 'navigation' ? parsed.searchParams.get('limit') === '500' : parsed.searchParams.get('offset') === '150');
+  };
+  await page.route(routeMatches, async (route) => {
+    if (!held) { held = true; started.resolve(); await gate.promise; }
+    await route.continue().catch(() => {});
+  });
+  t.after(() => gate.resolve());
+  await page.locator('#layerSelect').selectOption('raw');
+  await started.promise;
+  await page.waitForFunction(() => document.querySelector('#timeline .event')?.dataset.eventId.includes(':raw:'));
+  if (action === 'mobile surface') {
+    await page.locator('button[data-mobile-view="events"]').click();
+    gate.resolve();
+    await page.waitForLoadState('networkidle');
+    assert.equal(await page.locator('body').getAttribute('data-mobile-view'), 'events');
+    assert.equal(await page.locator('#timeline .event.selected').count(), 0);
+    return;
+  }
+  if (action === 'session') {
+    const otherId = index.sessions.find((session) => session.id !== fixture.longSessionId).id;
+    await page.locator(`[data-session-id="${otherId}"]`).click();
+    await page.waitForFunction((id) => document.querySelector('#sessionList .sessionItem.active')?.dataset.sessionId === id
+      && document.querySelector('#timeline .event')?.dataset.eventId.startsWith(id), otherId);
+  }
+  const target = page.locator('#timeline .event[data-event-id]').nth(5);
+  const targetId = await target.getAttribute('data-event-id');
+  await target.click();
+  await page.waitForFunction((id) => document.querySelector('#timeline .event.selected')?.dataset.eventId === id, targetId);
+  if (action === 'close') await page.locator('#detail [data-detail-action="close"]').click();
+  gate.resolve();
+  await page.waitForLoadState('networkidle');
+  if (action === 'close') {
+    assert.equal(await page.locator('#timeline .event.selected').count(), 0);
+    assert.equal(await page.locator('body').getAttribute('data-detail-view'), 'profileRules');
+  } else {
+    assert.equal(await page.locator('#timeline .event.selected').getAttribute('data-event-id'), targetId);
+    assert.equal(await page.locator('body').getAttribute('data-detail-view'), 'inspector');
+  }
+});
+
+test('browser Read from here does not replace a newer mobile surface after timeline loading', async (t) => {
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 200 });
+  const { page } = await openApp(t, index, { locale: 'en', viewport: { width: 390, height: 800 } });
+  await page.locator('button[data-mobile-view="events"]').click();
+  await page.locator('#layerSelect').selectOption('raw');
+  await page.waitForFunction(() => document.querySelector('#timeline .event')?.dataset.eventId.includes(':raw:'));
+  await page.locator('#timeline .event[data-event-id]').nth(80).click();
+  const gate = deferred();
+  const started = deferred();
+  await page.route((url) => url.pathname.endsWith('/timeline') && url.searchParams.get('layer') === 'main', async (route) => {
+    started.resolve();
+    await gate.promise;
+    await route.continue().catch(() => {});
+  });
+  t.after(() => gate.resolve());
+  await page.locator('#detail [data-detail-action="read-from-here"]').click();
+  await started.promise;
+  await page.locator('button[data-mobile-view="sessions"]').click();
+  gate.resolve();
+  await page.waitForLoadState('networkidle');
+  assert.equal(await page.locator('body').getAttribute('data-mobile-view'), 'sessions');
+  assert.equal(await page.locator('#timeline .event.selected').count(), 0);
+});
+
+test('browser Read from here returns to mobile Events when the profile hides every Main event', async (t) => {
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 20 });
+  const profile = {
+    id: 'custom:hide-all', name: 'Hide all',
+    rules: { kindStates: {}, codeModeRequestStates: {}, fallback: 'hidden', conditions: [] },
+  };
+  const { page } = await openApp(t, index, {
+    locale: 'en', viewport: { width: 390, height: 800 },
+    localStorage: {
+      'sessionAnalyzer.customProfiles': JSON.stringify([profile]),
+      'sessionAnalyzer.profile': profile.id,
+      'sessionAnalyzer.layer': 'raw',
+    },
+  });
+  await page.locator('button[data-mobile-view="events"]').click();
+  await page.locator('#timeline .event[data-event-id]').nth(5).click();
+  await page.locator('#detail [data-detail-action="read-from-here"]').click();
+  await page.waitForLoadState('networkidle');
+  assert.equal(await page.locator('#layerSelect').inputValue(), 'main');
+  assert.equal(await page.locator('body').getAttribute('data-mobile-view'), 'events');
+  assert.equal(await page.locator('#timeline .event.selected').count(), 0);
+});
+
+test('browser folding profile focus restoration yields to a newer event while navigation loads', async (t) => {
+  const { index } = await makeTransitionProfileIndex(t, { eventCount: 200 });
+  const { page } = await openApp(t, index, { locale: 'en' });
+  const gate = deferred();
+  const started = deferred();
+  await page.route((url) => url.pathname.endsWith('/timeline') && url.searchParams.get('limit') === '500', async (route) => {
+    started.resolve();
+    await gate.promise;
+    await route.continue().catch(() => {});
+  });
+  t.after(() => gate.resolve());
+  await page.locator('#timeline .event[data-event-id]').nth(80).click();
+  await started.promise;
+  await page.locator('#profileSelect:visible, #detail [data-profile-picker]:visible').selectOption('conversation');
+  const target = page.locator('#timeline .event[data-event-id]').nth(5);
+  const targetId = await target.getAttribute('data-event-id');
+  await target.click();
+  gate.resolve();
+  await page.waitForLoadState('networkidle');
+  assert.equal(await page.locator('#timeline .event.selected').getAttribute('data-event-id'), targetId);
+  assert.equal(await page.locator('body').getAttribute('data-detail-view'), 'inspector');
+});
+
 test('browser delayed background detail prefetch does not redraw the selected Inspector', async (t) => {
   const { fixture, index } = await makeTransitionProfileIndex(t, { eventCount: 200, hitPositions: [180] });
   const { page } = await openApp(t, index, { locale: 'en' });
