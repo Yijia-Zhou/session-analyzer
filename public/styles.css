@@ -5216,6 +5216,7 @@ body[data-project-mode='selecting'] .searchAssist {
 .kvTable td {
   border-top: 1px solid var(--line);
   font-size: 0.82rem;
+  overflow-wrap: anywhere;
   padding: 0.45rem 0;
   text-align: left;
   vertical-align: top;

@@ -239,6 +239,8 @@ While opening a project, temporary failures to query indexing status are retried
 
 When a source supplies no event label, Main cards and search results show the localized event kind (for example, `Reasoning` / `推理`) instead of an empty badge. Recorded custom labels remain available; Protocol events retain their subtype labels. / 当来源未提供事件标签时，Main 卡片与搜索结果显示本地化事件类型（例如 Reasoning／推理），避免空标签。已记录的自定义标签继续保留；Protocol 事件继续使用其子类型标签。
 
+Detail metadata tables wrap long paths and identifiers within the reading column, including on mobile, while retaining the complete recorded value. / 详情元数据表格中的长路径与标识符会在阅读栏内换行，移动端同样适用，并保留完整记录值。
+
 Keyboard rule editing keeps focus on the rule just changed so users can continue through adjacent controls after preview updates. / 键盘编辑规则在预览更新后保留刚修改规则的焦点，便于继续操作相邻控件。
 
 Outcome summaries distinguish request completion from recorded process exit, unknown exit and missing completion evidence. Terminal continuation titles and directories reduce repeated command text while preserving full origin evidence and early previous/next navigation. Claude Bash cards distinguish recorded file paths from supplied diffs and expose filter basis through a folded path list, explicitly reporting display limits. File activity adds bounded event/tool context and local time with timezone, retaining UTC identity. / 结果摘要区分请求完成与记录的进程退出、退出未知及缺少结束证据。终端续接标题与目录减少重复命令文本，同时保留完整起点证据与前置前后导航。Claude Bash 卡片区分已记录文件路径与已提供 diff，通过折叠路径表说明筛选依据，并明确展示上限。文件活动增加有界事件／工具上下文及带时区的本地时间，保留 UTC 身份。

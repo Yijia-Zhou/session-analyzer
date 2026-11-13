@@ -9,6 +9,7 @@ const { chromium } = require('playwright');
 const { createHistoryService } = require('../src/history-service');
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+const editedPath = `C:\\synthetic\\${'nested'.repeat(16)}\\synthetic.txt`;
 const text = (value) => ({ type: 'text', text: value });
 const call = (id, name, input) => ({ type: 'tool_use', id, name, input });
 const result = (id, content) => ({ type: 'tool_result', tool_use_id: id, content, is_error: false });
@@ -37,10 +38,10 @@ async function nativeFixture(t) {
       toolUseResult: { kind: 'completed', exitCode: 0, interrupted: false, stdout: 'QODER_COMMAND_OUTPUT', stderr: '' },
     }),
     message('assistant', 'edit-call', 'command-result', [call('edit-1', 'Edit', {
-      file_path: 'synthetic.txt', replacements: [{ old_string: 'QODER_DIFF_OLD', new_string: 'QODER_DIFF_NEW' }],
+      file_path: editedPath, replacements: [{ old_string: 'QODER_DIFF_OLD', new_string: 'QODER_DIFF_NEW' }],
     })]),
     message('user', 'edit-result', 'edit-call', [result('edit-1', 'QODER_EDIT_RECEIPT')], {
-      toolUseResult: { success: true, file_path: 'synthetic.txt', additions: 1, deletions: 1,
+      toolUseResult: { success: true, file_path: editedPath, additions: 1, deletions: 1,
         diff: '--- a/synthetic.txt\n+++ b/synthetic.txt\n@@ -1 +1 @@\n-QODER_DIFF_OLD\n+QODER_DIFF_NEW' },
     }),
     message('user', 'image-input', 'edit-result', [text('QODER_IMAGE_PROMPT'),
@@ -131,6 +132,18 @@ for (const width of [1440, 390]) test(`Qoder native labels, command, diff, saved
   assert.equal(await page.locator('#timeline article.selected .diffLine.removed').innerText(), '-QODER_DIFF_OLD');
   assert.match(await page.locator('#timeline article.selected').innerText(), /synthetic\.txt/);
   assert.match(await page.locator('#timeline article.selected').innerText(), /QODER_EDIT_RECEIPT/);
+  const recordedPath = page.locator('#timeline article.selected .kvTable td').filter({ hasText: editedPath });
+  assert.equal(await recordedPath.textContent(), editedPath, 'the complete recorded path remains readable');
+  const pathLayout = await recordedPath.evaluate((cell) => {
+    const wrap = cell.closest('.kvWrap');
+    const table = cell.closest('table');
+    return { viewport: innerWidth, pageWidth: document.documentElement.scrollWidth,
+      tableWidth: table.getBoundingClientRect().width, wrapWidth: wrap.clientWidth,
+      cellWidth: cell.clientWidth, cellScrollWidth: cell.scrollWidth };
+  });
+  assert.ok(pathLayout.pageWidth <= pathLayout.viewport, JSON.stringify(pathLayout));
+  assert.ok(pathLayout.tableWidth <= pathLayout.wrapWidth, JSON.stringify(pathLayout));
+  assert.ok(pathLayout.cellScrollWidth <= pathLayout.cellWidth, JSON.stringify(pathLayout));
 
   // Leave the bounded search-reference context to read the complete parent Session.
   await page.goto(base);

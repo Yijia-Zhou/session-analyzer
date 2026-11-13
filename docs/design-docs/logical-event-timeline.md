@@ -432,6 +432,8 @@ The shared browser API retries one GET exactly once when the runtime responds wi
 
 ### Event detail DTO / 事件详情 DTO
 
+Shared `kv` tables use `overflow-wrap: anywhere` on both label and value cells so long recorded paths or identifiers do not widen the reading column. Wrapping preserves the full text and its copy/search value across Timeline and Inspector. / 共享 kv 表格在标签与值单元格上使用 overflow-wrap: anywhere，避免已记录的长路径或标识符撑宽阅读栏。换行保留完整文本及其复制／搜索值，Timeline 与 Inspector 共用该行为。
+
 Expanded cards do not reuse `preview` for rich rendering. The server derives an `EventDetailDto` from the underlying logical event plus its referenced raw rows:
 
 展开卡片不会复用 `preview` 进行富渲染。服务器会根据底层逻辑事件及其引用的原始行派生 `EventDetailDto`：
