@@ -123,6 +123,16 @@ npm run dev -- --source pi --repo /path/to/project --pi-home /path/to/pi/agent
 
 The adapter reads native session version **3**, verified against pi **1.4.0**, without opening or migrating sessions through pi. Each root-to-leaf branch is a separate selectable Session with its tip ID in the title. Shared history appears in each containing branch, so counts and search hits are per branch, not per file. Extending a branch changes its identity when you rebuild the index. Unsupported versions are skipped with diagnostics; invalid trees retain Protocol/Raw fallback. See [pi support and limitations](docs/design-docs/pi-native-sessions.md).
 
+## Native Qoder sessions in this checkout
+
+After [source setup](docs/development.md), select **Qoder** in the project chooser or run:
+
+```sh
+npm run dev -- --source qoder --repo /path/to/project --qoder-home /path/to/.qoder-cn
+```
+
+The root contains `projects/` and defaults to `~/.qoder-cn`. Native messages, thinking, tool results, child Sessions and saved inline images are readable through the existing views. This is source-checkout functionality; see [coverage and real-case gaps](docs/design-docs/qoder-native-sessions.md).
+
 ## Native WorkBuddy / CodeBuddy sessions in this checkout
 
 After [source setup](docs/development.md), run:

@@ -111,6 +111,26 @@ async function buildWorkbuddyFixtureIndex(t) {
   return getSourceAdapter('workbuddy').buildIndex({ repoRoot, sourceHome: home });
 }
 
+async function buildQoderFixtureIndex(t) {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-conformance-qoder-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const repoRoot = path.join(home, 'repo');
+  const directory = path.join(home, 'projects', 'conformance-fixture');
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(directory, { recursive: true });
+  const shared = { sessionId: 'qoder-conformance', cwd: repoRoot, permissionMode: 'default',
+    userType: 'external', entrypoint: 'cli', version: '1.1.79-hotfix.19', gitBranch: '', isSidechain: false };
+  const records = [
+    { ...shared, type: 'user', uuid: 'user', parentUuid: null, timestamp: '2026-11-01T00:00:00.000Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'QODER_USER_PRIMARY_SENTINEL' }] } },
+    { ...shared, type: 'assistant', uuid: 'answer', parentUuid: 'user', timestamp: '2026-11-01T00:00:01.000Z',
+      message: { id: 'answer-message', type: 'message', role: 'assistant', model: 'synthetic', stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'QODER_ASSISTANT_PRIMARY_SENTINEL' }] } },
+  ];
+  await fsp.writeFile(path.join(directory, 'qoder-conformance.jsonl'), records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+  return getSourceAdapter('qoder').buildIndex({ repoRoot, sourceHome: home });
+}
+
 async function buildOpenCodeFixtureIndex(t) {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-conformance-opencode-'));
   let index;
@@ -432,8 +452,21 @@ async function assertResponsibilityFixture(fixture) {
 }
 
 test('all registered adapters satisfy one source-neutral detail and Raw readback suite', async (t) => {
-  assert.deepEqual(supportedSourceKinds(), ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy']);
+  assert.deepEqual(supportedSourceKinds(), ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy', 'qoder']);
   const fixtures = [
+    {
+      kind: 'qoder',
+      index: await buildQoderFixtureIndex(t),
+      expectedPurposes: ['content', 'context', 'fallback'],
+      expectedArchetypes: {
+        'readable-user-message': {
+          matchOwner: ({ event }) => event.preview === 'QODER_USER_PRIMARY_SENTINEL',
+        },
+        'readable-assistant-message': {
+          matchOwner: ({ event }) => event.preview === 'QODER_ASSISTANT_PRIMARY_SENTINEL',
+        },
+      },
+    },
     {
       kind: 'workbuddy',
       index: await buildWorkbuddyFixtureIndex(t),

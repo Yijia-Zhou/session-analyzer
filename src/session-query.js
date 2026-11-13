@@ -99,7 +99,7 @@ function defaultLocalizedLogicalLabel(logical, locale = i18n.DEFAULT_LOCALE) {
   if (translated) return translated;
   if (label) return label;
   if (logical.layer === 'protocol') return i18n.eventKindLabel(logical.subtype || logical.kind, locale);
-  return '';
+  return i18n.eventKindLabel(logical.kind, locale);
 }
 
 function defaultRawRecordLabel(raw, locale = i18n.DEFAULT_LOCALE) {

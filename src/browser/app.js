@@ -4581,17 +4581,50 @@ async function resolveFocusTarget(anchor) {
   return null;
 }
 
-async function restoreFocus(anchor) {
-  if (!state.selectedSessionId) return null;
-  const target = await resolveFocusTarget(anchor);
+function captureFocusRestoreGuard() {
+  const sessionId = state.selectedSessionId;
+  const readingNavigationId = state.readingNavigationId;
+  const selectionIntentId = state.eventSelectionIntentId;
+  const scope = readingScopeKey();
+  const context = timelineSearchSurfaceContextKey();
+  const mobileView = state.mobileView;
+  return () => state.selectedSessionId === sessionId
+    && state.readingNavigationId === readingNavigationId
+    && state.eventSelectionIntentId === selectionIntentId
+    && readingScopeKey() === scope
+    && timelineSearchSurfaceContextKey() === context
+    && state.mobileView === mobileView;
+}
+
+async function restoreFocus(anchor, options = {}) {
+  const current = options.current || captureFocusRestoreGuard();
+  if (!state.selectedSessionId || !current()) return null;
+  let target;
+  try {
+    target = await resolveFocusTarget(anchor);
+    if (!current()) return null;
+    if (target) await ensureEventLoaded(target.id, { current });
+  } catch (error) {
+    if (!current() || isIntentionalAbort(error)) return null;
+    throw error;
+  }
+  if (!current()) return null;
   if (!target) {
     if (anchor?.hadSelection) closeDetailView();
+    if (options.mobileView) setMobileView(options.mobileView);
     return null;
   }
-  await ensureEventLoaded(target.id);
   const loaded = canonicalTimelineEvent(target.id) || target;
-  if (anchor?.detailType === 'rawRefs') await showRaw(loaded, { replace: true });
-  else showInspector(loaded, { replace: true });
+  if (anchor?.detailType === 'rawRefs') {
+    const pending = showRaw(loaded, { replace: true });
+    // Our own selection advances intent and may switch the mobile surface.
+    const selectionCurrent = captureFocusRestoreGuard();
+    try { await pending; } catch (error) {
+      if (!selectionCurrent() || isIntentionalAbort(error)) return null;
+      throw error;
+    }
+    if (!selectionCurrent()) return null;
+  } else showInspector(loaded, { replace: true, mobileView: options.mobileView });
   scrollToTimelineEvent(loaded.id);
   return loaded;
 }
@@ -7437,11 +7470,18 @@ async function changeLayer(layerId, options = {}) {
   renderSearchAssistChips();
   updateProfileApplicabilityUi();
   if (state.detailView.type === 'profileRules') renderProfileRulesPane();
-  await Promise.all([
-    refreshActiveSearch({ structural: true, transitionKind: 'focus-restore' }),
-    refreshFileSuggestions(),
-  ]);
-  if (restoreFocusAfterChange && focusAnchor.hadSelection) await restoreFocus(focusAnchor);
+  // Capture the destination before waiting; a later Session/filter/event choice wins.
+  const current = captureFocusRestoreGuard();
+  try {
+    await Promise.all([
+      refreshActiveSearch({ structural: true, transitionKind: 'focus-restore' }),
+      refreshFileSuggestions(),
+    ]);
+  } catch (error) {
+    if (!current() || isIntentionalAbort(error)) return;
+    throw error;
+  }
+  if (restoreFocusAfterChange && focusAnchor.hadSelection) await restoreFocus(focusAnchor, { current });
   updateMetricActionStates();
 }
 
@@ -9556,11 +9596,13 @@ function currentTimelineEvent(eventId, purpose = 'canonical') {
 }
 
 async function ensureEventLoaded(eventId, options = {}) {
+  const { current = () => true, ...loadingOptions } = options;
   if (hasCanonicalTimelineEvent(eventId)) return;
-  while (state.offset < state.timelineTotal) {
+  while (current() && state.offset < state.timelineTotal) {
     await waitForTimelineIdle();
+    if (!current()) return;
     await loadTimeline(true, {
-      ...options,
+      ...loadingOptions,
       paginationIntent: paginationIntent(options.paginationIntentKind || 'selected-event-navigation'),
     });
     if (hasCanonicalTimelineEvent(eventId)) return;
@@ -9947,10 +9989,14 @@ async function readFromSelectedEvent() {
   beginSearchTargetContextTransition();
   clearQueuedSearchNavigations();
   updateProfileApplicabilityUi();
-  await loadTimeline(false, { keepScroll: true, viewportPolicy: 'focus-restore' });
-  const restored = await restoreFocus(anchor);
-  setMobileView('events');
-  if (restored?.id) scrollToTimelineEvent(restored.id);
+  const current = captureFocusRestoreGuard();
+  try {
+    await loadTimeline(false, { keepScroll: true, viewportPolicy: 'focus-restore' });
+  } catch (error) {
+    if (!current() || isIntentionalAbort(error)) return;
+    throw error;
+  }
+  await restoreFocus(anchor, { current, mobileView: 'events' });
   updateMetricActionStates();
 }
 

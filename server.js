@@ -1436,6 +1436,7 @@ async function main() {
     piHome: opts.piHome,
     opencodeHome: opts.opencodeHome,
     workbuddyHome: opts.workbuddyHome,
+    qoderHome: opts.qoderHome,
     repo: opts.repo,
     projectPathSemantics: opts.projectPathSemantics,
     ...(sourceConfigs ? { sourceConfigs } : {}),

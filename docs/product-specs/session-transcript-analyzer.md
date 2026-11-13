@@ -42,6 +42,14 @@ Codex durable `write_stdin` calls have dedicated Main and Detail presentation: o
 
 Reading controls must remain visible and operable without document-level horizontal overflow at desktop widths, including manual fold overrides that expose Reset folds. Project drill-down offers one return action in the center session header (including while loading), plus one in the Inspector when open. Returning preserves the active query, filters, Layer and project cards, restores Project Scope and focuses the originating card. / 桌面宽度下阅读控件必须可见、可操作，且不产生文档级横向溢出，包括手动折叠后显示 Reset folds 的状态。项目下钻在中间 session header 提供一个返回入口（加载期间也可用），Inspector 打开时另有一个。返回保留当前 query、筛选、Layer 与项目卡片，恢复项目范围并聚焦来源卡片。
 
+## Native Qoder history / 原生 Qoder 历史
+
+This checkout adds `--source qoder`, `--qoder-home <root>` and a **Qoder** source choice. The default root is `~/.qoder-cn`, containing `projects/`; other installations can select their actual root explicitly. Project identity comes from recorded absolute `cwd`, with the shared project-path interpretation policy. / 此 checkout 新增所列参数及 **Qoder** 来源选项。默认根为包含 `projects/` 的 `~/.qoder-cn`；其他安装可显式选择实际根。项目身份来自记录的绝对 cwd，并遵循共享项目路径解释策略。
+
+Native messages, thinking, tools, file changes, tasks, questions, compaction and saved inline images use the existing Timeline, Trajectory, search, Detail and Raw surfaces. Child transcripts are separate Sessions; exact unique native parent-call evidence enables navigation. The view contains physical saved history, including copied or superseded branches, rather than claiming to reconstruct the current active leaf. Metadata, unpaired results and unknown records retain Protocol/Raw evidence. / 原生消息、思考、工具、文件变更、任务、问答、压缩及内嵌图片使用既有时间线、轨迹、搜索、详情与 Raw。子代理转录是独立会话；精确且唯一的原生父调用依据支持跳转。视图展示物理保存历史，包含复制或被替代的分支，不声称重建当前 active leaf。元数据、未配对结果与未知记录保留 Protocol／Raw 依据。
+
+Append-only growth preserves indexed references; rewritten or replaced accepted bytes require reindexing. External output/image paths remain references and are not loaded. Usage stays qualified native evidence, without deriving billing or cache efficiency from zero token fields. See [Qoder design and evidence](../design-docs/qoder-native-sessions.md) for the accepted profile and limits. / 仅追加日志保持已索引引用有效；已接纳字节被改写或替换后要求重建索引。外部输出／图片路径仅作引用，不加载文件。用量保持原生限定依据，不从零 token 字段推算账单或缓存效率。接纳形态和边界详见所链设计。
+
 ## Native WorkBuddy / CodeBuddy history / 原生 WorkBuddy／CodeBuddy 历史
 
 The source checkout adds `--source workbuddy`, `--workbuddy-home <config-root>` and a **WorkBuddy / CodeBuddy** chooser entry for the native CodeBuddy 2.179.0 engine JSONL profile. The root contains `projects/` and defaults to `CODEBUDDY_CONFIG_DIR` or `~/.codebuddy`. This is not a claim about every desktop export, SDK stream or the published 0.2.1 package. / 源码 checkout 增加所列参数和来源选择项，读取 CodeBuddy 2.179.0 引擎原生 JSONL profile。根目录包含 `projects/`，默认使用所列环境变量或目录；不声明支持所有桌面导出、SDK 流，也不改变已发布 0.2.1 包的能力。
@@ -228,6 +236,10 @@ While opening a project, temporary failures to query indexing status are retried
 - As a Codex user, I want to inspect per-request Token usage, understand conservatively inferred cache-reuse discontinuities, and move between Main context and the supporting Protocol evidence without treating the inference as explicit cache expiry. / 作为 Codex 用户，我希望检查单次请求的 Token 使用情况，理解保守推断的缓存复用中断，并能在主时间线上下文与对应的协议层证据之间跳转，同时不把该推断当作显式缓存过期。
 
 ## User-facing behavior / 面向用户的行为
+
+When a source supplies no event label, Main cards and search results show the localized event kind (for example, `Reasoning` / `推理`) instead of an empty badge. Recorded custom labels remain available; Protocol events retain their subtype labels. / 当来源未提供事件标签时，Main 卡片与搜索结果显示本地化事件类型（例如 Reasoning／推理），避免空标签。已记录的自定义标签继续保留；Protocol 事件继续使用其子类型标签。
+
+Detail metadata tables wrap long paths and identifiers within the reading column, including on mobile, while retaining the complete recorded value. / 详情元数据表格中的长路径与标识符会在阅读栏内换行，移动端同样适用，并保留完整记录值。
 
 Keyboard rule editing keeps focus on the rule just changed so users can continue through adjacent controls after preview updates. / 键盘编辑规则在预览更新后保留刚修改规则的焦点，便于继续操作相邻控件。
 
@@ -487,6 +499,7 @@ For Codex subagents carrying a validated explicit inherited-history ordinal boun
 - [x] Narrow-screen browsing keeps session selection, timeline reading, event inspection, raw refs, and layer/profile controls reachable without forcing them into one long document flow. / 窄屏浏览会保持会话选择、时间线阅读、事件检查、原始引用和 layer/profile 控件可访问，而不会把它们挤进一个很长的文档流。
 - [x] Folding strategy changes clear stale manual fold overrides for the selected session, and the reset-folds control stays hidden until manual fold overrides exist. / 折叠策略变更会清除当前选中 session 的过时手动折叠覆盖，并且重置展开状态控件会保持隐藏，直到存在手动折叠覆盖。
 - [x] Folding strategy and layer changes preserve the selected-event reading focus when possible, move to the nearest visible event when needed, and focus the first naturally expanded event when switching from an unselected state. / 折叠策略和事件层变更会尽可能保持选中事件的阅读焦点，必要时移动到最近的可见事件，并在未选中状态切换时聚焦第一个自然展开事件。
+- [x] Pending focus restoration after a Layer/profile change or `Read from here` yields to newer event selections, closing the detail pane, Session/search/presentation changes, and mobile tab choices. A late response cannot reopen the previous selection or Raw view, change the chosen mobile tab, or scroll back to an obsolete target. / Layer／策略切换或“从此处阅读”后尚未完成的焦点恢复会让位于较新的事件选择、关闭详情、会话／搜索／呈现变更及移动端页签选择。迟到响应不能重新打开旧选择或 Raw 视图、改变已选移动端页签，或滚回过时目标。
 - [x] Folding strategy rules are visible and editable in the empty detail panel, with immediate preview and browser-local custom saves. / 折叠策略规则会在空详情面板中可见且可编辑，并支持即时预览和浏览器本地自定义保存。
 - [x] Folding rules merge kind and matching conditions deterministically by `expanded > summary > collapsed > hidden`, use fallback only when no rule matches, and restrict condition editing to visibility promotion through summary or expanded states. / 折叠规则按 `expanded > summary > collapsed > hidden` 确定性合并 kind 与所有命中 condition，只在没有规则命中时使用 fallback，并将 condition 编辑限制为通过摘要或展开状态提升可见性。
 - [x] Switching folding strategies with unsaved rule edits offers in-app save, discard, and cancel choices before changing the strategy, and supports naming the saved strategy from that dialog. / 在规则编辑未保存时切换折叠策略，会先在应用内提供保存、放弃和取消选项，并支持在该对话框中命名要保存的策略。

@@ -121,6 +121,38 @@ test('browser chooser switches transcript source and refreshes project candidate
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Codex/);
 });
 
+test('browser chooser selects Qoder and reads native message Detail and Raw', async (t) => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-browser-qoder-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const project = path.join(home, 'project');
+  const directory = path.join(home, 'projects', 'synthetic-project');
+  const text = 'QODER_BROWSER_NATIVE_MESSAGE';
+  const record = {
+    type: 'user', uuid: 'qoder-browser-user', parentUuid: null, sessionId: 'qoder-browser', cwd: project,
+    timestamp: '2026-11-01T00:00:00.000Z', permissionMode: 'default', userType: 'external',
+    entrypoint: 'cli', version: '1.1.79-hotfix.19', gitBranch: '', isSidechain: false,
+    message: { role: 'user', content: [{ type: 'text', text }] },
+  };
+  await fsp.mkdir(project, { recursive: true });
+  await fsp.mkdir(directory, { recursive: true });
+  await fsp.writeFile(path.join(directory, 'qoder-browser.jsonl'), JSON.stringify(record) + '\n');
+  const { page } = await openSourceSwitchChooser(t, { server: { qoderHome: home } });
+  await waitForProjectRoot(page, repoRoot);
+  await page.locator('[data-source-choice="qoder"]').click();
+  await confirmSourceAction(page, 'Confirm switch to Qoder');
+  await waitForProjectRoot(page, project);
+  assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Qoder/);
+  assert.ok((await page.locator('#projectSourceHome').textContent()).includes(home));
+  await page.locator('.projectItem[data-project-root]').filter({ hasText: project }).click();
+  await page.waitForFunction((marker) => document.querySelector('#timeline')?.textContent.includes(marker), text);
+  await page.locator('#timeline article[data-event-id]').filter({ hasText: text }).click();
+  await page.waitForFunction(() => document.querySelector('#detail')?.textContent.includes('qoder-browser-user'));
+  await page.locator('#detail [data-detail-action="raw"]').click();
+  await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('qoder-browser-user'));
+  assert.match(await page.locator('#detail .rawRefsView').innerText(), /"type":\s*"user"/);
+  assert.ok((await page.locator('#detail .rawRefsView').innerText()).includes(text));
+});
+
 test('browser source replacement preserves the remembered Main Trajectory presentation without stale event ownership', async (t) => {
   const fixture = await makeClaudeSwitchFixture(t);
   const { page } = await openSourceSwitchChooser(t, {
@@ -978,7 +1010,7 @@ test('browser treats backslashes as literal characters in POSIX home paths', asy
   const posixDshHome = '/home/me/.dsh/sessions';
   const posixHomes = { codex: posixCodexHome, 'claude-code': '/home/me/.claude',
     'deepseek-harness': posixDshHome, pi: '/home/me/.pi/agent',
-    opencode: '/home/me/.local/share/opencode', workbuddy: '/home/me/.codebuddy' };
+    opencode: '/home/me/.local/share/opencode', workbuddy: '/home/me/.codebuddy', qoder: '/home/me/.qoder-cn' };
   const { page } = await openSourceSwitchChooser(t, {
     server: { claudeHome: fixture.claudeHome },
     localStorage: { 'sessionAnalyzer.repoRoot.codex': repoRoot },
@@ -995,6 +1027,7 @@ test('browser treats backslashes as literal characters in POSIX home paths', asy
           piHome: posixHomes.pi,
           opencodeHome: posixHomes.opencode,
           workbuddyHome: posixHomes.workbuddy,
+          qoderHome: posixHomes.qoder,
           sourceConfigs: Object.fromEntries(Object.keys(data.sourceConfigs).map((kind) => {
             assert.ok(posixHomes[kind], `synthetic POSIX home for ${kind}`);
             return [kind, { home: posixHomes[kind] }];
@@ -1201,7 +1234,7 @@ test('browser onboarding selects DeepSeek directly from an empty Codex source', 
     },
   });
   await page.waitForFunction(() => document.querySelector('#projectList')?.textContent.includes('No transcript projects'));
-  assert.deepEqual(await page.locator('[data-source-choice]').allTextContents(), ['Codex', 'Claude Code', 'DeepSeek Harness', 'pi', 'OpenCode', 'WorkBuddy / CodeBuddy']);
+  assert.deepEqual(await page.locator('[data-source-choice]').allTextContents(), ['Codex', 'Claude Code', 'DeepSeek Harness', 'pi', 'OpenCode', 'WorkBuddy / CodeBuddy', 'Qoder']);
   await page.locator('[data-source-choice="deepseek-harness"]').click();
   await page.waitForFunction(() => document.querySelector('#projectSourceSwitch')?.dataset.source === 'deepseek-harness' && !document.querySelector('[data-source-choice]')?.disabled);
   assert.deepEqual(posts, ['deepseek-harness']);

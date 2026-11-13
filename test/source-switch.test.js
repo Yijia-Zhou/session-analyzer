@@ -131,6 +131,8 @@ test('POST /api/source validates source, homes, body shape, and payload size', a
     JSON.stringify({ source: 'opencode', opencodeHome: '   ' }),
     JSON.stringify({ source: 'workbuddy', workbuddyHome: '   ' }),
     JSON.stringify({ source: 'workbuddy', sourceConfigs: { workbuddy: { home: '' } } }),
+    JSON.stringify({ source: 'qoder', qoderHome: '   ' }),
+    JSON.stringify({ source: 'qoder', sourceConfigs: { qoder: { home: '' } } }),
     JSON.stringify({ source: 'opencode', sourceConfigs: { opencode: { home: '' } } }),
     JSON.stringify({ source: 'pi', sourceConfigs: { pi: { home: '' } } }),
     JSON.stringify({ source: 'codex', sourceConfigs: { codex: '/not-an-object' } }),
@@ -165,6 +167,7 @@ test('POST /api/source validates source, homes, body shape, and payload size', a
     pi: { home: path.resolve(process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), '.pi', 'agent')) },
     opencode: { home: path.resolve(defaultOpenCodeHome()) },
     workbuddy: { home: path.resolve(process.env.CODEBUDDY_CONFIG_DIR || path.join(os.homedir(), '.codebuddy')) },
+    qoder: { home: path.join(os.homedir(), '.qoder-cn') },
   });
   assert.deepEqual(state.json.details.sourceOptions, [
     { kind: 'codex', label: 'Codex', homeOption: 'codexHome', homeLabel: 'Codex home' },
@@ -173,8 +176,9 @@ test('POST /api/source validates source, homes, body shape, and payload size', a
     { kind: 'pi', label: 'pi', homeOption: 'piHome', homeLabel: 'pi agent directory' },
     { kind: 'opencode', label: 'OpenCode', homeOption: 'opencodeHome', homeLabel: 'OpenCode data directory or SQLite database' },
     { kind: 'workbuddy', label: 'WorkBuddy / CodeBuddy', homeOption: 'workbuddyHome', homeLabel: 'WorkBuddy / CodeBuddy config root' },
+    { kind: 'qoder', label: 'Qoder', homeOption: 'qoderHome', homeLabel: 'Qoder home' },
   ]);
-  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy']);
+  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy', 'qoder']);
 });
 
 test('POST /api/source switches source and exposes unified configuration payloads', async (t) => {
@@ -192,7 +196,7 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(initialProjects.json.claudeHome, path.resolve(fixture.claudeHome, 'unused'));
   assert.equal(initialProjects.json.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
   assert.equal(initialProjects.json.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome, 'unused'));
-  assert.deepEqual(initialProjects.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy']);
+  assert.deepEqual(initialProjects.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy', 'qoder']);
   assert.ok(initialProjects.json.projects.some((project) => project.repoRoot === codexFixtureRepo));
 
   const switched = await requestJson(
@@ -207,7 +211,7 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(switched.json.claudeHome, path.resolve(fixture.claudeHome));
   assert.equal(switched.json.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
   assert.equal(switched.json.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome));
-  assert.deepEqual(switched.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy']);
+  assert.deepEqual(switched.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy', 'qoder']);
   assert.equal(switched.json.projectSelected, false);
 
   const state = await requestJson(base, '/api/state');
@@ -218,7 +222,7 @@ test('POST /api/source switches source and exposes unified configuration payload
   assert.equal(state.json.details.claudeHome, path.resolve(fixture.claudeHome));
   assert.equal(state.json.details.sourceConfigs.codex.home, path.resolve(codexFixtureHome));
   assert.equal(state.json.details.sourceConfigs['claude-code'].home, path.resolve(fixture.claudeHome));
-  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy']);
+  assert.deepEqual(state.json.details.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy', 'qoder']);
 
   const projects = await requestJson(base, '/api/projects');
   assert.equal(projects.status, 200);
@@ -701,7 +705,7 @@ test('source switch cancels the active job and never commits a stale index', asy
   assert.equal(runningState.json.sourceKind, 'codex');
   assert.equal(runningState.json.projectSelected, false);
   assert.equal(runningState.json.job.status, 'running');
-  assert.deepEqual(runningState.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy']);
+  assert.deepEqual(runningState.json.supportedSources, ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy', 'qoder']);
 
   const switched = await requestJson(
     base,
@@ -840,5 +844,60 @@ test('WorkBuddy config selection, project discovery, and shared lazy read routes
   const raw = await requestJson(base, `${prefix}/raw/${encodeURIComponent(event.rawRefs[0].rawId)}`);
   assert.equal(raw.status, 200);
   assert.equal(raw.json.sourceKind, 'workbuddy');
+  assert.deepEqual(JSON.parse(raw.json.raw), record);
+});
+
+test('Qoder configuration selection, project discovery, and lazy reads preserve native source ownership', async (t) => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-qoder-switch-'));
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const repoRoot = path.join(home, 'repo');
+  const directory = path.join(home, 'projects', 'synthetic-project');
+  const record = {
+    type: 'user', uuid: 'switch-qoder-user', parentUuid: null, sessionId: 'switch-qoder', cwd: repoRoot,
+    timestamp: '2026-11-01T00:00:00.000Z', permissionMode: 'default', userType: 'external',
+    entrypoint: 'cli', version: '1.1.79-hotfix.19', gitBranch: '', isSidechain: false,
+    message: { role: 'user', content: [{ type: 'text', text: 'Qoder switch route sentinel' }] },
+  };
+  await fsp.mkdir(repoRoot, { recursive: true });
+  await fsp.mkdir(directory, { recursive: true });
+  await fsp.writeFile(path.join(directory, 'switch-qoder.jsonl'), JSON.stringify(record) + '\n');
+  const base = await startServer(t, { source: 'codex', codexHome: codexFixtureHome,
+    qoderHome: path.join(home, 'unused') });
+  const switched = await requestJson(base, '/api/source', jsonRequestOptions({
+    source: 'qoder', sourceConfigs: { qoder: { home } },
+  }));
+  assert.equal(switched.status, 200);
+  assert.equal(switched.json.sourceHome, home);
+  assert.equal(switched.json.sourceConfigs.qoder.home, home);
+  assert.ok(switched.json.sourceOptions.some((option) => option.kind === 'qoder'
+    && option.label === 'Qoder' && option.homeOption === 'qoderHome'));
+  const projects = await requestJson(base, '/api/projects');
+  assert.equal(projects.status, 200);
+  assert.ok(projects.json.projects.some((project) => project.repoRoot === repoRoot));
+  const started = await requestJson(base, '/api/project', jsonRequestOptions({ repoRoot }));
+  assert.equal(started.status, 202);
+  assert.equal((await waitForJob(base, started.json.job.id)).status, 'succeeded');
+  const state = await requestJson(base, '/api/state');
+  assert.equal(state.status, 200);
+  assert.equal(state.json.sourceKind, 'qoder');
+  assert.equal(state.json.totals.sessionCount, 1);
+  const sessions = await requestJson(base, '/api/sessions?q=Qoder%20switch');
+  assert.equal(sessions.status, 200);
+  assert.equal(sessions.json.total, 1);
+  const session = sessions.json.sessions[0];
+  assert.equal(session.sourceKind, 'qoder');
+  assert.equal(session.sourceSessionId, 'switch-qoder');
+  const prefix = `/api/sessions/${encodeURIComponent(session.id)}`;
+  const timeline = await requestJson(base, prefix + '/timeline?layer=main&limit=20');
+  assert.equal(timeline.status, 200);
+  const event = timeline.json.events.find((item) => item.kind === 'user_message');
+  assert.ok(event);
+  const detail = await requestJson(base, `${prefix}/events/${encodeURIComponent(event.id)}/detail?layer=main`);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.json.sourceKind, 'qoder');
+  assert.deepEqual(detail.json.rawRefs, event.rawRefs);
+  const raw = await requestJson(base, `${prefix}/raw/${encodeURIComponent(event.rawRefs[0].rawId)}`);
+  assert.equal(raw.status, 200);
+  assert.equal(raw.json.sourceKind, 'qoder');
   assert.deepEqual(JSON.parse(raw.json.raw), record);
 });
