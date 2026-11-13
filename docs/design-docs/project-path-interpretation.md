@@ -1,6 +1,6 @@
 # Project path interpretation / 项目路径解释
 
-Status: local cross-platform acceptance completed on 2026-11-13 for production candidate `e09575700cf5191fbdc4fc613173650a9a54e2f7`, based on `64f5b3ab351c3be6840396ddb1e8194ab102b4dc`. Not merged or published; no CI evidence. / 状态：基于所列基线的生产候选已于 2026-11-13 完成双平台本地验收；尚未合并或发布，无 CI 证据。
+Local acceptance reference: cross-platform execution completed on 2026-11-13 for candidate `e09575700cf5191fbdc4fc613173650a9a54e2f7`, based on `64f5b3ab351c3be6840396ddb1e8194ab102b4dc`. / 本地验收参考：基于所列基线的候选已于 2026-11-13 完成双平台本地执行。
 
 ## Contract / 契约
 
