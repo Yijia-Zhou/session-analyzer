@@ -346,3 +346,9 @@ Observed during the 2026-10-13 history-context UI acceptance: the configured sou
 - Status: closed by [shell-result semantics](completed/2026-10-04-shell-result-semantics.md); separate from write_stdin presentation. / 状态：已由 shell 结果语义修复关闭，独立于 write_stdin 呈现。
 - Original evidence: `buildToolLogicalEvent` recognized only `shell_command` or command lifecycle rows as `command`; durable `exec_command` request/output alone remained `other_tool_call`, and output parsing recognized only the older envelope. / 原始证据：修复前只将 shell_command 或 lifecycle 行识别为 command；仅持久化 exec_command 请求／输出仍为 other_tool_call，输出 parser 仅识别旧封装。
 - Resolution: exact validated cmd requests with unique same-turn output ownership are commands; native anchored receipts supply known exit, elapsed time and output. Running and unknown results remain conservative, lifecycle/typed outcomes retain precedence, and ambiguous identities retain generic fallback. Plain/Zstd tests verify classifications, counts/filters, old-format compatibility, Detail/Raw and unchanged continuation ownership; browser tests cover English/Chinese. / 解决：具有精确有效 cmd 请求及唯一同回合输出归属时归类为命令；锚定原生回执提供已知退出码、耗时及输出。运行中及未知结果保守处理，lifecycle／typed 结果优先，歧义身份保留通用回退。普通／Zstd 测试验证分类、计数／筛选、旧格式兼容、详情／Raw 及续接归属不变；浏览器覆盖中英文。
+
+### 26. Qoder lifecycle and external-payload evidence / Qoder 生命周期与外部正文依据
+
+- Status: deferred beyond the observed native-profile adapter. / 状态：推迟至已观察原生形态 adapter 之后。
+- Physical history, exact tools and saved inline images are readable. Active-leaf replay, fork deduplication, background terminal correlation, full approval/remote/scheduled provenance, derived usage accounting and external-payload hydration require isolated writer captures. / 物理历史、精确工具和内嵌图片可读；活动叶回放、fork 去重、后台终态关联、完整审批／远程／定时来源、派生用量核算及外部正文补载需要隔离 writer 采集。
+- Concrete capture recipes and current evidence boundaries: [Qoder native sessions](../design-docs/qoder-native-sessions.md#validation-and-remaining-cases--验证与剩余案例). / 具体采集步骤及当前依据边界见所链设计。

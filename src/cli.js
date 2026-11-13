@@ -80,6 +80,10 @@ function parseArgs(argv) {
       workbuddypath: '--workbuddy-home',
       workbuddydir: '--workbuddy-home',
       workbuddydirectory: '--workbuddy-home',
+      qoderhome: '--qoder-home',
+      qoderpath: '--qoder-home',
+      qoderdir: '--qoder-home',
+      qoderdirectory: '--qoder-home',
       claudedir: '--claude-home',
       claudedirectory: '--claude-home',
       port: '--port',
@@ -175,6 +179,14 @@ function parseArgs(argv) {
       }
       opts.workbuddyHome = next;
       i += 1;
+    } else if (option === '--qoder-home') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --qoder-home. Expected a Qoder home directory.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
+      opts.qoderHome = next;
+      i += 1;
     } else if (option === '--path-config') {
       if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
         opts.errors.push('Missing value for --path-config. Expected a JSON configuration file.');
@@ -233,17 +245,18 @@ function formatHelp() {
     'Session Analyzer',
     '',
     'Usage:',
-    '  session-analyzer [--repo <repo-path>] [--source <source>] [--codex-home <path>] [--claude-home <path>] [--dsh-home <path>] [--pi-home <path>] [--opencode-home <path>] [--workbuddy-home <path>] [--port <port>] [--host <host>] [--log-dir <path>]',
+    '  session-analyzer [--repo <repo-path>] [--source <source>] [--codex-home <path>] [--claude-home <path>] [--dsh-home <path>] [--pi-home <path>] [--opencode-home <path>] [--workbuddy-home <path>] [--qoder-home <path>] [--port <port>] [--host <host>] [--log-dir <path>]',
     '',
     'Options:',
     '  --repo <repo-path>     Repository to analyze. If omitted, select a project in the browser.',
-    '  --source <source>       Transcript source: codex, claude-code, deepseek-harness, pi, opencode, or workbuddy. Defaults to codex.',
+    '  --source <source>       Transcript source: codex, claude-code, deepseek-harness, pi, opencode, workbuddy, or qoder. Defaults to codex.',
     '  --codex-home <path>    Codex home directory. Defaults to ~/.codex.',
     '  --claude-home <path>   Claude home directory. Used only with --source claude-code. Defaults to ~/.claude.',
     '  --dsh-home <path>      DeepSeek Harness sessions persistence root. Used only with --source deepseek-harness. Defaults to ~/.dsh/sessions.',
     '  --pi-home <path>       pi agent directory containing sessions/. Used only with --source pi. Defaults to PI_CODING_AGENT_DIR or ~/.pi/agent.',
     '  --opencode-home <path> OpenCode data directory or SQLite database. Used only with --source opencode. Defaults to OPENCODE_DB or the OpenCode XDG data directory.',
     '  --workbuddy-home <path> WorkBuddy / CodeBuddy config root containing projects/. Used only with --source workbuddy. Defaults to CODEBUDDY_CONFIG_DIR or ~/.codebuddy.',
+    '  --qoder-home <path>    Qoder home directory containing projects/. Used only with --source qoder. Defaults to ~/.qoder-cn.',
     '  --path-config <file>   Analyzer sourceConfigs JSON with home and scoped projectPathRules. Configured homes take precedence over home flags; relative homes use the file directory.',
     '  --project-path-semantics <windows|posix> Explicit interpretation of --repo only; historical cwd interpretation uses scoped path rules.',
     '  --port <port>          Local server port. Must be an integer from 1 to 65535. Defaults to 17890.',
@@ -259,6 +272,7 @@ function formatHelp() {
     '  session-analyzer --source pi --repo C:\\path\\to\\project --pi-home C:\\Users\\you\\.pi\\agent',
     '  session-analyzer --source opencode --repo /path/to/project --opencode-home /path/to/opencode.db',
     '  session-analyzer --source workbuddy --repo /path/to/project --workbuddy-home /path/to/config-root',
+    '  session-analyzer --source qoder --repo /path/to/project --qoder-home /path/to/qoder-home',
     '',
     'Privacy:',
     '  The default host is 127.0.0.1. Binding to another host can expose transcript content',

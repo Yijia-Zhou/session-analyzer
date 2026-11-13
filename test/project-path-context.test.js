@@ -69,7 +69,7 @@ test('Windows source mutations retain captured rules, index and running job for 
     require: (id) => id === 'node:path' ? path.win32
       : id === './src/project-path-context' ? context : localRequire(id) }, { filename });
   const { resolveSourceMutation } = module.exports;
-  const kinds = ['codex', 'claude-code', 'deepseek-harness', 'pi', 'workbuddy', 'opencode'];
+  const kinds = ['codex', 'claude-code', 'deepseek-harness', 'pi', 'workbuddy', 'opencode', 'qoder'];
   const { requireSourceAdapter } = require('../src/source-adapters');
   for (const sourceKind of kinds) {
     const sourceHome = `C:\\SyntheticSource\\${sourceKind}`;

@@ -44,6 +44,12 @@ The published `0.2.1` example does not include OpenCode support. After building 
 
 Check `sourceKind: opencode`, the selected database and recorded project, diagnostics, and an actual search→Detail→Raw read. Existing revisions read immutable captured content; refresh captures a replacement. If refresh fails, report the error and that the still-readable previous revision may be out of date. Do not describe a successful HTTP response, zero-session failure fallback, or an untested runtime/OS as verified compatibility. See [OpenCode boundaries](../design-docs/opencode-native-sessions.md). / 核验 `sourceKind: opencode`、所选数据库与记录中的项目、诊断，以及实际搜索→Detail→Raw 阅读。已有 revision 读取不可变捕获内容；刷新捕获替换版本。刷新失败时报告错误，并说明仍可读的旧 revision 可能不是最新数据。不要将 HTTP 成功响应、零会话失败回退或未经测试的运行时／操作系统描述为兼容性已通过。详见 [OpenCode 边界](../design-docs/opencode-native-sessions.md)。
 
+### Native Qoder in this checkout / 此 checkout 的原生 Qoder
+
+After source setup/build, use `node server.js --source qoder --repo <recorded-project> --qoder-home <root-containing-projects>`. Windows example root: `C:\Users\<user>\.qoder-cn`; from WSL use the accessible `/mnt/c/Users/<user>/.qoder-cn` root while keeping the recorded Windows project identity. The default is `~/.qoder-cn`. / 完成源码配置与构建后使用所列命令。Windows 示例根如上；在 WSL 使用可访问的挂载根，同时保留日志记录的 Windows 项目身份。默认根为 `~/.qoder-cn`。
+
+Verify `sourceKind:qoder`, the intended root/project, completed indexing, diagnostics, count and actual search→Detail→Raw reading using the bounded acceptance below. Physical history includes old branches; external tool output paths remain references. / 按下文有界验收核验来源、预期根／项目、索引完成、诊断、会话数及实际搜索→详情→Raw 阅读。物理历史包含旧分支，外部工具输出路径仍为引用。
+
 ### Native WorkBuddy / CodeBuddy in this checkout / 此 checkout 的原生 WorkBuddy／CodeBuddy
 
 After source setup/build, run `node server.js --source workbuddy --repo /path/to/project --workbuddy-home /path/to/config-root`. The root contains `projects/`; use the engine's actual configured root, not a guessed desktop database path or stream-json stdout export. Default: `CODEBUDDY_CONFIG_DIR` or `~/.codebuddy`. Reading needs no producer installation, login or model access. / 源码配置及构建后运行所列命令。根目录包含 `projects/`；使用引擎实际配置根，不猜测桌面数据库路径，也不使用 stream-json 标准输出导出。默认值如上。阅读不需要安装 producer、登录或访问模型。

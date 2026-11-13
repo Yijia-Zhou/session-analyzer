@@ -238,11 +238,11 @@ function isPackageStatePayload(response) {
   const sourceKind = response?.json?.sourceKind;
   const sourcePresentationShape = sourceKind === 'codex'
     ? Array.isArray(response.json.codeModeRequests)
-    : (sourceKind === 'claude-code' || sourceKind === 'deepseek-harness' || sourceKind === 'pi' || sourceKind === 'opencode' || sourceKind === 'workbuddy')
+    : (sourceKind === 'claude-code' || sourceKind === 'deepseek-harness' || sourceKind === 'pi' || sourceKind === 'opencode' || sourceKind === 'workbuddy' || sourceKind === 'qoder')
       && !Object.hasOwn(response.json, 'codeModeRequests');
   return response.statusCode === 200
     && response.json
-    && ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy'].includes(sourceKind)
+    && ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy', 'qoder'].includes(sourceKind)
     && response.json.totals
     && Array.isArray(response.json.supportedLocales)
     && response.json.eventKinds
@@ -387,6 +387,15 @@ async function main() {
     const workbuddyUser = { type: 'message', id: 'package-user', sessionId: workbuddySessionId,
       cwd: projectDir, timestamp: 1793400000000, role: 'user',
       content: [{ type: 'input_text', text: workbuddyText }] };
+    const qoderHome = path.join(smokeRoot, 'qoder-home');
+    const qoderSessionId = 'qoder-package-smoke';
+    const qoderText = 'Verify the installed native Qoder adapter.';
+    const qoderUser = {
+      type: 'user', uuid: 'package-user', parentUuid: null, sessionId: qoderSessionId, cwd: projectDir,
+      timestamp: '2026-11-01T00:00:00.000Z', permissionMode: 'default', userType: 'external',
+      entrypoint: 'cli', version: '1.1.79-hotfix.19', gitBranch: '', isSidechain: false,
+      message: { role: 'user', content: [{ type: 'text', text: qoderText }] },
+    };
     const opencodeHome = path.join(smokeRoot, 'opencode-data');
     const opencodeDbPath = path.join(opencodeHome, 'opencode.db');
     const opencodeSessionId = 'ses_package_smoke';
@@ -397,6 +406,9 @@ async function main() {
     const workbuddySessionDir = path.join(workbuddyHome, 'projects', 'package-smoke-project');
     await fsp.mkdir(workbuddySessionDir, { recursive: true });
     await fsp.writeFile(path.join(workbuddySessionDir, workbuddySessionId + '.jsonl'), JSON.stringify(workbuddyUser) + '\n', 'utf8');
+    const qoderSessionDir = path.join(qoderHome, 'projects', 'package-smoke-project');
+    await fsp.mkdir(qoderSessionDir, { recursive: true });
+    await fsp.writeFile(path.join(qoderSessionDir, qoderSessionId + '.jsonl'), JSON.stringify(qoderUser) + '\n', 'utf8');
     const opencodeFixture = createOpenCodeFixture({ dbPath: opencodeDbPath, repoRoot: projectDir,
       sessionId: opencodeSessionId, userText: opencodeText });
     const opencodeUser = JSON.parse(JSON.stringify(opencodeFixture.db.prepare('SELECT * FROM session_message WHERE id = ?').get(opencodeFixture.messageId)));
@@ -559,6 +571,7 @@ async function main() {
     }
     assert.ok(help.stdout.includes('--pi-home <path>'), 'Installed CLI must expose the pi agent directory option');
     assert.ok(help.stdout.includes('--workbuddy-home <path>'), 'Installed CLI must expose WorkBuddy / CodeBuddy config-root selection');
+    assert.ok(help.stdout.includes('--qoder-home <path>'), 'Installed CLI must expose Qoder home-directory selection');
     assert.ok(help.stdout.includes('--opencode-home <path>'), 'Installed CLI must expose OpenCode directory/database selection');
 
     const packagedServer = path.join(smokeRoot, 'node_modules', 'session-analyzer', 'server.js');
@@ -674,6 +687,18 @@ async function main() {
     });
     await stopChild(child);
     child = null;
+    launched = await launchPackagedServer(packagedServer, smokeRoot, [
+      '--source', 'qoder', '--repo', projectDir, '--qoder-home', qoderHome,
+    ]);
+    child = launched.child;
+    baseUrl = `http://127.0.0.1:${launched.port}`;
+    const qoderState = await waitForPackageState(baseUrl);
+    await verifyPackageReading(baseUrl, qoderState.json, {
+      sourceKind: 'qoder', repoRoot: projectDir, sourceHome: qoderHome,
+      sessions: [{ id: qoderSessionId, text: qoderText, record: qoderUser }],
+    });
+    await stopChild(child);
+    child = null;
     for (const fixture of [
       { source: 'codex', rootOption: '--codex-home', home: codexHome, text: codexText, count: codexSessions.length },
       { source: 'claude-code', rootOption: '--claude-home', home: claudeHome, text: claudeRecords[1].message.content, count: 1 },
@@ -681,6 +706,7 @@ async function main() {
       { source: 'pi', rootOption: '--pi-home', home: piHome, text: piText, count: 1 },
       { source: 'opencode', rootOption: '--opencode-home', home: opencodeHome, text: opencodeText, count: 1 },
       { source: 'workbuddy', rootOption: '--workbuddy-home', home: workbuddyHome, text: workbuddyText, count: 1 },
+      { source: 'qoder', rootOption: '--qoder-home', home: qoderHome, text: qoderText, count: 1 },
     ]) {
       launched = await launchPackagedServer(packagedServer, smokeRoot, [
         'history', 'serve', '--source', fixture.source, '--repo', projectDir, fixture.rootOption, fixture.home,
@@ -784,7 +810,7 @@ async function main() {
       child = null;
       console.log(fixture.source + ': packaged history status -> search -> context -> read -> raw -> open passed.');
     }
-    console.log('Codex, Claude Code, DeepSeek Harness, pi, OpenCode, and WorkBuddy / CodeBuddy UI and history package smoke passed.');
+    console.log('Codex, Claude Code, DeepSeek Harness, pi, OpenCode, WorkBuddy / CodeBuddy, and Qoder UI and history package smoke passed.');
   } finally {
     await stopChild(child);
     if (tarballPath) {

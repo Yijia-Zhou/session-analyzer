@@ -1,7 +1,7 @@
 {
   "name": "session-analyzer",
   "version": "0.2.1",
-  "description": "Local session history viewer for Codex, Claude Code, DeepSeek Harness, pi, OpenCode, and WorkBuddy / CodeBuddy. Review agent work, inspect tool calls and results, and search sessions by project.",
+  "description": "Local session history viewer for Codex, Claude Code, DeepSeek Harness, pi, OpenCode, WorkBuddy / CodeBuddy, and Qoder. Review agent work, inspect tool calls and results, and search sessions by project.",
   "keywords": [
     "codex",
     "claude-code",
@@ -10,6 +10,7 @@
     "opencode",
     "workbuddy",
     "codebuddy",
+    "qoder",
     "transcript",
     "viewer",
     "session",
@@ -102,6 +103,11 @@
     "src/workbuddy-storage.js",
     "src/workbuddy-logical.js",
     "src/workbuddy-detail.js",
+    "src/qoder.js",
+    "src/qoder-storage.js",
+    "src/qoder-logical.js",
+    "src/qoder-detail.js",
+    "src/qoder-images.js",
     "src/index-resources.js",
     "src/pi.js",
     "src/pi-navigation.js",

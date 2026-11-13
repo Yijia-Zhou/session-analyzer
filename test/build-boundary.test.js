@@ -199,6 +199,7 @@ test('runtime source configuration is registry-driven across server and browser'
     { kind: 'pi', label: 'pi', homeOption: 'piHome', homeLabel: 'pi agent directory' },
     { kind: 'opencode', label: 'OpenCode', homeOption: 'opencodeHome', homeLabel: 'OpenCode data directory or SQLite database' },
     { kind: 'workbuddy', label: 'WorkBuddy / CodeBuddy', homeOption: 'workbuddyHome', homeLabel: 'WorkBuddy / CodeBuddy config root' },
+    { kind: 'qoder', label: 'Qoder', homeOption: 'qoderHome', homeLabel: 'Qoder home' },
   ]);
   assert.match(serverText, /sourceConfigs/);
   assert.match(serverText, /supportedSourceOptions\(\)/);
@@ -244,7 +245,7 @@ test('source adapter registry owns source dispatch without adding Claude branche
   const codexLogical = readText(path.join('src', 'codex-logical.js'));
   const codexDetail = readText(path.join('src', 'codex-detail.js'));
 
-  assert.deepEqual(registry.supportedSourceKinds(), ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy']);
+  assert.deepEqual(registry.supportedSourceKinds(), ['codex', 'claude-code', 'deepseek-harness', 'pi', 'opencode', 'workbuddy', 'qoder']);
   assert.equal(registry.requireSourceAdapter('codex').kind, 'codex');
   assert.equal(registry.requireSourceAdapter(registry.normalizeSourceKind('claude')).kind, 'claude-code');
   assert.doesNotMatch(codexLogical, /claude/i);
