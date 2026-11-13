@@ -60,6 +60,11 @@ const allowedZhPhrases = [
   'JS REPL',
 ];
 const allowedZhTermsByPath = new Map([
+  ['ui.projectPathLegacyBadge', new Set(['posix'])],
+  ['ui.projectPathLegacyNotice', new Set(['posix', 'unc'])],
+  ['ui.projectPathRuleEmpty', new Set(['posix'])],
+  ['ui.projectPathRulePosix', new Set(['posix'])],
+  ['ui.projectPathRuleUnc', new Set(['windows', 'unc'])],
   ['ui.piNativeSession', new Set(['pi'])],
   ['ui.turnLineage', new Set(['turn'])],
   ['ui.lineageCurrent', new Set(['turn'])],

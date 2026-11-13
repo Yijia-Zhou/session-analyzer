@@ -4,7 +4,9 @@ const path = require('node:path');
 const os = require('node:os');
 const fsp = require('node:fs/promises');
 const { isDeepStrictEqual } = require('node:util');
-const { isPathInsideOrSame, resolveFsPath } = require('./shared/fs-path');
+const { isPathInsideOrSame } = require('./shared/fs-path');
+const { projectPathContains } = require('./shared/project-path');
+const { createProjectPathContext, projectPathFor, projectSelection, projectContextIndexFields } = require('./project-path-context');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 const i18n = require('./shared/i18n');
 const { createSessionQuery } = require('./session-query');
@@ -55,7 +57,10 @@ async function parseWorkbuddySessionArtifact(filePath, relFile, _repoRoot, signa
   return logical.makeWorkbuddySession(document, relFile, options.desktopOrigin);
 }
 
-async function discoverWorkbuddyProjects({ sourceHome, signal, onDiagnostic }) {
+async function discoverWorkbuddyProjects(options) {
+  const { signal, onDiagnostic } = options;
+  const context = createProjectPathContext({ ...options, sourceKind: SOURCE_KIND });
+  const sourceHome = context.sourceHome;
   const sessionsRoot = rootFor(sourceHome);
   const files = await storage.collectWorkbuddyFiles(sessionsRoot, signal, onDiagnostic);
   const projects = new Map();
@@ -64,13 +69,19 @@ async function discoverWorkbuddyProjects({ sourceHome, signal, onDiagnostic }) {
     try {
       const document = storage.parseWorkbuddyDocument(await storage.readWorkbuddySnapshot(file, { sessionsRoot, signal }), path.relative(sessionsRoot, file));
       if (!document.cwd) continue;
-      const repoRoot = resolveFsPath(document.cwd);
-      const project = projects.get(repoRoot) || { repoRoot, sessionCount: 0, updatedAt: '', bytes: 0, exists: false, source: 'workbuddy-sessions' };
+      const projectPath = projectPathFor(document.cwd, context, file, onDiagnostic);
+      if (projectPath.status !== 'valid') continue;
+      const repoRoot = projectPath.path;
+      const project = projects.get(projectPath.key) || { repoRoot, projectPath,
+        projectPathPolicyId: context.digest, projectPathEvidence: [], legacyAssumption: false,
+        sessionCount: 0, updatedAt: '', bytes: 0, exists: false, source: 'workbuddy-sessions' };
+      project.projectPathEvidence = [...new Set([...project.projectPathEvidence, projectPath.evidence])].sort();
+      project.legacyAssumption ||= projectPath.legacyAssumption;
       project.sessionCount += 1;
       project.bytes += document.acceptedBytes;
       const updatedAt = document.rows.map((row) => logical.iso(row.parsed?.timestamp)).filter(Boolean).at(-1) || '';
       if (updatedAt > project.updatedAt) project.updatedAt = updatedAt;
-      projects.set(repoRoot, project);
+      projects.set(projectPath.key, project);
     } catch (error) { report(error, file, onDiagnostic, signal); }
   }
   for (const project of projects.values()) {
@@ -82,9 +93,14 @@ async function discoverWorkbuddyProjects({ sourceHome, signal, onDiagnostic }) {
 const dependencyId = (entries) => `workbuddy-dependencies:${storage.hash(JSON.stringify(entries))}`;
 const snapshotId = (dependencySet, payload) => `workbuddy-snapshot:${storage.hash(JSON.stringify({ dependencySet, payload }))}`;
 
-async function buildWorkbuddyIndex({ sourceHome, repoRoot, signal, onProgress, onDiagnostic }) {
+async function buildWorkbuddyIndex(options) {
+  const { repoRoot, signal, onProgress, onDiagnostic } = options;
+  const context = createProjectPathContext({ ...options, sourceKind: SOURCE_KIND });
+  const sourceHome = context.sourceHome;
+  const selection = projectSelection(repoRoot, undefined, options.projectPathSemantics);
+  const projectFields = { ...projectContextIndexFields(context, selection.path), projectPath: selection };
   const started = Date.now();
-  const sessionsRoot = rootFor(sourceHome); const resolvedRepo = resolveFsPath(repoRoot);
+  const sessionsRoot = rootFor(sourceHome); const resolvedRepo = projectFields.projectPath.path;
   const diagnostics = createSourceDiagnostics();
   const addDiagnostic = diagnostics.add;
   diagnostics.add = (value) => { addDiagnostic(value); onDiagnostic?.(value); };
@@ -104,7 +120,8 @@ async function buildWorkbuddyIndex({ sourceHome, repoRoot, signal, onProgress, o
     }
     try {
       const document = storage.parseWorkbuddyDocument(await storage.readWorkbuddySnapshot(file, { sessionsRoot, signal }), relative);
-      if (!document.cwd || !isPathInsideOrSame(resolveFsPath(document.cwd), resolvedRepo)) {
+      const projectPath = document.cwd && projectPathFor(document.cwd, context, file, diagnostics.add);
+      if (!projectPath || !projectPathContains(projectPath, projectFields.projectPath)) {
         if (!document.cwd) unknownFileCount++; else skippedFileCount++;
         continue;
       }
@@ -176,6 +193,7 @@ async function buildWorkbuddyIndex({ sourceHome, repoRoot, signal, onProgress, o
     const eventKinds = Object.fromEntries(Object.entries(kindCounts).map(([layer, map]) => [layer,
       [...map].sort((a, b) => a[0].localeCompare(b[0])).map(([value, count]) => ({ value, label: value, count }))]));
     return { sourceKind: SOURCE_KIND, sourceHome: path.resolve(sourceHome), sourceRoot: sessionsRoot, sessionsRoot,
+      ...projectFields,
       repoRoot: resolvedRepo, generatedAt: new Date().toISOString(), sourceDiagnostics: diagnostics.summary,
       sessions, sessionsById, materializationDependencies, projectQueryStore: builder.finish(), eventKinds,
       legacyRawOwners: { schemaVersion: 1, sourceKind: SOURCE_KIND, entryCount: 0, accountedBytes: 2, payload: {} },

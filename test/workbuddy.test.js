@@ -126,12 +126,20 @@ test('accepted prefixes survive append and reject same-length rewrite, truncatio
   await assert.rejects(readIndexedRawRecord(index, session, raw.rawId), { code: 'INDEXED_SOURCE_STALE' });
 });
 
-test('torn tail is excluded, invalid native identity diagnosed and symlink artifacts ignored', async (t) => {
+test('torn tail is excluded and invalid native identity diagnosed', async (t) => {
   const f = await fixture(t); await fs.appendFile(f.file, '{"type":"message"}'); const diagnostics = [];
   const index = await indexed(t, { ...f, onDiagnostic: (d) => diagnostics.push(d) }); assert.equal(index.sessions[0].lineCount, 4); assert.ok(diagnostics.some((d) => d.code === 'WORKBUDDY_TORN_TAIL'));
   await fs.writeFile(f.file, JSON.stringify({ type: 'unproven-envelope', sessionId: 'native-session', cwd: f.repoRoot }) + '\n'); const invalid = await indexed(t, { ...f, onDiagnostic: (d) => diagnostics.push(d) });
   assert.equal(invalid.sessions.length, 0); assert.ok(diagnostics.some((d) => d.code === 'WORKBUDDY_TRANSCRIPT_INVALID'));
-  await fs.unlink(f.file); await fs.symlink(path.join(f.sourceHome, 'missing'), f.file); assert.equal((await indexed(t, f)).sessions.length, 0);
+});
+
+test('symlink artifacts are ignored', async (t) => {
+  const f = await fixture(t); await fs.unlink(f.file);
+  try { await fs.symlink(path.join(f.sourceHome, 'missing'), f.file); } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('Native file symlinks unavailable: ' + error.code);
+    throw error;
+  }
+  assert.equal((await indexed(t, f)).sessions.length, 0);
 });
 
 test('archival fork markers, native summaries, goals, titles, usage and model remain visible', async (t) => {

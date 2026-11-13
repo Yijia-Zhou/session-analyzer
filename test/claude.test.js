@@ -2540,7 +2540,7 @@ test('Claude pointer evidence promotes a provisional metadata child when contain
   assert.equal(candidateBytes, indexedBytes);
 });
 
-test('Claude keeps legal non-object JSONL values as unknown Raw/Protocol rows and ignores unsafe cwd values', async (t) => {
+test('Claude preserves legal non-object JSONL rows and unsupported cwd evidence without project admission', async (t) => {
   const claudeHome = await makeClaudeHome(t);
   const repoRoot = path.join(claudeHome, 'repo');
   const container = path.join(claudeHome, 'projects', '-fixture-repo');
@@ -2569,7 +2569,7 @@ test('Claude keeps legal non-object JSONL values as unknown Raw/Protocol rows an
   const index = await buildClaudeIndex({ repoRoot, claudeHome });
   const session = index.sessionsById.get(analyzerSessionId(sessionId));
   assert.ok(session);
-  assert.deepEqual([...session.cwdSet], [path.resolve(repoRoot)]);
+  assert.deepEqual([...session.cwdSet], ['relative-cwd', path.resolve(repoRoot)]);
   assert.equal(session.rawEvents.length, records.length);
   assert.deepEqual(
     session.rawEvents.slice(0, 5).map((raw) => raw.parsed),

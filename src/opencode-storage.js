@@ -10,6 +10,8 @@ const crypto = require('node:crypto');
 const { setImmediate: yieldImmediate } = require('node:timers/promises');
 const { performance } = require('node:perf_hooks');
 const { isPathInsideOrSame, resolveFsPath } = require('./shared/fs-path');
+const { createProjectPathContext, projectPathFor, projectSelection } = require('./project-path-context');
+const { projectPathContains } = require('./shared/project-path');
 
 const SCHEMA_PROFILE = 'opencode-2.1.4';
 const FORMAT_VERSION = 1;
@@ -322,7 +324,8 @@ async function openRead(sourceHome, context, operation) {
   } catch (cause) { throw normalizeError(cause); }
   finally { if (db) db.close(); }
 }
-async function discoverOpenCodeProjects({ sourceHome = defaultOpenCodeHome(), signal, onDiagnostic, limits } = {}) {
+async function discoverOpenCodeProjects({ sourceHome = defaultOpenCodeHome(), signal, onDiagnostic, limits, ...options } = {}) {
+  const paths = createProjectPathContext({ ...options, sourceKind: 'opencode', sourceHome });
   const context = { limits: limitsFrom(limits), signal, started: performance.now(), catalogBytes: 0 };
   try {
     return await openRead(sourceHome, context, async db => {
@@ -331,11 +334,15 @@ async function discoverOpenCodeProjects({ sourceHome = defaultOpenCodeHome(), si
       for (const session of catalog.session_v2) {
         const repoRoot = sessionRoot(session, projects);
         if (!repoRoot) continue;
-        const value = found.get(repoRoot) || { repoRoot, sessionCount: 0, updatedAt: '', bytes: 0, exists: false, source: 'opencode-sqlite' };
+        const projectPath = projectPathFor(repoRoot, paths, sourceHome, onDiagnostic);
+        if (projectPath.status !== 'valid') continue;
+        const value = found.get(projectPath.key) || { repoRoot: projectPath.path, projectPath, projectPathPolicyId: paths.digest,
+          projectPathEvidence: [projectPath.evidence], legacyAssumption: projectPath.legacyAssumption,
+          sessionCount: 0, updatedAt: '', bytes: 0, exists: false, source: 'opencode-sqlite' };
         value.sessionCount++;
         const timestamp = new Date(session.time_updated).toISOString();
         if (timestamp > value.updatedAt) value.updatedAt = timestamp;
-        found.set(repoRoot, value);
+        found.set(projectPath.key, value);
       }
       for (const value of found.values()) { try { value.exists = (await fsp.stat(value.repoRoot)).isDirectory(); } catch { /* External or removed working directory. */ } }
       return [...found.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.repoRoot.localeCompare(b.repoRoot));
@@ -380,7 +387,8 @@ process.on('exit', () => {
   }
 });
 async function captureOpenCodeProject({ sourceHome = defaultOpenCodeHome(), repoRoot, signal, limits, onProgress,
-  snapshotBase = defaultSnapshotBase(), afterReadView } = {}) {
+  snapshotBase = defaultSnapshotBase(), afterReadView, ...options } = {}) {
+  const paths = createProjectPathContext({ ...options, sourceKind: 'opencode', sourceHome });
   const context = { limits: limitsFrom(limits), signal, started: performance.now(), catalogBytes: 0 };
   const resolvedRepo = hostPath(repoRoot);
   if (!resolvedRepo) throw error('OPENCODE_PROJECT_INVALID', 'An absolute local project path is required');
@@ -419,7 +427,8 @@ async function captureOpenCodeProject({ sourceHome = defaultOpenCodeHome(), repo
       const all = new Map(catalog.session_v2.map(s => [s.id, s]));
       const selected = catalog.session_v2.filter(s => {
         const root = sessionRoot(s, projects); const directory = hostPath(s.directory);
-        return (root && isPathInsideOrSame(root, resolvedRepo)) || (directory && isPathInsideOrSame(directory, resolvedRepo));
+        return (root && projectPathContains(projectPathFor(root, paths, sourceHome), projectSelection(resolvedRepo)))
+          || (directory && projectPathContains(projectPathFor(directory, paths, sourceHome), projectSelection(resolvedRepo)));
       });
       if (selected.length > context.limits.maxSessions) budget('maxSessions', context.limits.maxSessions);
       const selectedIds = new Set(selected.map(s => s.id));

@@ -215,9 +215,15 @@ test('image readback retains accepted snapshot and fails on mutation, truncation
   await fs.rm(f.file);
   const external = path.join(f.home, 'outside.jsonl');
   await fs.writeFile(external, f.original);
-  await fs.symlink(external, f.file);
-  assert.equal((await read()).statusCode, 409);
-  await fs.rm(f.file);
+  await t.test('replaced source symlink outside root is stale', async (t) => {
+    try { await fs.symlink(external, f.file); }
+    catch (error) {
+      if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('native symlinks unavailable');
+      throw error;
+    }
+    assert.equal((await read()).statusCode, 409);
+    await fs.rm(f.file);
+  });
   assert.equal((await read()).statusCode, 409);
   const controller = new AbortController();
   controller.abort();

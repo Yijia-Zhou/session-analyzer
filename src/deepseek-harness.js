@@ -11,6 +11,8 @@ const MarkdownIt = require('markdown-it');
 const { CANONICAL_SCHEMA_VERSION } = require('./shared/canonical-schema');
 const { sanitizeLogicalDetailValue } = require('./shared/logical-detail-sanitizer');
 const { isPathInsideOrSame, resolveFsPath } = require('./shared/fs-path');
+const { createProjectPathContext, projectPathFor, projectSelection, projectContextIndexFields, projectPathMatches } = require('./project-path-context');
+const { projectPathContains } = require('./shared/project-path');
 const planFacet = require('./shared/plan-facet');
 const i18n = require('./shared/i18n');
 const {
@@ -900,7 +902,7 @@ function appendPackedRowToStep(stepState, record) {
 
 function makeEmptySession(filePath, relFile, header, committedBytes) {
   const cwdSet = [];
-  if (typeof header.cwd === 'string' && header.cwd) cwdSet.push(resolveFsPath(header.cwd));
+  if (typeof header.cwd === 'string' && header.cwd) cwdSet.push(header.cwd);
   const sourceParentSessionId = header.parentSession || '';
   const parentSessionId = sourceParentSessionId ? `${SOURCE_KIND}:${sourceParentSessionId}` : '';
   const subagent = header.origin === 'subagent';
@@ -1483,8 +1485,8 @@ function attachInboxProvenance(logical, event, replay) {
   };
 }
 
-function finalizeSession(session, repoRoot, repairOnlyTurnIds = new Set()) {
-  session.matchesRepo = session.cwdSet.some((cwd) => isPathInsideOrSame(cwd, repoRoot));
+function finalizeSession(session, repoRoot, repairOnlyTurnIds = new Set(), projectPathContext, physicalArtifact) {
+  session.matchesRepo = session.cwdSet.some((cwd) => projectPathMatches(cwd, repoRoot, physicalArtifact, projectPathContext));
   if (!session.title) {
     const firstUser = session.logicalEvents.find((event) => (
       event.layer === 'main' && event.kind === 'user_message'
@@ -3022,13 +3024,6 @@ async function reconstructSessionArtifact(
   const prefix = committedRead.prefix;
   if (prefix.recordTexts.length === 0) throw storage.storageError('empty or header-less session log');
   const header = storage.parseHeaderText(prefix.recordTexts[0], storage.parseSessionArtifactName(filePath)?.version);
-  if (header.cwd) {
-    try {
-      resolveFsPath(header.cwd);
-    } catch {
-      // Keep the header cwd as source evidence; project matching simply fails.
-    }
-  }
   const session = makeEmptySession(filePath, relFile, header, prefix.committedBytes);
   if (header.version === 4) {
     let inheritedBoundary = null;
@@ -3584,7 +3579,7 @@ async function reconstructSessionArtifact(
   session.updatedAt = safeIso(lastTime) || session.startedAt;
   session._lastEventTime = lastTime;
   return finalizeSession(session, repoRoot,
-    new Set([...forkRepairTurnIds].filter(id => !childStartedTurnIds.has(id))));
+    new Set([...forkRepairTurnIds].filter(id => !childStartedTurnIds.has(id))), options.projectPathContext, filePath);
 }
 
 function indexedSourceStaleError() {
@@ -3610,7 +3605,8 @@ function reportArtifactFailure(error, filePath, onDiagnostic, signal) {
     path: filePath, message: error.message });
 }
 
-async function discoverDeepSeekProjects({ sourceHome, signal, onDiagnostic }) {
+async function discoverDeepSeekProjects({ sourceHome, signal, onDiagnostic, ...options }) {
+  const context = createProjectPathContext({ ...options, sourceKind: SOURCE_KIND, sourceHome });
   const sessionsRoot = path.resolve(sourceHome);
   const { files } = await collectArtifactFiles(sessionsRoot, signal, onDiagnostic);
   const projects = new Map();
@@ -3626,8 +3622,10 @@ async function discoverDeepSeekProjects({ sourceHome, signal, onDiagnostic }) {
       continue;
     }
     if (!header.cwd) continue;
-    const cwd = resolveFsPath(header.cwd);
-    const key = cwd;
+    const projectPath = projectPathFor(header.cwd, context, filePath, onDiagnostic);
+    if (projectPath.status !== 'valid') continue;
+    const cwd = projectPath.path;
+    const key = projectPath.key;
     const project = projects.get(key) || {
       repoRoot: cwd,
       sessionCount: 0,
@@ -3635,7 +3633,10 @@ async function discoverDeepSeekProjects({ sourceHome, signal, onDiagnostic }) {
       bytes: 0,
       exists: false,
       source: 'deepseek-harness-sessions',
+      projectPath, projectPathPolicyId: context.digest, legacyAssumption: false, projectPathEvidence: [],
     };
+    project.legacyAssumption ||= projectPath.legacyAssumption;
+    project.projectPathEvidence = [...new Set([...project.projectPathEvidence, projectPath.evidence])].sort();
     project.sessionCount += 1;
     project.bytes += stat.size;
     const updatedAt = safeIso(stat.mtime);
@@ -3838,12 +3839,15 @@ function buildMaterializationState(session, dependencySet, descriptorPayload) {
   return { descriptor, dependencySet, sourceSnapshotId };
 }
 
-async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress }) {
-  const resolvedRepo = resolveFsPath(repoRoot);
+async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress, onDiagnostic, ...options }) {
+  const context = createProjectPathContext({ ...options, sourceKind: SOURCE_KIND, sourceHome });
+  const resolvedRepo = projectSelection(repoRoot, undefined, options.projectPathSemantics).path;
   const sessionsRoot = path.resolve(sourceHome);
   const startedAt = Date.now();
   throwIfAborted(signal);
   const diagnostics = createSourceDiagnostics();
+  const addDiagnostic = diagnostics.add;
+  diagnostics.add = (value) => { addDiagnostic(value); onDiagnostic?.(value); };
   const { files, fileCount, excludedFileCount } = await collectArtifactFiles(sessionsRoot, signal, diagnostics.add);
   const candidates = [];
   let skippedFileCount = excludedFileCount;
@@ -3866,7 +3870,7 @@ async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress }) 
       skippedFileCount += 1;
       continue;
     }
-    if (!header.cwd || !isPathInsideOrSame(resolveFsPath(header.cwd), resolvedRepo)) {
+    if (!header.cwd || !projectPathContains(projectPathFor(header.cwd, context, filePath, diagnostics.add), projectSelection(resolvedRepo))) {
       if (!header.cwd) unknownFileCount += 1;
       else skippedFileCount += 1;
       continue;
@@ -3895,7 +3899,7 @@ async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress }) 
     try {
       session = await parseSessionArtifact(
         candidate.filePath, candidate.relFile, resolvedRepo, signal,
-        { compression: storage.compressionForArtifact(candidate.filePath) },
+        { compression: storage.compressionForArtifact(candidate.filePath), projectPathContext: context.serialized },
       );
     } catch (error) {
       reportArtifactFailure(error, candidate.filePath, diagnostics.add, signal);
@@ -3976,6 +3980,7 @@ async function buildDeepSeekIndex({ sourceHome, repoRoot, signal, onProgress }) 
     elapsedMs: Date.now() - startedAt,
   };
   return {
+    ...projectContextIndexFields(context, resolvedRepo),
     sourceDiagnostics: diagnostics.summary,
     sourceKind: SOURCE_KIND,
     sourceHome: sessionsRoot,
@@ -4009,6 +4014,7 @@ async function materializeDeepSeekSession({
   const entry = dependencySet.entries[0];
   if (!entry || entry.role !== 'primary_transcript') throw indexedSourceStaleError();
   const session = await parseSessionArtifact(target, sourceFile, materializationContext.repoRoot, signal, {
+    projectPathContext: materializationContext.projectPathContext,
     compression: payload.compression,
     acceptedSnapshot: {
       acceptedBytes: entry.acceptedBytes,

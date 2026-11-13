@@ -2,7 +2,36 @@
 
 const os = require('node:os');
 const path = require('node:path');
+const fs = require('node:fs/promises');
 const { SOURCE_KIND, normalizeSourceKind, supportedSourceKinds } = require('./source-adapters');
+const { normalizeProjectPathRules } = require('./project-path-context');
+
+async function loadPathConfig(filePath) {
+  const absolute = path.resolve(filePath);
+  let config;
+  try {
+    const text = await fs.readFile(absolute, 'utf8');
+    if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new Error('Path configuration exceeds 1 MiB.');
+    config = JSON.parse(text);
+  } catch (cause) {
+    throw Object.assign(new Error(`Cannot read path configuration: ${cause.message}`), { code: 'INVALID_PROJECT_PATH_POLICY' });
+  }
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw Object.assign(new Error('Path configuration must be a sourceConfigs object.'), { code: 'INVALID_PROJECT_PATH_POLICY' });
+  }
+  const result = {};
+  for (const [kind, entry] of Object.entries(config)) {
+    if (!supportedSourceKinds().includes(kind) || !entry || typeof entry !== 'object' || Array.isArray(entry)
+        || Object.keys(entry).some((key) => !['home', 'projectPathRules'].includes(key))
+        || typeof entry.home !== 'string' || !entry.home.trim() || entry.home.includes('\0')) {
+      throw Object.assign(new Error('Each path configuration entry requires a supported source, home and optional projectPathRules.'), { code: 'INVALID_PROJECT_PATH_POLICY' });
+    }
+    const home = path.resolve(path.dirname(absolute), entry.home);
+    result[kind] = { home, ...(entry.projectPathRules !== undefined
+      ? { projectPathRules: normalizeProjectPathRules(entry.projectPathRules, home) } : {}) };
+  }
+  return result;
+}
 
 function parseArgs(argv) {
   const opts = {
@@ -57,6 +86,8 @@ function parseArgs(argv) {
       host: '--host',
       hostname: '--host',
       logdir: '--log-dir',
+      pathconfig: '--path-config',
+      projectpathsemantics: '--project-path-semantics',
       help: '--help',
     };
     return aliases[key] || null;
@@ -144,6 +175,22 @@ function parseArgs(argv) {
       }
       opts.workbuddyHome = next;
       i += 1;
+    } else if (option === '--path-config') {
+      if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
+        opts.errors.push('Missing value for --path-config. Expected a JSON configuration file.');
+        if (isBlankOptionValue(next)) i += 1;
+        continue;
+      }
+      opts.pathConfig = next;
+      i += 1;
+    } else if (option === '--project-path-semantics') {
+      if (!['windows', 'posix'].includes(next)) {
+        opts.errors.push('Invalid value for --project-path-semantics. Expected windows or posix.');
+        if (!isMissingOptionValue(next)) i += 1;
+        continue;
+      }
+      opts.projectPathSemantics = next;
+      i += 1;
     } else if (option === '--port') {
       if (isMissingOptionValue(next) || isBlankOptionValue(next)) {
         opts.errors.push('Missing value for --port. Expected an integer between 1 and 65535.');
@@ -197,6 +244,8 @@ function formatHelp() {
     '  --pi-home <path>       pi agent directory containing sessions/. Used only with --source pi. Defaults to PI_CODING_AGENT_DIR or ~/.pi/agent.',
     '  --opencode-home <path> OpenCode data directory or SQLite database. Used only with --source opencode. Defaults to OPENCODE_DB or the OpenCode XDG data directory.',
     '  --workbuddy-home <path> WorkBuddy / CodeBuddy config root containing projects/. Used only with --source workbuddy. Defaults to CODEBUDDY_CONFIG_DIR or ~/.codebuddy.',
+    '  --path-config <file>   Analyzer sourceConfigs JSON with home and scoped projectPathRules. Configured homes take precedence over home flags; relative homes use the file directory.',
+    '  --project-path-semantics <windows|posix> Explicit interpretation of --repo only; historical cwd interpretation uses scoped path rules.',
     '  --port <port>          Local server port. Must be an integer from 1 to 65535. Defaults to 17890.',
     '  --host <host>          Advanced: bind host. Defaults to 127.0.0.1.',
     '  --log-dir <path>       Write throttled indexing diagnostics as bounded JSONL logs.',
@@ -220,4 +269,5 @@ function formatHelp() {
 module.exports = {
   parseArgs,
   formatHelp,
+  loadPathConfig,
 };

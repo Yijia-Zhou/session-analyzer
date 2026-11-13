@@ -51,6 +51,7 @@ const {
   timelineSearchBatchSnapshot,
 } = timelineSearchBatchApi;
 const { sameProjectRoot } = require('../shared/project-root');
+const { interpretProjectPath, PROJECT_PATH_VERSION } = require('../shared/project-path');
 const { queryPagination } = require('../shared/query-pagination');
 
 const requestOwners = {
@@ -174,6 +175,13 @@ const state = {
   sourceKind: 'codex',
   sourceHome: '',
   sourceConfigs: {},
+  projectPathVersion: 0,
+  projectPathPolicyId: '',
+  projectPath: null,
+  projectPathRulesDraft: null,
+  projectPathRulesDraftScope: '',
+  projectPathRestorePaused: false,
+  projectPathRulesRestoreAttempted: false,
   sourceOptions: [],
   supportedSources: [],
   projectDiscoveryLoading: false,
@@ -383,6 +391,15 @@ const el = {
   sourceDiagnostics: document.getElementById('sourceDiagnostics'),
   legacyRawNotice: document.getElementById('legacyRawNotice'),
   projectFailure: document.getElementById('projectFailure'),
+  projectPathNotice: document.getElementById('projectPathNotice'),
+  projectPathPolicyEditor: document.getElementById('projectPathPolicyEditor'),
+  projectPathRulesList: document.getElementById('projectPathRulesList'),
+  projectPathRuleScope: document.getElementById('projectPathRuleScope'),
+  projectPathRulePath: document.getElementById('projectPathRulePath'),
+  projectPathRuleInterpretation: document.getElementById('projectPathRuleInterpretation'),
+  projectPathRuleAdd: document.getElementById('projectPathRuleAdd'),
+  projectPathRuleApply: document.getElementById('projectPathRuleApply'),
+  projectPathRuleError: document.getElementById('projectPathRuleError'),
   projectSourceCancel: document.getElementById('projectSourceCancel'),
   projectSourceConfirm: document.getElementById('projectSourceConfirm'),
   projectHomeEditor: document.getElementById('projectHomeEditor'),
@@ -646,6 +663,17 @@ function applyStaticLocale() {
   setText(el.projectCancelBtn, t('cancelIndexing'));
   renderProjectPollRecovery();
   setText(document.querySelector('#projectHomeEditor summary'), t('customHomeDirectories'));
+  setText(document.querySelector('#projectPathPolicyEditor summary'), t('projectPathPolicy'));
+  for (const key of ['projectPathPolicyHelp', 'projectPathRuleScopeLabel', 'projectPathRulePathLabel',
+    'projectPathRuleInterpretationLabel', 'projectPathRulePathHelp', 'projectPathRuleWholeRoot', 'projectPathRuleClosesProject']) {
+    setText(document.getElementById(key), t(key.replace(/Label$/, '')));
+  }
+  setSelectOptionText(el.projectPathRuleScope, 'container', t('projectPathRuleContainer'));
+  setSelectOptionText(el.projectPathRuleScope, 'artifact', t('projectPathRuleArtifact'));
+  setSelectOptionText(el.projectPathRuleInterpretation, 'unc', t('projectPathRuleUnc'));
+  setSelectOptionText(el.projectPathRuleInterpretation, 'posix', t('projectPathRulePosix'));
+  setText(el.projectPathRuleAdd, t('projectPathRuleAdd'));
+  setText(el.projectPathRuleApply, t('projectPathRuleApply'));
   setText(el.projectHomeApplyBtn, t('applyHomeDirectories'));
   setText(el.projectSourceCancel, t('cancelSwitch'));
   setText(document.querySelector('.sessionsPane .sessionListHeader h2'), t('sessions'));
@@ -922,6 +950,81 @@ function renderSourceSwitch() {
   const preserveHomeInputs = state.pendingSourceAction === 'home' || state.homeEditorDirty;
   renderHomeFields({ configBusy, preserveHomeInputs, sourceKinds });
   if (el.projectHomeApplyBtn) el.projectHomeApplyBtn.disabled = configBusy;
+  renderProjectPathPolicyEditor(configBusy);
+}
+
+function projectHasLegacyAssumption(project) {
+  return project?.projectPath?.legacyAssumption === true || project?.legacyAssumption === true;
+}
+
+function renderProjectPathNotice() {
+  if (!el.projectPathNotice) return;
+  const legacy = state.projects.some(projectHasLegacyAssumption);
+  el.projectPathNotice.hidden = !state.projectPathRestorePaused && !legacy;
+  el.projectPathNotice.textContent = state.projectPathRestorePaused
+    ? t('projectPathRestorePaused') : legacy ? t('projectPathLegacyNotice') : '';
+}
+
+function renderProjectPathPolicyEditor(configBusy = sourceConfigBusy()) {
+  renderProjectPathNotice();
+  if (!el.projectPathPolicyEditor) return;
+  const scope = JSON.stringify([state.sourceKind, state.sourceHome, state.projectPathPolicyId]);
+  if (state.projectPathRulesDraftScope !== scope) {
+    state.projectPathRulesDraftScope = scope;
+    state.projectPathRulesDraft = structuredClone(state.sourceConfigs[state.sourceKind]?.projectPathRules || []);
+  }
+  setText(document.getElementById('projectPathPolicySource'), t('projectPathPolicySource', { source: sourceKindLabel(state.sourceKind), home: state.sourceHome }));
+  const closeNotice = document.getElementById('projectPathRuleClosesProject');
+  if (closeNotice) closeNotice.hidden = !state.repoRoot;
+  if (el.projectPathRulesList) {
+    const rules = state.projectPathRulesDraft || [];
+    el.projectPathRulesList.innerHTML = rules.length ? rules.map((rule, index) => `<div class="projectPathRule">
+      <span>${escapeHtml(t(rule.scope === 'artifact' ? 'projectPathRuleArtifact' : 'projectPathRuleContainer'))}</span>
+      <code class="projectPathRulePath">${escapeHtml(rule.path)}</code>
+      <span>${escapeHtml(t(rule.interpretation === 'unc' ? 'projectPathRuleUnc' : 'projectPathRulePosix'))}</span>
+      <button type="button" class="smallBtn" data-path-rule-remove="${index}"${configBusy ? ' disabled' : ''}>${escapeHtml(t('projectPathRuleRemove'))}</button>
+    </div>`).join('') : `<p>${escapeHtml(t('projectPathRuleEmpty'))}</p>`;
+  }
+  for (const control of [el.projectPathRuleScope, el.projectPathRulePath, el.projectPathRuleInterpretation,
+    el.projectPathRuleAdd, el.projectPathRuleApply]) if (control) control.disabled = configBusy || state.historyViewer;
+}
+
+function addProjectPathRule() {
+  const path = el.projectPathRulePath?.value || '';
+  if (!path) {
+    if (el.projectPathRuleError) el.projectPathRuleError.textContent = t('projectPathRuleRequired');
+    el.projectPathRulePath?.focus();
+    return false;
+  }
+  const rule = { scope: el.projectPathRuleScope.value, path, interpretation: el.projectPathRuleInterpretation.value };
+  if (path.includes('\u0000') || !['artifact', 'container'].includes(rule.scope) || !['unc', 'posix'].includes(rule.interpretation)) {
+    if (el.projectPathRuleError) el.projectPathRuleError.textContent = t('projectPathRuleInvalid');
+    return false;
+  }
+  state.projectPathRulesDraft ||= [];
+  if (!state.projectPathRulesDraft.some((entry) => JSON.stringify(entry) === JSON.stringify(rule))) state.projectPathRulesDraft.push(rule);
+  el.projectPathRulePath.value = '';
+  if (el.projectPathRuleError) el.projectPathRuleError.textContent = '';
+  renderProjectPathPolicyEditor();
+  return true;
+}
+
+async function applyProjectPathRules() {
+  if (sourceConfigBusy()) return;
+  const previousPolicy = state.projectPathPolicyId;
+  if (el.projectPathRulePath?.value && !addProjectPathRule()) return;
+  const config = { home: state.sourceHome, projectPathRules: structuredClone(state.projectPathRulesDraft || []) };
+  invalidateProjectDiscovery();
+  if (el.projectPathRuleError) el.projectPathRuleError.textContent = '';
+  try {
+    const result = await commitSourceConfig(state.sourceKind, null, { [state.sourceKind]: config });
+    applyAuthoritativeSourceMutationState(result);
+    state.projectPathRulesDraftScope = '';
+    state.projectPathRestorePaused = previousPolicy !== state.projectPathPolicyId && Boolean(readLastSelectedRepo(state.sourceKind));
+    await refreshProjectList();
+  } catch (error) {
+    if (el.projectPathRuleError) el.projectPathRuleError.textContent = error.message || String(error);
+  }
 }
 
 function renderHomeFields({ configBusy = false, preserveHomeInputs = false, sourceKinds = supportedSourceKindsForUi() } = {}) {
@@ -963,14 +1066,20 @@ function renderSourceDiagnostics() {
     OPENCODE_DATABASE_BUSY: 'sourceDatabaseBusy',
     OPENCODE_CAPTURE_LIMIT: 'sourceCaptureLimit',
     OPENCODE_BUDGET_EXCEEDED: 'sourceCaptureLimit',
+    PROJECT_PATH_LEGACY_ASSUMPTION: 'projectPathLegacyBadge',
+    PROJECT_PATH_NAMESPACE_COMPATIBILITY: 'projectPathNamespaceCompatibility',
+    PROJECT_PATH_CONFLICT: 'projectPathConflict',
+    PROJECT_PATH_UNSUPPORTED: 'projectPathUnsupported',
   };
+  const pathOnly = Object.keys(diagnostics.counts || {}).length > 0
+    && Object.keys(diagnostics.counts).every((code) => code.startsWith('PROJECT_PATH_'));
   const counts = Object.entries(diagnostics.counts || {}).map(([code, count]) => (
     `<li>${escapeHtml(t(explanations[code] || (state.sourceKind === 'opencode' ? 'sourceDatabaseUnreadable' : 'sourceUnreadable')))} (${escapeHtml(count)})</li>`
   )).join('');
   const samples = (diagnostics.samples || []).slice(0, 20).map((sample) => (
     `<li><code>${escapeHtml(sample.path || '')}</code><p>${escapeHtml(sample.message || sample.code || '')}</p></li>`
   )).join('');
-  el.sourceDiagnostics.innerHTML = `<details><summary><strong>${escapeHtml(t('sourceDiagnosticsTitle', { count: diagnostics.totalCount }))}</strong> · ${escapeHtml(t('sourceDiagnosticsCompact'))}</summary><p>${escapeHtml(t(state.sourceKind === 'opencode' ? 'sourceDatabaseUnreadable' : 'sourceDiagnosticsPartial'))}</p><ul>${counts}</ul><h4>${escapeHtml(t('sourceDiagnosticsDetails'))}</h4><ul>${samples}</ul>${diagnostics.truncatedCount ? `<p>${escapeHtml(t('sourceDiagnosticsTruncated', { count: diagnostics.truncatedCount }))}</p>` : ''}</details>`;
+  el.sourceDiagnostics.innerHTML = `<details><summary><strong>${escapeHtml(t(pathOnly ? 'projectPathDiagnosticsTitle' : 'sourceDiagnosticsTitle', { count: diagnostics.totalCount }))}</strong> · ${escapeHtml(t(pathOnly ? 'projectPathDiagnosticsCompact' : 'sourceDiagnosticsCompact'))}</summary><p>${escapeHtml(t(pathOnly ? 'projectPathDiagnostics' : state.sourceKind === 'opencode' ? 'sourceDatabaseUnreadable' : 'sourceDiagnosticsPartial'))}</p><ul>${counts}</ul><h4>${escapeHtml(t('sourceDiagnosticsDetails'))}</h4><ul>${samples}</ul>${diagnostics.truncatedCount ? `<p>${escapeHtml(t('sourceDiagnosticsTruncated', { count: diagnostics.truncatedCount }))}</p>` : ''}</details>`;
 }
 
 function renderLegacyRawNotice() {
@@ -1036,10 +1145,25 @@ function validateHomePaths(homes) {
   return false;
 }
 
-function sourceConfigMatchesMutation(payload, source, homes) {
+function projectPathRulesKey(rules, home) {
+  const win = absoluteHomePathKind(home) === 'win32';
+  return JSON.stringify((rules || []).map((rule) => {
+    const absolute = win ? /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(rule.path) : rule.path.startsWith('/');
+    let path = absolute ? rule.path : `${home}${win ? '\\' : '/'}${rule.path}`;
+    if (win && path.startsWith('//')) path = path.replace(/\//g, '\\');
+    return [rule.scope, normalizeHomePathForCompare(path, { preserveWhitespace: true }), rule.interpretation];
+  }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
+}
+
+function sourceConfigMatchesMutation(payload, source, homes, configs) {
   if (payload?.sourceKind !== source) return false;
-  if (!homes) return true;
-  return supportedSourceKindsForUi().every((kind) => (
+  if (configs && !Object.entries(configs).every(([kind, config]) => (
+    projectPathHomeKey(sourceHomeFromPayload(payload, kind)) === projectPathHomeKey(config.home)
+    && (!Object.hasOwn(config, 'projectPathRules')
+      || projectPathRulesKey(payload.sourceConfigs?.[kind]?.projectPathRules, config.home)
+        === projectPathRulesKey(config.projectPathRules, config.home))
+  ))) return false;
+  return !homes || supportedSourceKindsForUi().every((kind) => (
     normalizeHomePathForCompare(sourceHomeFromPayload(payload, kind))
       === normalizeHomePathForCompare(homes[kind])
   ));
@@ -1064,16 +1188,17 @@ function applyAuthoritativeSourceMutationState(payload) {
   return result;
 }
 
-function clearRetiredSourceContext(previousKind, previousHome, payload) {
+function clearRetiredSourceContext(previousKind, previousHome, payload, previousPolicy = state.projectPathPolicyId) {
   if (previousKind === state.sourceKind
-      && normalizeHomePathForCompare(previousHome) === normalizeHomePathForCompare(state.sourceHome)) return;
+      && normalizeHomePathForCompare(previousHome) === normalizeHomePathForCompare(state.sourceHome)
+      && previousPolicy === state.projectPathPolicyId) return;
   state.sourceDiagnostics = payload.sourceDiagnostics || null;
   state.failedProjectJob = null;
   renderSourceDiagnostics();
   renderProjectFailure();
 }
 
-async function reconcileUncertainSourceMutation(source, homes) {
+async function reconcileUncertainSourceMutation(source, homes, configs) {
   let authoritative;
   try {
     authoritative = await api('/api/state');
@@ -1083,13 +1208,15 @@ async function reconcileUncertainSourceMutation(source, homes) {
   }
   const previousKind = state.sourceKind;
   const previousHome = state.sourceHome;
+  const previousPolicy = state.projectPathPolicyId;
   const result = applyAuthoritativeSourceMutationState(authoritative);
-  clearRetiredSourceContext(previousKind, previousHome, result);
-  if (!sourceConfigMatchesMutation(result, source, homes)) return null;
+  clearRetiredSourceContext(previousKind, previousHome, result, previousPolicy);
+  if (!sourceConfigMatchesMutation(result, source, homes, configs)) return null;
   return result;
 }
 
-async function commitSourceConfig(source, homes = null) {
+async function commitSourceConfig(source, homes = null, configs = null) {
+  let submittedConfigs = null;
   state.sourceSwitchBusy = true;
   clearSourceError();
   renderProjects();
@@ -1098,19 +1225,24 @@ async function commitSourceConfig(source, homes = null) {
     const body = { source };
     if (homes) {
       body.sourceConfigs = Object.fromEntries(
-        supportedSourceKindsForUi().map((kind) => [kind, { home: homes[kind] }]),
+        supportedSourceKindsForUi().map((kind) => [kind, sourceConfigForHome(kind, homes[kind])]),
       );
     }
+    if (configs) body.sourceConfigs = Object.fromEntries(Object.entries(configs).map(([kind, config]) => [kind, {
+      ...sourceConfigForHome(kind, config.home), ...config,
+    }]));
+    submittedConfigs = body.sourceConfigs || null;
     const result = await api('/api/source', { method: 'POST', body });
     const previousKind = state.sourceKind;
     const previousHome = state.sourceHome;
+    const previousPolicy = state.projectPathPolicyId;
     applySourceConfig(result);
-    clearRetiredSourceContext(previousKind, previousHome, result);
+    clearRetiredSourceContext(previousKind, previousHome, result, previousPolicy);
     return result;
   } catch (error) {
     if (typeof error.status !== 'number') {
       try {
-        const reconciled = await reconcileUncertainSourceMutation(source, homes);
+        const reconciled = await reconcileUncertainSourceMutation(source, homes, submittedConfigs);
         if (reconciled) return reconciled;
       } catch (reconciliationError) {
         console.warn('Unable to reconcile uncertain source mutation', reconciliationError);
@@ -1135,6 +1267,7 @@ function resetReturnableProject() {
 async function refreshProjectList() {
   const requestId = state.projectChooserRequestId + 1;
   state.projectChooserRequestId = requestId;
+  let policyId = state.projectPathPolicyId;
   state.projectDiscoveryLoading = true;
   if (state.projects.length === 0) renderProjects();
   else renderSourceSwitch();
@@ -1151,9 +1284,14 @@ async function refreshProjectList() {
     }
     console.warn('Unable to load project summary', error);
   }
-  if (!isActiveProjectChooserRequest(requestId)) return false;
+  if (!isActiveProjectChooserRequest(requestId) || policyId !== state.projectPathPolicyId) return false;
   if (summary) {
+    if (!projectPolicyMatches(summary, policyId)) {
+      clearProjectDiscoveryLoading(requestId);
+      return false;
+    }
     applySourceConfig(summary);
+    policyId = state.projectPathPolicyId;
     state.projects = summary.projects;
     renderProjects();
     if (el.projectStatus) {
@@ -1176,7 +1314,12 @@ async function refreshProjectList() {
     renderProjects();
     throw error;
   }
-  if (!isActiveProjectChooserRequest(requestId)) return false;
+  if (!isActiveProjectChooserRequest(requestId) || policyId !== state.projectPathPolicyId) return false;
+  if (!projectPolicyMatches(data, policyId)) {
+    clearProjectDiscoveryLoading(requestId);
+    renderProjects();
+    return false;
+  }
   applySourceConfig(data);
   state.projectDiscoveryLoading = false;
   state.projects = data.projects;
@@ -1555,6 +1698,9 @@ function scheduleProjectRefreshPoll(jobId, requestId, delayMs = 400) {
 
 async function finishProjectRefresh(appState, requestId) {
   if (requestId !== state.projectRefreshRequestId) return;
+  if (!projectPolicyMatches(appState) || !samePayloadProject(appState, { repoRoot: state.repoRoot, projectPath: state.projectPath })) {
+    throw new Error(t('projectIndexUnavailable'));
+  }
   Object.values(requestOwners).forEach((owner) => owner.abort());
   clearContextReveal({ render: false });
   beginSearchTargetContextTransition();
@@ -1610,6 +1756,7 @@ async function pollProjectRefreshJob(jobId, requestId) {
   const data = await api(`/api/project/status?jobId=${encodeURIComponent(jobId)}`);
   if (requestId !== state.projectRefreshRequestId || jobId !== state.projectRefreshJobId) return;
   const job = data.job || {};
+  if (!projectPolicyMatches(job)) throw new Error(t('projectStatusInvalid'));
   renderProjectRefreshJob(job);
   if (job.status === 'succeeded') {
     let appState = data.state;
@@ -1629,6 +1776,7 @@ async function pollProjectRefreshJob(jobId, requestId) {
 async function refreshCurrentProject() {
   if (!state.repoRoot || state.projectRefreshing || state.projectRefreshJobId) return false;
   const requestId = state.projectRefreshRequestId + 1;
+  const policyId = state.projectPathPolicyId;
   state.projectRefreshRequestId = requestId;
   state.projectRefreshing = true;
   state.projectRefreshRetryCount = 0;
@@ -1638,9 +1786,11 @@ async function refreshCurrentProject() {
   try {
     const started = await api('/api/project', {
       method: 'POST',
-      body: { repoRoot: state.repoRoot, locale: state.locale },
+      body: { repoRoot: state.repoRoot, locale: state.locale,
+        ...(state.projectPath?.status === 'valid' ? { projectPathSemantics: state.projectPath.semantics, projectPathKey: state.projectPath.key } : {}),
+        ...(policyId ? { projectPathPolicyId: policyId } : {}) },
     });
-    if (requestId !== state.projectRefreshRequestId) {
+    if (requestId !== state.projectRefreshRequestId || policyId !== state.projectPathPolicyId) {
       await cancelProjectJob(started.job?.id || '');
       return false;
     }
@@ -1785,7 +1935,7 @@ function highlightRoots() {
 
 function sessionsDataContextKey() {
   return JSON.stringify([
-    state.repoRoot,
+    state.projectPath?.key || state.repoRoot, state.projectPathPolicyId,
     el.sortSelect?.value || '',
     state.locale,
   ]);
@@ -1794,7 +1944,7 @@ function sessionsDataContextKey() {
 function projectSearchDataContextKey() {
   const search = currentSearchState();
   return JSON.stringify([
-    state.repoRoot,
+    state.projectPath?.key || state.repoRoot, state.projectPathPolicyId,
     search.scope,
     state.selectedSessionId,
     search.q,
@@ -1811,7 +1961,7 @@ function projectSearchDataContextKey() {
 function timelineDataContextKey() {
   const search = currentSearchState();
   return JSON.stringify([
-    state.repoRoot,
+    state.projectPath?.key || state.repoRoot, state.projectPathPolicyId,
     search.scope,
     state.selectedSessionId,
     search.layer,
@@ -3280,31 +3430,111 @@ function repoStorageKey(sourceKind) {
   return `sessionAnalyzer.repoRoot.${sourceKind}`;
 }
 
+const PROJECT_PATH_RULES_STORAGE_KEY = 'sessionAnalyzer.projectPathRules.v1';
+const projectPathStorageKey = (kind) => `sessionAnalyzer.projectPath.${kind}`;
+const projectPathHomeKey = (home) => normalizeHomePathForCompare(home, { preserveWhitespace: true });
+
+function rememberedProjectPathRules(kind, home) {
+  const saved = readJsonStorage(PROJECT_PATH_RULES_STORAGE_KEY, null);
+  if (saved?.version !== 1 || !Array.isArray(saved.entries)) return undefined;
+  const entry = saved.entries.find((item) => item.sourceKind === kind && projectPathHomeKey(item.home) === projectPathHomeKey(home));
+  return entry && Array.isArray(entry.rules) ? structuredClone(entry.rules) : undefined;
+}
+
+function sourceConfigForHome(kind, home) {
+  const current = state.sourceConfigs[kind];
+  // An explicit server rule set, including an explicit clear, wins for its
+  // current home. A different home can recover only its own remembered rules.
+  const rules = current && projectPathHomeKey(current.home) === projectPathHomeKey(home)
+    && Object.hasOwn(current, 'projectPathRules') ? structuredClone(current.projectPathRules)
+    : rememberedProjectPathRules(kind, home);
+  return { home, ...(rules === undefined ? {} : { projectPathRules: rules }) };
+}
+
+function persistProjectPathRules() {
+  const saved = readJsonStorage(PROJECT_PATH_RULES_STORAGE_KEY, { version: 1, entries: [] });
+  const entries = saved?.version === 1 && Array.isArray(saved.entries) ? [...saved.entries] : [];
+  for (const [sourceKind, config] of Object.entries(state.sourceConfigs)) {
+    if (!Object.hasOwn(config, 'projectPathRules')) continue;
+    const entry = { sourceKind, home: config.home, rules: structuredClone(config.projectPathRules) };
+    const position = entries.findIndex((item) => item.sourceKind === sourceKind
+      && projectPathHomeKey(item.home) === projectPathHomeKey(config.home));
+    if (position === -1) entries.push(entry); else entries[position] = entry;
+  }
+  writeJsonStorage(PROJECT_PATH_RULES_STORAGE_KEY, { version: 1, entries });
+}
+
+async function restoreStoredProjectPathRules(payload) {
+  if (state.projectPathRulesRestoreAttempted || payload?.historyViewer?.fixedScope) return false;
+  state.projectPathRulesRestoreAttempted = true;
+  const configs = {};
+  for (const [kind, config] of Object.entries(payload.sourceConfigs || {})) {
+    if (Object.hasOwn(config, 'projectPathRules')) continue;
+    const rules = rememberedProjectPathRules(kind, config.home);
+    if (rules !== undefined) configs[kind] = { home: config.home, projectPathRules: rules };
+  }
+  if (!Object.keys(configs).length) return false;
+  await commitSourceConfig(payload.sourceKind, null, configs);
+  return true;
+}
+
+function projectDescriptor(project) {
+  return project?.projectPath?.status === 'valid' ? project.projectPath
+    : interpretProjectPath(project?.repoRoot || '', { legacyNamespace: true });
+}
+
+function samePayloadProject(left, right) {
+  return sameProjectRoot(projectDescriptor(left), projectDescriptor(right));
+}
+
+function projectPolicyMatches(payload, policy = state.projectPathPolicyId) {
+  return !policy || payload?.projectPathPolicyId === policy;
+}
+
+function restorableSavedProject(saved) {
+  const metadata = readJsonStorage(projectPathStorageKey(state.sourceKind), null);
+  const descriptor = metadata?.projectPath || interpretProjectPath(saved, { legacyNamespace: true });
+  const project = state.projects.find((item) => sameProjectRoot(projectDescriptor(item), descriptor));
+  if (!project || projectHasLegacyAssumption(project)) return null;
+  if (metadata) {
+    return metadata.version === PROJECT_PATH_VERSION && metadata.repoRoot === saved
+      && metadata.policyId === state.projectPathPolicyId && !metadata.legacyAssumption
+      && normalizeHomePathForCompare(metadata.sourceHome) === normalizeHomePathForCompare(state.sourceHome)
+      ? project : null;
+  }
+  // Migrate a bare, unambiguous saved root only under the default compatibility
+  // policy, using fresh discovery evidence. Unknown // strings stay paused.
+  return descriptor.status === 'valid' && !descriptor.legacyAssumption
+    && !(state.sourceConfigs[state.sourceKind]?.projectPathRules || []).length ? project : null;
+}
+
 function readLastSelectedRepo(sourceKind) {
   const namespaced = localStorage.getItem(repoStorageKey(sourceKind));
   if (sourceKind !== 'codex') return namespaced || '';
   const legacy = localStorage.getItem(LEGACY_REPO_STORAGE_KEY);
-  if (namespaced) {
-    if (legacy !== null) localStorage.removeItem(LEGACY_REPO_STORAGE_KEY);
-    return namespaced;
-  }
+  if (namespaced) return namespaced;
   if (legacy) {
     localStorage.setItem(repoStorageKey('codex'), legacy);
-    localStorage.removeItem(LEGACY_REPO_STORAGE_KEY);
   }
   return legacy || '';
 }
 
-function writeLastSelectedRepo(sourceKind, repoRoot) {
+function writeLastSelectedRepo(sourceKind, repoRoot, appState) {
   if (repoRoot) {
     localStorage.setItem(repoStorageKey(sourceKind), repoRoot);
-  } else {
-    localStorage.removeItem(repoStorageKey(sourceKind));
+    const selected = state.projects.find((project) => samePayloadProject(project, appState || { repoRoot }));
+    writeJsonStorage(projectPathStorageKey(sourceKind), {
+      version: PROJECT_PATH_VERSION, repoRoot, sourceHome: appState?.sourceHome || state.sourceHome,
+      policyId: appState?.projectPathPolicyId || state.projectPathPolicyId,
+      projectPath: projectDescriptor(appState || { repoRoot }),
+      legacyAssumption: projectHasLegacyAssumption(selected) || projectHasLegacyAssumption(appState),
+    });
   }
 }
 
 function applySourceConfig(payload) {
   if (!payload || typeof payload !== 'object') return;
+  const previousPolicy = state.projectPathPolicyId;
   if (Object.hasOwn(payload, 'sourceDiagnostics')) state.sourceDiagnostics = payload.sourceDiagnostics;
   renderSourceDiagnostics();
   renderProjectFailure();
@@ -3319,7 +3549,9 @@ function applySourceConfig(payload) {
     const hasExplicitCanonicalEntry = canonicalSourceConfigs === null
       || (canonicalSourceConfigs && Object.hasOwn(canonicalSourceConfigs, kind));
     if (hasExplicitCanonicalEntry) {
-      if (home) nextSourceConfigs[kind] = { home };
+      if (home) nextSourceConfigs[kind] = { home,
+        ...(Object.hasOwn(canonicalSourceConfigs[kind], 'projectPathRules')
+          ? { projectPathRules: structuredClone(canonicalSourceConfigs[kind].projectPathRules) } : {}) };
       else delete nextSourceConfigs[kind];
     } else if (home) {
       nextSourceConfigs[kind] = { home };
@@ -3331,6 +3563,26 @@ function applySourceConfig(payload) {
   if (canonicalSourceConfigs !== undefined) state.sourceHome = sourceHomeFor(state.sourceKind);
   else if (typeof payload.sourceHome === 'string') state.sourceHome = payload.sourceHome;
   else state.sourceHome = sourceHomeFor(state.sourceKind) || state.sourceHome;
+  if (Number.isSafeInteger(payload.projectPathVersion)) state.projectPathVersion = payload.projectPathVersion;
+  if (typeof payload.projectPathPolicyId === 'string') state.projectPathPolicyId = payload.projectPathPolicyId;
+  if (previousPolicy && previousPolicy !== state.projectPathPolicyId) {
+    resetProjectObservation();
+    invalidateProjectDiscovery();
+    resetProjectViewState();
+    resetReturnableProject();
+    state.projectPath = null;
+    state.projectJobId = '';
+    state.projectRefreshRequestId += 1;
+    state.projectRefreshing = false;
+    state.projectRefreshJobId = '';
+    clearProjectRefreshPollTimer();
+    state.projectLoadingRoot = '';
+    state.projects = [];
+    state.projectPathRestorePaused = Boolean(readLastSelectedRepo(state.sourceKind));
+    setProjectMode(true);
+  }
+  if (Object.hasOwn(payload, 'projectPath')) state.projectPath = payload.projectPath;
+  persistProjectPathRules();
 }
 
 function absoluteHomePathKind(value) {
@@ -3340,8 +3592,9 @@ function absoluteHomePathKind(value) {
   return '';
 }
 
-function normalizeHomePathForCompare(value) {
-  const text = String(value || '').trim();
+function normalizeHomePathForCompare(value, { preserveWhitespace = false } = {}) {
+  const raw = String(value || '');
+  const text = preserveWhitespace ? raw : raw.trim();
   if (!text) return '';
   const pathKind = absoluteHomePathKind(text);
   const win32 = pathKind === 'win32';
@@ -4508,8 +4761,10 @@ function renderProjects() {
     return;
   }
   const saved = readLastSelectedRepo(state.sourceKind) || '';
+  const savedDescriptor = readJsonStorage(projectPathStorageKey(state.sourceKind), null)?.projectPath
+    || interpretProjectPath(saved, { legacyNamespace: true });
   el.projectList.innerHTML = state.projects.map((project) => {
-    const isSaved = project.repoRoot === saved;
+    const isSaved = sameProjectRoot(projectDescriptor(project), savedDescriptor);
     const isLoading = project.repoRoot === loadingRoot;
     const statsPending = Boolean(project.statsPending);
     const sessionCount = Number(project.sessionCount || 0);
@@ -4522,12 +4777,13 @@ function renderProjects() {
     const badges = [
       isSaved ? `<span class="projectBadge">${escapeHtml(t('lastSelected'))}</span>` : '',
       project.exists ? '' : `<span class="projectBadge warning">${escapeHtml(t('missingDirectory'))}</span>`,
+      projectHasLegacyAssumption(project) ? `<span class="projectBadge warning">${escapeHtml(t('projectPathLegacyBadge'))}</span>` : '',
     ].join('');
     const action = isLoading ? `<span class="projectSpinner" aria-hidden="true"></span><span>${escapeHtml(t('indexing'))}</span>` : `<span>${escapeHtml(t('open'))}</span>`;
     const facts = statsPending
       ? `<span>${escapeHtml(t('activityLoading'))}</span>`
       : `<span>${escapeHtml(sessionCountLabel(sessionCount))}</span><span>${escapeHtml(project.updatedAt ? fmtDate(project.updatedAt) : t('noTranscriptActivity'))}</span>`;
-    return `<button class="${classes}" type="button" data-project-root="${escapeHtml(project.repoRoot)}"${selectionLocked ? ' disabled' : ''}>
+    return `<button class="${classes}" type="button" data-project-root="${escapeHtml(project.repoRoot)}" data-project-key="${escapeHtml(projectDescriptor(project).key)}"${selectionLocked ? ' disabled' : ''}>
       <span class="projectMain">
         <span class="projectName">${escapeHtml(projectName(project.repoRoot))}${badges}</span>
         <span class="projectPath">${escapeHtml(project.repoRoot)}</span>
@@ -4593,8 +4849,13 @@ async function showProjectChooser(options = {}) {
   const discovered = await refreshProjectList();
   if (!discovered) return;
   const saved = readLastSelectedRepo(state.sourceKind);
-  if (options.autoRestore && saved && state.projects.some((project) => project.repoRoot === saved)) {
-    await selectProject(saved, { restore: true });
+  if (options.autoRestore && saved) {
+    const project = restorableSavedProject(saved);
+    if (project) await selectProject(project.repoRoot, { restore: true, projectPath: projectDescriptor(project) });
+    else {
+      state.projectPathRestorePaused = true;
+      renderProjectPathNotice();
+    }
   }
 }
 
@@ -4676,7 +4937,8 @@ async function applyAppState(appState) {
 async function finishProjectSelection(appState, options = {}) {
   resetProjectObservation();
   state.failedProjectJob = null;
-  writeLastSelectedRepo(appState.sourceKind || state.sourceKind, appState.repoRoot);
+  writeLastSelectedRepo(appState.sourceKind || state.sourceKind, appState.repoRoot, appState);
+  state.projectPathRestorePaused = false;
   state.projectLoadingRoot = '';
   state.projectJobId = '';
   state.projectReturning = false;
@@ -4739,13 +5001,15 @@ function projectObservationCurrent(owner) {
   return owner && state.projectObservation === owner
     && state.projectJobId === owner.jobId
     && state.projectChooserRequestId === owner.requestId
-    && state.sourceKind === owner.sourceKind && state.sourceHome === owner.sourceHome;
+    && state.sourceKind === owner.sourceKind && state.sourceHome === owner.sourceHome
+    && state.projectPathPolicyId === owner.projectPathPolicyId;
 }
 
 function beginProjectObservation(jobId, options = {}) {
   resetProjectObservation();
   const owner = { jobId, options, requestId: state.projectChooserRequestId,
     sourceKind: state.sourceKind, sourceHome: state.sourceHome,
+    projectPathPolicyId: state.projectPathPolicyId,
     failures: 0, pending: false, paused: false, error: '' };
   state.projectObservation = owner;
   return owner;
@@ -4776,7 +5040,9 @@ function handleProjectJobError(owner, error) {
 
 function validateProjectJobResponse(data, owner) {
   if (!data?.job || data.job.id !== owner.jobId
-      || !['queued', 'running', 'succeeded', 'failed', 'cancelled'].includes(data.job.status)) {
+      || !['queued', 'running', 'succeeded', 'failed', 'cancelled'].includes(data.job.status)
+      || !projectPolicyMatches(data.job, owner.projectPathPolicyId)
+      || (owner.options.projectPath?.key && !sameProjectRoot(projectDescriptor(data.job), owner.options.projectPath))) {
     throw new Error(t('projectStatusInvalid'));
   }
 }
@@ -4827,7 +5093,8 @@ async function pollProjectJob(jobId, options = {}, observation = null) {
       data.state = current.currentState || (!current.job ? current : null);
     }
     if (data.job.status === 'succeeded' && (!data.state?.projectSelected
-        || !sameProjectRoot(data.state.repoRoot, data.job.repoRoot))) {
+        || !projectPolicyMatches(data.state, owner.projectPathPolicyId)
+        || !samePayloadProject(data.state, data.job))) {
       throw new Error(t('projectIndexUnavailable'));
     }
   } catch (error) {
@@ -4856,6 +5123,10 @@ function scheduleProjectJobPoll(owner, delay = 400) {
 
 async function selectProject(repoRoot, options = {}) {
   if (!repoRoot || sourceConfigBusy()) return;
+  const selection = options.projectPath || state.projects.find((project) => project.repoRoot === repoRoot)?.projectPath
+    || (state.repoRoot === repoRoot && state.projectPath) || interpretProjectPath(repoRoot, { legacyNamespace: true });
+  options = { ...options, projectPath: selection };
+  const policyId = state.projectPathPolicyId;
   resetProjectObservation();
   const requestId = state.projectChooserRequestId + 1;
   state.projectChooserRequestId = requestId;
@@ -4870,13 +5141,16 @@ async function selectProject(repoRoot, options = {}) {
   try {
     const started = await api('/api/project', {
       method: 'POST',
-      body: { repoRoot, locale: state.locale },
+      body: { repoRoot, locale: state.locale,
+        ...(selection?.status === 'valid' ? { projectPathSemantics: selection.semantics, projectPathKey: selection.key } : {}),
+        ...(policyId ? { projectPathPolicyId: policyId } : {}) },
     });
     const job = started.job || {};
-    if (requestId !== state.projectChooserRequestId) {
+    if (requestId !== state.projectChooserRequestId || policyId !== state.projectPathPolicyId) {
       await cancelProjectJob(job.id || '');
       return;
     }
+    if (!projectPolicyMatches(job, policyId) || !sameProjectRoot(projectDescriptor(job), selection)) throw new Error(t('projectStatusInvalid'));
     state.projectJobId = job.id || '';
     renderProjectJob(job);
     if (state.projectJobId) await pollProjectJob(state.projectJobId, options);
@@ -5050,7 +5324,8 @@ function eventSearchSupplement(event) {
     data = { mode: 'search', query, text: event.snippet, identity: query };
   }
   return { ...data, eventId: event.id, key: JSON.stringify([
-    state.sourceKind, state.sourceHome, state.repoRoot, state.indexRevision, state.selectedSessionId,
+    state.sourceKind, state.sourceHome, state.projectPath?.key || state.repoRoot, state.projectPathPolicyId,
+    state.indexRevision, state.selectedSessionId,
     activeLayerId(), state.locale, effectiveMainPresentationId(), event.id, data.mode, data.identity,
   ]) };
 }
@@ -5128,6 +5403,8 @@ function piEntryUrl(reference) {
   const url = new URL(location.href);
   url.searchParams.set('source', 'pi');
   url.searchParams.set('repoRoot', state.repoRoot);
+  if (state.projectPath?.key) url.searchParams.set('projectPathKey', state.projectPath.key);
+  if (state.projectPathPolicyId) url.searchParams.set('projectPathPolicyId', state.projectPathPolicyId);
   url.searchParams.set('piEntry', reference);
   url.searchParams.delete('repo');
   url.searchParams.delete('evidenceRef');
@@ -5403,7 +5680,9 @@ async function hydratePiEntryUrl() {
   if (!reference) return;
   const repo = params.get('repoRoot') || params.get('repo');
   if (state.sourceKind !== 'pi' || (params.has('source') && params.get('source') !== state.sourceKind)
-      || (repo && !sameProjectRoot(repo, state.repoRoot))) {
+      || (params.has('projectPathPolicyId') && params.get('projectPathPolicyId') !== state.projectPathPolicyId)
+      || (params.has('projectPathKey') && params.get('projectPathKey') !== state.projectPath?.key)
+      || (repo && !sameProjectRoot(interpretProjectPath(repo, { legacyNamespace: true }), state.projectPath || projectDescriptor(state)))) {
     el.stateLine.textContent = t('piEntryScopeMismatch');
     return;
   }
@@ -5701,6 +5980,7 @@ async function init() {
   try {
     const appState = await api('/api/state');
     applySourceConfig(appState);
+    if (await restoreStoredProjectPathRules(appState)) return init();
     if (appState.job) {
       const job = appState.job;
       const currentState = appState.currentState;
@@ -5708,7 +5988,7 @@ async function init() {
         await showFailedProjectJob(job);
         return;
       }
-      if (currentState?.projectSelected && sameProjectRoot(currentState.repoRoot, job.repoRoot)) {
+      if (currentState?.projectSelected && projectPolicyMatches(currentState) && samePayloadProject(currentState, job)) {
         state.projectRefreshRequestId += 1;
         state.projectRefreshing = true;
         state.projectRefreshJobId = job.id || '';
@@ -5737,6 +6017,7 @@ async function init() {
   } catch (error) {
     if (error.status !== 409) throw error;
     applySourceConfig(error.details);
+    if (await restoreStoredProjectPathRules(error.details)) return init();
     await showProjectChooser({ autoRestore: true });
     if (state.projectSelected) return;
     return;
@@ -6417,7 +6698,8 @@ async function selectSession(sessionId, options = {}) {
 }
 
 function readingScopeKey() {
-  return JSON.stringify([state.sourceKind, state.sourceHome, state.repoRoot, state.indexRevision]);
+  return JSON.stringify([state.sourceKind, state.sourceHome, state.projectPath?.key || state.repoRoot,
+    state.projectPathPolicyId, state.indexRevision]);
 }
 
 function renderSessionReadingRelations(session) {
@@ -6721,7 +7003,7 @@ function captureReadingPosition(button) {
 async function openTurnLineage(button) {
   if (state.searchScope !== 'session') return false;
   if (button.dataset.navigationSource !== state.sourceKind
-      || !sameProjectRoot(button.dataset.navigationProject, state.repoRoot)
+      || !sameProjectRoot(interpretProjectPath(button.dataset.navigationProject, { legacyNamespace: true }), state.projectPath || projectDescriptor(state))
       || Number(button.dataset.navigationRevision) !== state.indexRevision) throw new Error(t('readingTargetUnavailable'));
   const position = captureReadingPosition(button);
   const ownerEventId = el.detail.contains(button) ? state.detailView.eventId : button.closest('.event[data-event-id]')?.dataset.eventId;
@@ -6751,7 +7033,7 @@ async function openTurnLineage(button) {
 
 async function openCollaborationSession(button) {
   if (button.dataset.navigationSource !== state.sourceKind
-      || !sameProjectRoot(button.dataset.navigationProject, state.repoRoot)
+      || !sameProjectRoot(interpretProjectPath(button.dataset.navigationProject, { legacyNamespace: true }), state.projectPath || projectDescriptor(state))
       || Number(button.dataset.navigationRevision) !== state.indexRevision) {
     throw new Error(t('readingTargetUnavailable'));
   }
@@ -10295,7 +10577,19 @@ function cancelProfileDraft() {
 
 el.projectList?.addEventListener('click', (event) => {
   const item = event.target.closest('[data-project-root]');
-  if (item) selectProject(item.dataset.projectRoot).catch(showError);
+  if (item) {
+    const project = state.projects.find((candidate) => projectDescriptor(candidate).key === item.dataset.projectKey);
+    if (project) selectProject(project.repoRoot, { projectPath: projectDescriptor(project) }).catch(showError);
+  }
+});
+
+el.projectPathRuleAdd?.addEventListener('click', addProjectPathRule);
+el.projectPathRuleApply?.addEventListener('click', () => applyProjectPathRules().catch(showError));
+el.projectPathRulesList?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-path-rule-remove]');
+  if (!button || sourceConfigBusy()) return;
+  state.projectPathRulesDraft.splice(Number(button.dataset.pathRuleRemove), 1);
+  renderProjectPathPolicyEditor();
 });
 
 el.projectSwitchControl?.addEventListener('click', () => {

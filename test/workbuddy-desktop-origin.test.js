@@ -117,6 +117,10 @@ async function assertCwdScenarios(t, scenarios) {
       const index = await buildWorkbuddyIndex({ sourceHome: process.argv[4], repoRoot: process.argv[5] });
       try {
         await validateIndexOwnershipForCommit(index);
+        if (index.sessions.length === 0) {
+          process.stdout.write(JSON.stringify({ sessionCount: 0, diagnostics: index.sourceDiagnostics.counts }));
+          return;
+        }
         const session = await materializeSessionForIndex(index, index.sessions[0]);
         const first = session.logicalEvents.find((event) => event.source.line === 1
           && (event.kind === 'user_message' || event.subtype === 'workbuddy_scheduled_input'));
@@ -155,7 +159,11 @@ async function assertCwdScenarios(t, scenarios) {
       return JSON.parse(child.stdout);
     });
     const automatic = Object.keys(options).length === 0;
-    const expected = {
+    // Root-relative transcript cwd has no stable project meaning. Unlike a
+    // rejected DB origin, it must not borrow the child's current drive/cwd.
+    const expected = options.rootRelativeTranscript ? {
+      sessionCount: 0, diagnostics: { PROJECT_PATH_UNSUPPORTED: 1 },
+    } : {
       userMessages: automatic ? 1 : 2, turns: automatic ? 1 : 2,
       title: automatic ? 'HUMAN_FOLLOWUP' : 'AUTOMATIC_INPUT_MARKER',
       first: automatic
@@ -233,7 +241,7 @@ test('UNC origin evidence survives indexing and materialization without matching
   t.after(() => disposeIndexResources(index)); await validateIndexOwnershipForCommit(index);
   const session = await materializeSessionForIndex(index, index.sessions[0]);
   assert.equal(session.counts.userMessages, 1);
-  assert.equal(index.sourceDiagnostics.totalCount, 0);
+  assert.deepEqual(index.sourceDiagnostics.counts, { PROJECT_PATH_LEGACY_ASSUMPTION: 1 });
   const event = session.logicalEvents.find((item) => item.subtype === 'workbuddy_scheduled_input');
   assert.ok(event);
   assert.equal((await readIndexedRawRecord(index, session, event.rawRefs[0].rawId)).raw, lines[0]);
@@ -333,15 +341,22 @@ test('desktop candidate and run scans yield so cancellation stops the scan', asy
   }
 });
 
-test('corrupt and symlink desktop databases produce diagnostics without breaking standalone JSONL reading', async (t) => {
-  for (const symlink of [false, true]) {
-    const f = await fixture(t, { absent: true });
-    if (symlink) {
-      const target = path.join(f.home, 'untrusted.db'); await fs.writeFile(target, 'not a database'); await fs.symlink(target, f.dbFile);
-    } else await fs.writeFile(f.dbFile, 'not a database');
-    const index = await indexFor(t, f); assert.equal(index.sessions[0].counts.userMessages, 2);
-    assert.equal(index.sourceDiagnostics.counts.WORKBUDDY_DESKTOP_ORIGIN_UNAVAILABLE, 1);
+test('corrupt desktop databases produce diagnostics without breaking standalone JSONL reading', async (t) => {
+  const f = await fixture(t, { absent: true });
+  await fs.writeFile(f.dbFile, 'not a database');
+  const index = await indexFor(t, f); assert.equal(index.sessions[0].counts.userMessages, 2);
+  assert.equal(index.sourceDiagnostics.counts.WORKBUDDY_DESKTOP_ORIGIN_UNAVAILABLE, 1);
+});
+
+test('symlink desktop databases produce diagnostics without breaking standalone JSONL reading', async (t) => {
+  const f = await fixture(t, { absent: true });
+  const target = path.join(f.home, 'untrusted.db'); await fs.writeFile(target, 'not a database');
+  try { await fs.symlink(target, f.dbFile); } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('Native file symlinks unavailable: ' + error.code);
+    throw error;
   }
+  const index = await indexFor(t, f); assert.equal(index.sessions[0].counts.userMessages, 2);
+  assert.equal(index.sourceDiagnostics.counts.WORKBUDDY_DESKTOP_ORIGIN_UNAVAILABLE, 1);
 });
 
 test('a forged copied origin is rejected by the materialization descriptor validator', async (t) => {

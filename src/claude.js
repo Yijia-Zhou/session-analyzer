@@ -14,8 +14,10 @@ const {
   fsPathApi,
   isPathInsideOrSame,
   normalizeFsPath,
-  resolveFsPath,
 } = require('./shared/fs-path');
+const { projectPathContains } = require('./shared/project-path');
+const { createProjectPathContext, projectPathFor, projectSelection,
+  projectContextIndexFields, projectPathMatches } = require('./project-path-context');
 const {
   CANONICAL_SCHEMA_VERSION,
   CLAUDE_SOURCE_KIND,
@@ -141,6 +143,7 @@ function candidateReuseEvidence(candidate) {
     sourceUpdatedAt: String(candidate.sourceUpdatedAt || ''),
     transcriptFingerprint: String(candidate.transcriptFingerprint || ''),
     cwdSet: stableSetValues(candidate.cwdSet),
+    invalidCwdEvidence: Boolean(candidate.invalidCwdEvidence),
     agentIds: stableSetValues(candidate.agentIds),
     foreignSessionIds: stableSetValues(candidate.foreignSessionIds),
   };
@@ -254,9 +257,9 @@ function usableSourceSessionIdentity(value) {
 
 function usableRecordCwd(record) {
   if (!isPlainObject(record) || typeof record.cwd !== 'string') return '';
-  const cwd = record.cwd.trim();
-  if (!cwd || !fsPathApi(cwd).isAbsolute(cwd)) return '';
-  return resolveFsPath(cwd);
+  // Preserve unsupported nonempty evidence as well: dropping it here could
+  // incorrectly turn a mixed container into a unique project cluster.
+  return record.cwd;
 }
 
 function throwIfAborted(signal) {
@@ -438,6 +441,7 @@ async function inspectClaudeSessionFile(candidate, options = {}) {
   const acceptedIdentity = sourceFileIdentity(stat);
   const transcriptFingerprint = crypto.createHash('sha256');
   const cwdSet = new Set();
+  let invalidCwdEvidence = false;
   const uuids = new Set();
   const agentIds = new Set();
   const declaredSourceSessionIds = new Set();
@@ -473,6 +477,9 @@ async function inspectClaudeSessionFile(candidate, options = {}) {
       if (isClaudeSdkStreamRecord(record)) unsupportedFormat = 'claude-sdk-stream';
       const cwd = usableRecordCwd(record);
       if (cwd) cwdSet.add(cwd);
+      if (Object.hasOwn(record, 'cwd') && (typeof record.cwd !== 'string' || record.cwd === '')) {
+        invalidCwdEvidence = true;
+      }
       if (Object.hasOwn(record, 'sessionId')) {
         const declaredIdentity = usableSourceSessionIdentity(record.sessionId);
         if (declaredIdentity) declaredSourceSessionIds.add(declaredIdentity);
@@ -516,6 +523,7 @@ async function inspectClaudeSessionFile(candidate, options = {}) {
     sourceUpdatedAt: safeIso(stat.mtime),
     lineCount,
     cwdSet,
+    invalidCwdEvidence,
     sourceSessionId,
     sourceIdentityConflict,
     unsupportedFormat,
@@ -620,12 +628,16 @@ function resolveClaudeAnalyzerIdentities(sessions) {
   };
 }
 
-function projectFor(map, repoRoot) {
-  const key = normalizeFsPath(repoRoot);
-  if (!key) return null;
+function projectFor(map, projectPath, context) {
+  const key = projectPath.key;
+  if (projectPath.status !== 'valid') return null;
   if (!map.has(key)) {
     map.set(key, {
-      repoRoot,
+      repoRoot: projectPath.path,
+      projectPath,
+      projectPathPolicyId: context.digest,
+      projectPathEvidence: [],
+      legacyAssumption: false,
       sessionCount: 0,
       updatedAt: '',
       bytes: 0,
@@ -633,15 +645,36 @@ function projectFor(map, repoRoot) {
       source: 'claude-code-transcripts',
     });
   }
-  return map.get(key);
+  const project = map.get(key);
+  project.projectPathEvidence = [...new Set([...project.projectPathEvidence, projectPath.evidence])].sort();
+  project.legacyAssumption ||= projectPath.legacyAssumption;
+  return project;
+}
+
+function projectScopeRootFor(discovery, configuredHome) {
+  return discovery.layout === 'claude-home' ? path.join(configuredHome, 'projects') : configuredHome;
+}
+
+function policyArtifactPath(candidate, projectPathScopeRoot) {
+  return projectPathScopeRoot
+    ? path.resolve(projectPathScopeRoot, path.relative(candidate.sourceRoot, candidate.filePath))
+    : candidate.filePath;
+}
+
+function diagnoseInvalidCwdEvidence(candidate, onDiagnostic) {
+  if (candidate.invalidCwdEvidence) onDiagnostic?.({ code: 'PROJECT_PATH_UNSUPPORTED', path: candidate.filePath,
+    message: 'Explicit cwd evidence is empty or has an unsupported type; it cannot establish or infer project membership.' });
 }
 
 async function discoverClaudeConfiguredProjects() {
   return [];
 }
 
-async function discoverClaudeProjects({ claudeHome, signal, onDiagnostic }) {
-  const { candidates } = await discoverMainCandidates(claudeHome);
+async function discoverClaudeProjects({ claudeHome, signal, onDiagnostic, ...options }) {
+  const context = createProjectPathContext({ ...options, sourceKind: CLAUDE_SOURCE_KIND, sourceHome: claudeHome });
+  const discovery = await discoverMainCandidates(context.sourceHome);
+  const { candidates } = discovery;
+  const projectPathScopeRoot = projectScopeRootFor(discovery, context.sourceHome);
   const projects = new Map();
   const inspected = [];
   for (const candidate of candidates) {
@@ -651,9 +684,14 @@ async function discoverClaudeProjects({ claudeHome, signal, onDiagnostic }) {
   const identityResolution = resolvePrimaryIdentityCandidates(inspected);
   unsupportedClaudeDiagnostics(identityResolution.unsupported, onDiagnostic);
   for (const candidate of identityResolution.accepted) {
-    for (const repoRoot of new Set(candidate.cwdSet)) {
-      const project = projectFor(projects, repoRoot);
+    diagnoseInvalidCwdEvidence(candidate, onDiagnostic);
+    const countedProjectKeys = new Set();
+    for (const rawCwd of candidate.cwdSet) {
+      const projectPath = projectPathFor(rawCwd, context, policyArtifactPath(candidate, projectPathScopeRoot), onDiagnostic);
+      const project = projectFor(projects, projectPath, context);
       if (!project) continue;
+      if (countedProjectKeys.has(projectPath.key)) continue;
+      countedProjectKeys.add(projectPath.key);
       project.sessionCount += 1;
       project.bytes += candidate.bytes;
       if (candidate.updatedAt > project.updatedAt) project.updatedAt = candidate.updatedAt;
@@ -758,11 +796,11 @@ function makeSession(candidate, context) {
   };
 }
 
-function updateSessionMetadata(session, record, raw, repoRoot) {
+function updateSessionMetadata(session, record, raw, repoRoot, projectPathContext, artifact) {
   const cwd = usableRecordCwd(record);
   if (cwd) {
     session.cwdSet.add(cwd);
-    if (isPathInsideOrSame(cwd, repoRoot)) session.matchesRepo = true;
+    if (projectPathMatches(cwd, repoRoot, artifact, projectPathContext)) session.matchesRepo = true;
   }
   if (!isPlainObject(record)) return;
   if (record.version && !session.sourceClientVersion) session.sourceClientVersion = String(record.version);
@@ -1013,7 +1051,8 @@ async function parseClaudeSession(candidate, context) {
           session.sourceSessionId,
           { parseError, rawText: line },
         );
-        if (!parseError) updateSessionMetadata(session, record, raw, context.repoRoot);
+        if (!parseError) updateSessionMetadata(session, record, raw, context.repoRoot,
+          context.projectPathContext, policyArtifactPath(candidate, context.projectPathScopeRoot));
         session.rawEvents.push(raw);
       } finally {
         if (observeSourcePhases) recordCpuMs += performance.now() - recordStartedAt;
@@ -1697,22 +1736,31 @@ async function subagentCandidates(parentCandidate, parentSession, signal) {
   return [...direct, ...workflow];
 }
 
-function containerCwdClusters(inspected) {
+function containerCwdClusters(inspected, context, projectPathScopeRoot, onDiagnostic) {
   const clusters = new Map();
   for (const candidate of inspected) {
     if (!clusters.has(candidate.containerPath)) clusters.set(candidate.containerPath, new Map());
     const cluster = clusters.get(candidate.containerPath);
-    for (const cwd of candidate.cwdSet) cluster.set(normalizeFsPath(cwd), cwd);
+    diagnoseInvalidCwdEvidence(candidate, onDiagnostic);
+    if (candidate.invalidCwdEvidence) cluster.set(`invalid:${candidate.relFile}`, { status: 'invalid' });
+    for (const cwd of candidate.cwdSet) {
+      const descriptor = projectPathFor(cwd, context, policyArtifactPath(candidate, projectPathScopeRoot), onDiagnostic);
+      const key = descriptor.status === 'valid' ? descriptor.key : `unsupported:${candidate.relFile}:${cwd}`;
+      cluster.set(key, descriptor);
+    }
   }
   return clusters;
 }
 
-function candidateProjectAssociation(candidate, repoRoot, clusters) {
-  if ([...candidate.cwdSet].some((cwd) => isPathInsideOrSame(cwd, repoRoot))) return 'embedded-cwd';
-  if (candidate.cwdSet.size) return '';
+function candidateProjectAssociation(candidate, repoRoot, clusters, context, projectPathScopeRoot) {
+  const selected = projectSelection(repoRoot);
+  if ([...candidate.cwdSet].some((cwd) => projectPathContains(
+    projectPathFor(cwd, context, policyArtifactPath(candidate, projectPathScopeRoot)), selected,
+  ))) return 'embedded-cwd';
+  if (candidate.cwdSet.size || candidate.invalidCwdEvidence) return '';
   const cluster = clusters.get(candidate.containerPath);
   if (!cluster || cluster.size !== 1) return '';
-  return isPathInsideOrSame([...cluster.values()][0], repoRoot) ? 'container-inferred' : '';
+  return projectPathContains([...cluster.values()][0], selected) ? 'container-inferred' : '';
 }
 
 function eventKindCatalog(sessions) {
@@ -2101,9 +2149,17 @@ async function buildClaudeSourceBackedIndex({
   onTransientMemorySample,
   signal,
   previousIndex = null,
+  onDiagnostic: observeDiagnostic,
+  ...pathOptions
 }) {
-  const resolvedRepo = resolveFsPath(repoRoot);
-  const resolvedClaude = path.resolve(claudeHome);
+  const pathContext = createProjectPathContext({ ...pathOptions, sourceKind: CLAUDE_SOURCE_KIND, sourceHome: claudeHome });
+  const selection = projectSelection(repoRoot, undefined, pathOptions.projectPathSemantics);
+  const projectFields = { ...projectContextIndexFields(pathContext, selection.path), projectPath: selection };
+  const resolvedRepo = selection.path;
+  const resolvedClaude = pathContext.sourceHome;
+  if (previousIndex?.projectPathContext !== pathContext.serialized) previousIndex = null;
+  const diagnostics = createSourceDiagnostics();
+  const onDiagnostic = (value) => { diagnostics.add(value); observeDiagnostic?.(value); };
   const started = Date.now();
   throwIfAborted(signal);
   emitProgress(onProgress, {
@@ -2120,6 +2176,7 @@ async function buildClaudeSourceBackedIndex({
   });
 
   const discovery = await discoverMainCandidates(resolvedClaude);
+  const projectPathScopeRoot = projectScopeRootFor(discovery, resolvedClaude);
   const inspected = [];
   for (const candidate of discovery.candidates) {
     throwIfAborted(signal);
@@ -2138,6 +2195,10 @@ async function buildClaudeSourceBackedIndex({
     });
   }
 
+  const identityResolution = resolvePrimaryIdentityCandidates(inspected);
+  const identityCandidates = identityResolution.accepted;
+  unsupportedClaudeDiagnostics(identityResolution.unsupported, onDiagnostic);
+  const clusters = containerCwdClusters(identityCandidates, pathContext, projectPathScopeRoot, onDiagnostic);
   const currentStrictReuseEvidence = {
     sourceRoot: discovery.sourceRoot,
     repoRoot: resolvedRepo,
@@ -2157,6 +2218,7 @@ async function buildClaudeSourceBackedIndex({
       && await canReuseStrictClaudeIndex(previousIndex, currentStrictReuseEvidence, signal)) {
     const reusedIndex = {
       ...previousIndex,
+      sourceDiagnostics: diagnostics.summary,
       generatedAt: new Date().toISOString(),
       totals: {
         ...previousIndex.totals,
@@ -2175,15 +2237,12 @@ async function buildClaudeSourceBackedIndex({
     return reusedIndex;
   }
 
-  const identityResolution = resolvePrimaryIdentityCandidates(inspected);
-  const identityCandidates = identityResolution.accepted;
-  const clusters = containerCwdClusters(identityCandidates);
   const candidates = identityCandidates
     .map((candidate) => ({
       ...candidate,
-      projectAssociation: candidateProjectAssociation(candidate, resolvedRepo, clusters),
+      projectAssociation: candidateProjectAssociation(candidate, resolvedRepo, clusters, pathContext, projectPathScopeRoot),
     }))
-    .filter((candidate) => candidate.projectAssociation || candidate.cwdSet.size === 0)
+    .filter((candidate) => candidate.projectAssociation || (candidate.cwdSet.size === 0 && !candidate.invalidCwdEvidence))
     .map((candidate) => ({
       ...candidate,
       projectAssociation: candidate.projectAssociation || POINTER_PROVISIONAL_ASSOCIATION,
@@ -2192,7 +2251,8 @@ async function buildClaudeSourceBackedIndex({
     candidate.projectAssociation !== POINTER_PROVISIONAL_ASSOCIATION
   ));
   const skippedFileCount = identityResolution.unsupported.length + identityCandidates.filter((candidate) => (
-    candidate.cwdSet.size && !candidateProjectAssociation(candidate, resolvedRepo, clusters)
+    (candidate.cwdSet.size || candidate.invalidCwdEvidence)
+      && !candidateProjectAssociation(candidate, resolvedRepo, clusters, pathContext, projectPathScopeRoot)
   )).length;
   const relationshipEvidence = [];
   const evidenceByStub = new WeakMap();
@@ -2228,6 +2288,8 @@ async function buildClaudeSourceBackedIndex({
     const isPointerProvisional = candidate.projectAssociation === POINTER_PROVISIONAL_ASSOCIATION;
     const mainContext = {
       repoRoot: resolvedRepo,
+      projectPathContext: pathContext.serialized,
+      projectPathScopeRoot,
       signal,
       matchesRepo: !isPointerProvisional,
       projectAssociation: candidate.projectAssociation,
@@ -2251,6 +2313,8 @@ async function buildClaudeSourceBackedIndex({
       const derivedContext = {
         ...derived.context,
         repoRoot: resolvedRepo,
+        projectPathContext: pathContext.serialized,
+        projectPathScopeRoot,
         signal,
         acceptedSourceSnapshot: claudeAcceptedSourceSnapshot(derived.candidate),
       };
@@ -2392,6 +2456,8 @@ async function buildClaudeSourceBackedIndex({
     elapsedMs: Date.now() - started,
   });
   const result = {
+    ...projectFields,
+    projectPathScopeRoot,
     sourceKind: CLAUDE_SOURCE_KIND,
     sourceHome: resolvedClaude,
     sourceRoot: discovery.sourceRoot,
@@ -2399,7 +2465,7 @@ async function buildClaudeSourceBackedIndex({
     projectsRoot: discovery.projectsRoot,
     repoRoot: resolvedRepo,
     generatedAt: new Date().toISOString(),
-    sourceDiagnostics: unsupportedClaudeDiagnostics(identityResolution.unsupported),
+    sourceDiagnostics: diagnostics.summary,
     sessions: committedSessions,
     sessionsById: committedSessionsById,
     projectQueryStore: committedQueryStore,
@@ -2425,9 +2491,16 @@ async function buildClaudeSourceBackedIndex({
   return result;
 }
 
-async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, previousIndex = null }) {
-  const resolvedRepo = resolveFsPath(repoRoot);
-  const resolvedClaude = path.resolve(claudeHome);
+async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, previousIndex = null,
+  onDiagnostic: observeDiagnostic, ...pathOptions }) {
+  const pathContext = createProjectPathContext({ ...pathOptions, sourceKind: CLAUDE_SOURCE_KIND, sourceHome: claudeHome });
+  const selection = projectSelection(repoRoot, undefined, pathOptions.projectPathSemantics);
+  const projectFields = { ...projectContextIndexFields(pathContext, selection.path), projectPath: selection };
+  const resolvedRepo = selection.path;
+  const resolvedClaude = pathContext.sourceHome;
+  if (previousIndex?.projectPathContext !== pathContext.serialized) previousIndex = null;
+  const diagnostics = createSourceDiagnostics();
+  const onDiagnostic = (value) => { diagnostics.add(value); observeDiagnostic?.(value); };
   const started = Date.now();
   throwIfAborted(signal);
   emitProgress(onProgress, {
@@ -2444,6 +2517,7 @@ async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, prev
   });
 
   const discovery = await discoverMainCandidates(resolvedClaude);
+  const projectPathScopeRoot = projectScopeRootFor(discovery, resolvedClaude);
   const inspected = [];
   for (const candidate of discovery.candidates) {
     throwIfAborted(signal);
@@ -2464,13 +2538,14 @@ async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, prev
 
   const identityResolution = resolvePrimaryIdentityCandidates(inspected);
   const identityCandidates = identityResolution.accepted;
-  const clusters = containerCwdClusters(identityCandidates);
+  unsupportedClaudeDiagnostics(identityResolution.unsupported, onDiagnostic);
+  const clusters = containerCwdClusters(identityCandidates, pathContext, projectPathScopeRoot, onDiagnostic);
   const candidates = identityCandidates
     .map((candidate) => ({
       ...candidate,
-      projectAssociation: candidateProjectAssociation(candidate, resolvedRepo, clusters),
+      projectAssociation: candidateProjectAssociation(candidate, resolvedRepo, clusters, pathContext, projectPathScopeRoot),
     }))
-    .filter((candidate) => candidate.projectAssociation || candidate.cwdSet.size === 0)
+    .filter((candidate) => candidate.projectAssociation || (candidate.cwdSet.size === 0 && !candidate.invalidCwdEvidence))
     .map((candidate) => ({
       ...candidate,
       projectAssociation: candidate.projectAssociation || POINTER_PROVISIONAL_ASSOCIATION,
@@ -2481,7 +2556,8 @@ async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, prev
   const selectedCandidateBytes = selectedCandidates.reduce((sum, item) => sum + item.bytes, 0);
   const currentRelationshipEvidence = relationshipReuseEvidence(candidates);
   const skippedFileCount = identityResolution.unsupported.length + identityCandidates.filter((candidate) => (
-    candidate.cwdSet.size && !candidateProjectAssociation(candidate, resolvedRepo, clusters)
+    (candidate.cwdSet.size || candidate.invalidCwdEvidence)
+      && !candidateProjectAssociation(candidate, resolvedRepo, clusters, pathContext, projectPathScopeRoot)
   )).length;
   let unknownFileCount = inspected.length - selectedCandidates.length - skippedFileCount;
   const sessions = [];
@@ -2527,6 +2603,8 @@ async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, prev
     const isPointerProvisional = candidate.projectAssociation === POINTER_PROVISIONAL_ASSOCIATION;
     const mainContext = {
       repoRoot: resolvedRepo,
+      projectPathContext: pathContext.serialized,
+      projectPathScopeRoot,
       signal,
       matchesRepo: !isPointerProvisional,
       projectAssociation: candidate.projectAssociation,
@@ -2582,6 +2660,8 @@ async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, prev
       const derivedContext = {
         ...derived.context,
         repoRoot: resolvedRepo,
+        projectPathContext: pathContext.serialized,
+        projectPathScopeRoot,
         signal,
       };
       const derivedKey = `${derived.candidate.relFile}\u0000${derived.context.id}`;
@@ -2670,6 +2750,8 @@ async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, prev
   });
 
   return {
+    ...projectFields,
+    projectPathScopeRoot,
     sourceKind: CLAUDE_SOURCE_KIND,
     sourceHome: resolvedClaude,
     sourceRoot: discovery.sourceRoot,
@@ -2677,7 +2759,7 @@ async function buildClaudeIndex({ repoRoot, claudeHome, onProgress, signal, prev
     projectsRoot: discovery.projectsRoot,
     repoRoot: resolvedRepo,
     generatedAt: new Date().toISOString(),
-    sourceDiagnostics: unsupportedClaudeDiagnostics(identityResolution.unsupported),
+    sourceDiagnostics: diagnostics.summary,
     sessions: retainedSessions,
     sessionsById,
     eventKinds: eventKindCatalog(retainedSessions),
@@ -2798,6 +2880,8 @@ async function materializeClaudeSession({ materializationContext, indexedSession
   };
   const context = {
     ...claudeParseContextFromIndexed(indexedSession, descriptor, index.repoRoot, signal),
+    projectPathContext: index.projectPathContext,
+    projectPathScopeRoot: index.projectPathScopeRoot,
     materialization: true,
     acceptedSourceSnapshot: {
       acceptedBytes: sourceEntry.acceptedBytes,

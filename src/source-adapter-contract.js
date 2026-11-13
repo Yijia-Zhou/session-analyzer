@@ -150,7 +150,7 @@ function validateMaterializationContextFields(value, kind) {
   if (value.length > 16) {
     throw adapterContractError(`adapter ${kind}.materializationContextFields must contain at most 16 entries`);
   }
-  const reserved = new Set(['sourceKind', 'repoRoot']);
+  const reserved = new Set(['sourceKind', 'repoRoot', 'projectPathContext', 'projectPathScopeRoot']);
   const seen = new Set();
   for (const field of value) {
     requireNonEmptyString(field, `adapter ${kind}.materializationContextFields entry`);

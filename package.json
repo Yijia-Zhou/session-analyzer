@@ -134,6 +134,7 @@
     "THIRD_PARTY_NOTICES.md",
     "LICENSE",
     "src/project-query-disk.js",
+    "src/project-path-context.js",
     "src/search-text-stream.js",
     "src/plain-value-stream.js",
     "src/search-json.js",

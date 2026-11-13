@@ -163,6 +163,8 @@ test('formatHelp returns the exact public help without terminal output or traili
     "  --pi-home <path>       pi agent directory containing sessions/. Used only with --source pi. Defaults to PI_CODING_AGENT_DIR or ~/.pi/agent.",
     "  --opencode-home <path> OpenCode data directory or SQLite database. Used only with --source opencode. Defaults to OPENCODE_DB or the OpenCode XDG data directory.",
     "  --workbuddy-home <path> WorkBuddy / CodeBuddy config root containing projects/. Used only with --source workbuddy. Defaults to CODEBUDDY_CONFIG_DIR or ~/.codebuddy.",
+    "  --path-config <file>   Analyzer sourceConfigs JSON with home and scoped projectPathRules. Configured homes take precedence over home flags; relative homes use the file directory.",
+    "  --project-path-semantics <windows|posix> Explicit interpretation of --repo only; historical cwd interpretation uses scoped path rules.",
     "  --port <port>          Local server port. Must be an integer from 1 to 65535. Defaults to 17890.",
     "  --host <host>          Advanced: bind host. Defaults to 127.0.0.1.",
     "  --log-dir <path>       Write throttled indexing diagnostics as bounded JSONL logs.",
