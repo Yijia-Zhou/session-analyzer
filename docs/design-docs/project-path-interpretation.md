@@ -1,6 +1,6 @@
 # Project path interpretation / 项目路径解释
 
-Status: implementation in progress on base `64f5b3ab351c3be6840396ddb1e8194ab102b4dc`; cross-platform acceptance is not yet complete. / 状态：基于所列提交实施中；跨平台验收尚未完成。
+Status: local cross-platform acceptance completed on 2026-11-13 for production candidate `e09575700cf5191fbdc4fc613173650a9a54e2f7`, based on `64f5b3ab351c3be6840396ddb1e8194ab102b4dc`. Not merged or published; no CI evidence. / 状态：基于所列基线的生产候选已于 2026-11-13 完成双平台本地验收；尚未合并或发布，无 CI 证据。
 
 ## Contract / 契约
 
@@ -41,4 +41,4 @@ Claude clusters retain unsupported/conflicting cwd evidence as inference blocker
 
 All regression inputs are synthetic. Pure lexical tests do not establish physical filesystem behavior. Linux acceptance separately creates case-distinct paths, literal-backslash names and symlink boundaries; Windows acceptance must use a complete candidate checkout with native localhost UNC and junctions. Remote SMB/DFS/NAS, Windows symlinks and case-sensitive Windows directories are not newly promised. / 回归输入全部为合成数据；纯词法测试不证明物理文件系统行为。Linux 单独创建大小写不同路径、字面反斜杠名称及 symlink 边界；Windows 需完整候选 checkout 上的原生 localhost UNC 与 junction 实测。不新增远端 SMB／DFS／NAS、Windows symlink 及大小写敏感 Windows 目录的支持承诺。
 
-The [active plan](../exec-plans/active/2026-11-12-project-path-interpretation.md) tracks failed target assertions, implementation, native evidence and outstanding gates. / [执行计划](../exec-plans/active/2026-11-12-project-path-interpretation.md)记录失败目标断言、实施、原生依据及未完成门槛。
+The [completed plan](../exec-plans/completed/2026-11-12-project-path-interpretation.md) records failed target assertions, implementation, independent reviews, final same-candidate native evidence and support limits. / [已完成计划](../exec-plans/completed/2026-11-12-project-path-interpretation.md)记录失败目标断言、实施、独立审查、最终同候选原生依据及支持边界。
