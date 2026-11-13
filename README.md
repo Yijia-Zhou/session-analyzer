@@ -133,6 +133,8 @@ npm run dev -- --source qoder --repo /path/to/project --qoder-home /path/to/.qod
 
 The root contains `projects/` and defaults to `~/.qoder-cn`. Native messages, thinking, tool results, child Sessions and saved inline images are readable through the existing views. This is source-checkout functionality; see [coverage and real-case gaps](docs/design-docs/qoder-native-sessions.md).
 
+Optionally add `--qoder-desktop-db /path/to/main.sqlite` for verified desktop session titles; the History CLI accepts the same flag. Explicit JSONL custom titles retain priority, and desktop renames appear after project reindex. Missing or unsupported metadata preserves native reading with diagnostics; the database location is never guessed.
+
 ## Native WorkBuddy / CodeBuddy sessions in this checkout
 
 After [source setup](docs/development.md), run:

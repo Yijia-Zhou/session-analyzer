@@ -173,7 +173,7 @@ function summarize(session) {
   return session;
 }
 
-function makeQoderSession(document, sourceFile) {
+function makeQoderSession(document, sourceFile, desktopTitle) {
   const session = { id: `qoder:${identityPart(sourceFile)}`, sourceKind: 'qoder', sourceSessionId: document.id,
     sourceDerivedId: '', sourceClientVersion: '', projectAssociation: document.cwd, sourceFile, title: '', agentNickname: '',
     primarySessionMetaKind: '', derivedRunId: '', startedAt: '', updatedAt: '', bytes: document.acceptedBytes, lineCount: document.lines.length,
@@ -363,7 +363,7 @@ function makeQoderSession(document, sourceFile) {
     }
   }
   const title = rows.findLast((row) => row.type === 'custom-title' && string(row.customTitle).trim());
-  session.title = preview(title?.customTitle || session.title) || `Qoder session ${document.id}`;
+  session.title = preview(title?.customTitle || desktopTitle?.title || session.title) || `Qoder session ${document.id}`;
   return summarize(session);
 }
 

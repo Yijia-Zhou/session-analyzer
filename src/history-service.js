@@ -84,6 +84,10 @@ async function createHistoryService(options = {}) {
     fail('INVALID_PROJECT_PATH_POLICY', 'Configured source home must be a non-empty string.');
   }
   const sourceHome = path.resolve(configured?.home || options[adapter.homeOption] || adapter.defaultHome());
+  const desktopDb = adapter.kind === 'qoder' ? configured?.desktopDb ?? options.qoderDesktopDb : undefined;
+  if (desktopDb !== undefined && (typeof desktopDb !== 'string' || desktopDb.includes('\0') || (desktopDb && !desktopDb.trim()))) {
+    fail('INVALID_ARGUMENT', 'Qoder desktop database must be a path or an empty string to disable titles.');
+  }
   const projectPathContext = createProjectPathContext({ sourceKind: adapter.kind, sourceHome, sourceConfigs });
   const projectPath = projectSelection(options.repo, process.cwd(), options.projectPathSemantics);
   const diagnostics = createSourceDiagnostics();
@@ -91,6 +95,7 @@ async function createHistoryService(options = {}) {
   const indexStartedAt = new Date().toISOString();
   const index = await withIndexResourceBuildScope(() => withQueryStoreBuildScope(async () => {
     const candidate = await adapter.buildIndex({ repoRoot: projectPath.path, sourceHome, sourceConfigs,
+      qoderDesktopDb: desktopDb,
       projectPathContext: projectPathContext.serialized,
       onDiagnostic: (entry) => diagnostics.add(entry) });
     if ((candidate.projectPathContext !== undefined && candidate.projectPathContext !== projectPathContext.serialized)
@@ -688,7 +693,8 @@ async function createHistoryService(options = {}) {
       if (closed) fail('CONTEXT_EXPIRED', 'The retrieval service is closed');
       return require('../server').createServer(index, 0, {
         [adapter.homeOption]: sourceHome, sessionPrewarm: false,
-        sourceConfigs: { ...sourceConfigs, [adapter.kind]: { home: sourceHome,
+        sourceConfigs: { ...sourceConfigs, [adapter.kind]: { ...configured, home: sourceHome,
+          ...(desktopDb !== undefined ? { desktopDb: desktopDb ? path.resolve(desktopDb) : '' } : {}),
           projectPathRules: projectPathContext.rules.map((rule) => ({ ...rule })) } },
         historyViewer: { resolve: (value) => run(resolveEvidence, [{ refs: [value] }]) },
       });

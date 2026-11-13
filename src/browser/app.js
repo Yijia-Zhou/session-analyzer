@@ -3448,7 +3448,9 @@ function sourceConfigForHome(kind, home) {
   const rules = current && projectPathHomeKey(current.home) === projectPathHomeKey(home)
     && Object.hasOwn(current, 'projectPathRules') ? structuredClone(current.projectPathRules)
     : rememberedProjectPathRules(kind, home);
-  return { home, ...(rules === undefined ? {} : { projectPathRules: rules }) };
+  const desktopDb = kind === 'qoder' && current && projectPathHomeKey(current.home) === projectPathHomeKey(home)
+    ? current.desktopDb : undefined;
+  return { home, ...(desktopDb ? { desktopDb } : {}), ...(rules === undefined ? {} : { projectPathRules: rules }) };
 }
 
 function persistProjectPathRules() {
@@ -3550,6 +3552,8 @@ function applySourceConfig(payload) {
       || (canonicalSourceConfigs && Object.hasOwn(canonicalSourceConfigs, kind));
     if (hasExplicitCanonicalEntry) {
       if (home) nextSourceConfigs[kind] = { home,
+        ...(kind === 'qoder' && typeof canonicalSourceConfigs[kind].desktopDb === 'string'
+          ? { desktopDb: canonicalSourceConfigs[kind].desktopDb } : {}),
         ...(Object.hasOwn(canonicalSourceConfigs[kind], 'projectPathRules')
           ? { projectPathRules: structuredClone(canonicalSourceConfigs[kind].projectPathRules) } : {}) };
       else delete nextSourceConfigs[kind];

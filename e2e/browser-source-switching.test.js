@@ -136,7 +136,15 @@ test('browser chooser selects Qoder and reads native message Detail and Raw', as
   await fsp.mkdir(project, { recursive: true });
   await fsp.mkdir(directory, { recursive: true });
   await fsp.writeFile(path.join(directory, 'qoder-browser.jsonl'), JSON.stringify(record) + '\n');
-  const { page } = await openSourceSwitchChooser(t, { server: { qoderHome: home } });
+  const { DatabaseSync } = require('node:sqlite');
+  const desktopDb = path.join(home, 'desktop.sqlite');
+  const db = new DatabaseSync(desktopDb);
+  db.exec(`CREATE TABLE chat_sessions(session_id TEXT PRIMARY KEY, cwd TEXT, title TEXT, extra_json TEXT,
+    conversation_mode TEXT, execution_kind TEXT, deleted_at TEXT, session_kind TEXT DEFAULT 'standard')`);
+  db.prepare("INSERT INTO chat_sessions(session_id,cwd,title,extra_json,conversation_mode,execution_kind) VALUES(?,?,?,'{}','normal','local')")
+    .run('qoder-browser', project, 'Qoder desktop title');
+  db.close();
+  const { page, baseUrl } = await openSourceSwitchChooser(t, { server: { qoderHome: home, qoderDesktopDb: desktopDb } });
   await waitForProjectRoot(page, repoRoot);
   await page.locator('[data-source-choice="qoder"]').click();
   await confirmSourceAction(page, 'Confirm switch to Qoder');
@@ -151,6 +159,24 @@ test('browser chooser selects Qoder and reads native message Detail and Raw', as
   await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('qoder-browser-user'));
   assert.match(await page.locator('#detail .rawRefsView').innerText(), /"type":\s*"user"/);
   assert.ok((await page.locator('#detail .rawRefsView').innerText()).includes(text));
+  assert.ok((await page.locator('#sessionList').innerText()).includes('Qoder desktop title'));
+  const writer = new DatabaseSync(desktopDb);
+  writer.prepare('UPDATE chat_sessions SET title = ?').run('Qoder renamed title'); writer.close();
+  assert.ok((await page.locator('#sessionList').innerText()).includes('Qoder desktop title'));
+  await page.locator('#projectRefreshBtn').click();
+  await page.waitForFunction(() => document.querySelector('#sessionList')?.textContent.includes('Qoder renamed title'));
+  const state = await (await fetch(baseUrl + '/api/state')).json();
+  assert.equal(state.sourceConfigs.qoder.desktopDb, desktopDb);
+  await page.locator('#projectSwitchControl').click();
+  await page.locator('[data-source-choice="codex"]').click();
+  await confirmSourceAction(page, 'Confirm switch to Codex');
+  await waitForProjectRoot(page, repoRoot);
+  await page.locator('[data-source-choice="qoder"]').click();
+  await confirmSourceAction(page, 'Confirm switch to Qoder');
+  await waitForProjectRoot(page, project);
+  await page.locator('.projectItem[data-project-root]').filter({ hasText: project }).click();
+  await page.waitForFunction(() => document.querySelector('#sessionList')?.textContent.includes('Qoder renamed title'));
+
 });
 
 test('browser source replacement preserves the remembered Main Trajectory presentation without stale event ownership', async (t) => {

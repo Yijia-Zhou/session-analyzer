@@ -386,21 +386,26 @@ function cloneSourceConfigs(sourceConfigs = {}) {
     const adapter = requireSourceAdapter(kind);
     const configured = sourceConfigEntryHome(configuredSourceConfigs, kind);
     const home = configured ?? adapter.defaultHome();
-    result[kind] = normalizedSourceConfig(configuredSourceConfigs[kind], home);
+    result[kind] = normalizedSourceConfig(configuredSourceConfigs[kind], home, undefined, kind);
   }
   return result;
 }
 
-function normalizedSourceConfig(config, home, previous) {
+function normalizedSourceConfig(config, home, previous, kind) {
   const resolvedHome = path.resolve(home);
   const sameHome = previous && nativeScopePath(previous.home) === nativeScopePath(resolvedHome);
   const configuredHome = sameHome ? previous.home : resolvedHome;
-  if (config && Object.keys(config).some((key) => !['home', 'projectPathRules'].includes(key))) {
+  if (config && Object.keys(config).some((key) => !['home', 'projectPathRules', ...(kind === 'qoder' ? ['desktopDb'] : [])].includes(key))) {
     throw invalidSourceConfigError('Source configuration');
   }
   const rules = config && Object.hasOwn(config, 'projectPathRules') ? config.projectPathRules
     : (sameHome ? previous.projectPathRules : undefined);
-  return { home: configuredHome, ...(rules !== undefined
+  const desktopDb = kind === 'qoder' ? (config && Object.hasOwn(config, 'desktopDb')
+    ? config.desktopDb : sameHome ? previous.desktopDb : undefined) : undefined;
+  if (desktopDb !== undefined && (typeof desktopDb !== 'string' || desktopDb.includes('\0') || (desktopDb && !desktopDb.trim()))) {
+    throw Object.assign(new Error('qoder.desktopDb must be a database path or an empty string to disable titles.'), { code: 'INVALID_SOURCE_CONFIG' });
+  }
+  return { home: configuredHome, ...(desktopDb ? { desktopDb: path.resolve(desktopDb) } : {}), ...(rules !== undefined
     ? { projectPathRules: normalizeProjectPathRules(rules, configuredHome) } : {}) };
 }
 
@@ -445,7 +450,9 @@ function createInitialSourceConfigs(initialIndex, options, sourceKind) {
         home = initialIndex?.sourceHome || options.sourceHome || home;
       }
     }
-    result[kind] = normalizedSourceConfig(canonicalSourceConfigs?.[kind], home);
+    const config = { ...canonicalSourceConfigs?.[kind] };
+    if (kind === 'qoder' && !Object.hasOwn(config, 'desktopDb') && options.qoderDesktopDb !== undefined) config.desktopDb = options.qoderDesktopDb;
+    result[kind] = normalizedSourceConfig(config, home, undefined, kind);
   }
   return result;
 }
@@ -580,7 +587,7 @@ function resolveSourceMutation(state, body) {
           continue;
         }
         try {
-          nextSourceConfigs[kind] = normalizedSourceConfig(config, config.home, currentSourceConfigs[kind]);
+          nextSourceConfigs[kind] = normalizedSourceConfig(config, config.home, currentSourceConfigs[kind], kind);
         } catch (error) {
           errors.push(`${kind}: ${error.message}`);
         }
@@ -594,7 +601,7 @@ function resolveSourceMutation(state, body) {
       if (nextHome === null) {
         errors.push(`${adapter.homeOption} must be a non-empty string when provided.`);
       } else {
-        nextSourceConfigs[kind] = normalizedSourceConfig({ home: nextHome }, nextHome, currentSourceConfigs[kind]);
+        nextSourceConfigs[kind] = normalizedSourceConfig({ home: nextHome }, nextHome, currentSourceConfigs[kind], kind);
       }
     }
   } else {
@@ -605,14 +612,16 @@ function resolveSourceMutation(state, body) {
       if (nextHome === null) {
         errors.push(`${adapter.homeOption} must be a non-empty string when provided.`);
       } else {
-        nextSourceConfigs[kind] = normalizedSourceConfig({ home: nextHome }, nextHome, currentSourceConfigs[kind]);
+        nextSourceConfigs[kind] = normalizedSourceConfig({ home: nextHome }, nextHome, currentSourceConfigs[kind], kind);
       }
     }
   }
   if (errors.length > 0) return { errors };
 
   const nextSourceKind = normalizeSourceKind(rawSource);
+  const desktopTitlesChanged = nextSourceConfigs.qoder?.desktopDb !== currentSourceConfigs.qoder?.desktopDb;
   const configChanged = nextSourceKind !== state.sourceKind
+    || desktopTitlesChanged
     || supportedKinds.some((kind) => Object.hasOwn(nextSourceConfigs[kind], 'projectPathRules')
       !== Object.hasOwn(currentSourceConfigs[kind], 'projectPathRules'))
     || supportedKinds.some((kind) => (
@@ -623,6 +632,7 @@ function resolveSourceMutation(state, body) {
   if (configChanged) {
     const nextActiveHome = activeSourceHome(state, nextSourceKind, nextSourceConfigs);
     const activeIdentityChanged = nextSourceKind !== state.sourceKind
+      || (nextSourceKind === 'qoder' && desktopTitlesChanged)
       || normalizeFsPath(nextActiveHome) !== normalizeFsPath(activeSourceHome(state, state.sourceKind, currentSourceConfigs))
       || activeProjectPathContext(state, nextSourceConfigs, nextSourceKind).digest
         !== activeProjectPathContext(state, currentSourceConfigs).digest;
@@ -1437,6 +1447,7 @@ async function main() {
     opencodeHome: opts.opencodeHome,
     workbuddyHome: opts.workbuddyHome,
     qoderHome: opts.qoderHome,
+    qoderDesktopDb: opts.qoderDesktopDb,
     repo: opts.repo,
     projectPathSemantics: opts.projectPathSemantics,
     ...(sourceConfigs ? { sourceConfigs } : {}),
