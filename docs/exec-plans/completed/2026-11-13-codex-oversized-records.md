@@ -2,9 +2,9 @@
 
 ## Status and baseline / 状态与基线
 
-Root cause reproduced on 2026-11-13 at `9e352ad1f0ed79785ad3980818d73d9e4fc5d086`, Node `24.22.2`, Linux. Investigation and remediation plan only; no runtime fix has been implemented. / 2026-11-13 在所列提交、Node 24.22.2 和 Linux 环境复现根因；本文件记录调查及修复方案，尚未实现运行时修复。
+Root cause reproduced on 2026-11-13 at `9e352ad1f0ed79785ad3980818d73d9e4fc5d086`, Node `24.22.2`, Linux. Implementation and local validation are complete; remote CI is not yet evidence. / 2026-11-13 在所列提交、Node 24.22.2 和 Linux 环境复现根因；实现与本地验证已完成，远程 CI 尚不能作为依据。
 
-Related work: [optional Qoder titles](2026-11-13-qoder-desktop-titles.md). The crash occurs in existing Codex discovery, independently of Qoder title metadata or SQLite reads. / 相关工作为所链 Qoder 可选标题方案；本次崩溃发生在既有 Codex 项目发现路径，与 Qoder 标题元数据或 SQLite 读取无关。
+Related work: [optional Qoder titles](../active/2026-11-13-qoder-desktop-titles.md). The crash occurs in existing Codex discovery, independently of Qoder title metadata or SQLite reads. / 相关工作为所链 Qoder 可选标题方案；本次崩溃发生在既有 Codex 项目发现路径，与 Qoder 标题元数据或 SQLite 读取无关。
 
 ## Reproduced cause / 已复现原因
 
@@ -41,3 +41,8 @@ An isolated invocation of the unchanged public `discoverProjects({ codexHome })`
 ## Progress / 进度
 
 - 2026-11-13: Original crash stack captured; physical line lengths and decoded character counts measured read-only; one-call process reproduction matched the original stack. Runtime changes, capacity regressions, browser acceptance and CI remain unperformed. / 已取得原崩溃堆栈，只读测量物理行长度及解码字符数，单次调用的进程复现与原堆栈一致；尚未执行运行时修改、容量回归、浏览器验收及 CI。
+
+- Implementation: all five Codex line consumers use a 64 MiB decoded-record bound; initial parsing isolates oversized candidates. Source opening is lazy to preserve cancellation before consumption. Project discovery now cancels on request disconnect/source retirement and releases controllers/listeners. / 实现：五处 Codex 行读取统一使用 64 MiB 解码记录限制，初始解析隔离超限候选；延迟打开源流以保持首次消费前取消语义。项目发现支持请求断开／来源退休取消并释放控制器及监听。
+- Local validation: 2,426 Node tests, 2,425 passed and one platform skip; 49 source-switch browser tests passed. The first full run exposed a cancellation-before-consumption regression; lazy source opening fixed it, focused regressions and the subsequent complete suite passed. / 本地验证：Node 共 2,426 项，2,425 通过、一项平台跳过；49 项来源切换浏览器测试通过。首次全量发现首次消费前取消的回归，已通过延迟打开源流修复，聚焦与随后完整套件通过。
+- Real read-only replay: discovery completed in 1.475 seconds, returned seven projects and one `CODEX_ROLLOUT_RECORD_TOO_LARGE` diagnostic; the problematic artifact's device/inode/size/mtime/ctime were unchanged. RSS sampled after completion was 113,827,840 bytes; this is not a peak-RSS comparison. / 真实只读回放：项目发现 1.475 秒完成，返回七个项目及一条超限诊断；问题工件的 device／inode／size／mtime／ctime 未变。完成后采样 RSS 为所列字节数，不作为峰值 RSS 对比。
+- Independent review identity is recorded in the implementation commit. No Windows runtime execution or remote CI success is claimed at local completion. / 独立审查身份记录于实现提交；本地完成时不声称已执行 Windows 运行时验证或远程 CI 通过。

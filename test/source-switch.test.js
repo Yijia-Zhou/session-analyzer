@@ -797,6 +797,57 @@ test('full project discovery does not write the cache when the source changes mi
   assert.equal(state.projectCache, null);
 });
 
+for (const stage of ['configured', 'scanned']) {
+  for (const cause of ['request', 'source']) {
+    test(`${cause} cancellation stops ${stage} project discovery and releases its controller`, async () => {
+      let entered;
+      const started = new Promise((resolve) => { entered = resolve; });
+      let capturedSignal;
+      const pendingRead = ({ signal }) => new Promise((resolve, reject) => {
+        capturedSignal = signal;
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        entered();
+      });
+      const state = {
+        sourceRevision: 0, sourceKind: 'codex', projectCache: null,
+        sourceConfigs: { codex: { home: path.resolve('/codex-home') } },
+        adapter: {
+          discoverConfiguredProjects: stage === 'configured' ? pendingRead : async () => [],
+          discoverProjects: stage === 'scanned' ? pendingRead : async () => [],
+        },
+      };
+      const request = new AbortController();
+      const pending = discoverProjectsForSource(state, 'full', { signal: request.signal });
+      await started;
+      assert.equal(state.projectDiscoveries.size, 1);
+      if (cause === 'request') {
+        request.abort();
+        await assert.rejects(pending, { name: 'AbortError' });
+      } else {
+        const mutation = resolveSourceMutation(state, { source: 'claude-code' });
+        assert.deepEqual(mutation.errors, []);
+        assert.equal((await pending).stale, true);
+      }
+      assert.equal(capturedSignal.aborted, true);
+      assert.equal(state.projectDiscoveries.size, 0);
+      assert.equal(state.projectCache, null);
+    });
+  }
+}
+
+test('completed project discovery removes request abort listeners and allows later requests', async () => {
+  const { getEventListeners } = require('node:events');
+  const request = new AbortController();
+  const state = { sourceRevision: 0, sourceKind: 'codex', projectCache: null,
+    sourceConfigs: { codex: { home: path.resolve('/codex-home') } },
+    adapter: { discoverConfiguredProjects: async () => [], discoverProjects: async () => [] } };
+  for (let i = 0; i < 20; i += 1) {
+    assert.equal((await discoverProjectsForSource(state, 'full', { signal: request.signal })).stale, false);
+    assert.equal(state.projectDiscoveries.size, 0);
+    assert.equal(getEventListeners(request.signal, 'abort').length, 0);
+  }
+});
+
 test('WorkBuddy config selection, project discovery, and shared lazy read routes preserve source ownership', async (t) => {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-workbuddy-switch-'));
   t.after(() => fsp.rm(home, { recursive: true, force: true }));

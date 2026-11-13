@@ -69,4 +69,4 @@ Expected maintenance is one optional schema reader plus configuration and snapsh
 
 ## Progress / 进度
 
-- 2026-11-13: Read-only title/SQLite inventory completed; plan prepared. No title behavior, runtime code or source database was changed. The independently reproduced Codex discovery crash is tracked in [its separate plan](2026-11-13-codex-oversized-records.md) and should be addressed before relying on multi-source browser acceptance. / 完成只读标题／SQLite 盘点并准备方案，未修改标题行为、运行时代码或源数据库。独立复现的 Codex 项目发现崩溃另有计划，应先处理，再开展依赖多来源切换的浏览器验收。
+- 2026-11-13: Read-only title/SQLite inventory completed; plan prepared. No title behavior, runtime code or source database was changed. The independently reproduced Codex discovery crash is tracked in [its separate plan](../completed/2026-11-13-codex-oversized-records.md) and should be addressed before relying on multi-source browser acceptance. / 完成只读标题／SQLite 盘点并准备方案，未修改标题行为、运行时代码或源数据库。独立复现的 Codex 项目发现崩溃另有计划，应先处理，再开展依赖多来源切换的浏览器验收。

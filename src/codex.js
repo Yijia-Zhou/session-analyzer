@@ -18,7 +18,6 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { createProjectPathContext, projectPathFor, projectSelection, projectContextIndexFields, projectPathMatches } = require('./project-path-context');
 const { projectPathContains, sameProjectPath } = require('./shared/project-path');
-const readline = require('node:readline');
 const { performance } = require('node:perf_hooks');
 const { isDeepStrictEqual } = require('node:util');
 const crypto = require('node:crypto');
@@ -1962,10 +1961,8 @@ async function inspectSessionFile(filePath, options = {}) {
   throwIfAborted(signal);
   const descriptor = codexRolloutDescriptor(filePath);
   const stat = await codexRolloutStorage.acquireRolloutStat(descriptor);
-  const stream = descriptor.compression === 'none'
-    ? fs.createReadStream(descriptor.physicalPath, { encoding: 'utf8' })
-    : codexRolloutStorage.createLogicalReadStream(descriptor, { signal });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const stream = codexRolloutStorage.createLogicalReadStream(descriptor, { signal });
+  const lines = codexRolloutStorage.readLogicalLines(stream, { signal });
   const cwdSet = new Set();
   const leadingSessionFacts = createCodexLeadingSessionFacts();
   let historyBase = null;
@@ -1977,7 +1974,7 @@ async function inspectSessionFile(filePath, options = {}) {
     });
   }
   try {
-    for await (const line of rl) {
+    for await (const line of lines) {
       throwIfAborted(signal);
       if (!line.trim()) continue;
       let record = null;
@@ -2001,7 +1998,6 @@ async function inspectSessionFile(filePath, options = {}) {
         if (repoRoot && projectPathMatches(cwd, repoRoot, filePath, options.projectPathContext)) {
           matchedRepo = true;
           if (descriptor.compression === 'none') {
-            rl.close();
             stream.destroy();
             break;
           }
@@ -2009,7 +2005,6 @@ async function inspectSessionFile(filePath, options = {}) {
       }
     }
   } finally {
-    rl.close();
     stream.destroy();
   }
 
@@ -4981,7 +4976,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
     sourceHash.update(chunk);
     if (options.requireCompleteHistoryRows && chunk.length) lastHistoryByte = chunk[chunk.length - 1];
   });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const lines = codexRolloutStorage.readLogicalLines(stream, { signal });
   let lineNumber = 0;
   let terminalSourceGap = false;
   const observeSourcePhases = hasMaterializationObserver();
@@ -4993,7 +4988,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   }
 
   try {
-    for await (const line of rl) {
+    for await (const line of lines) {
       throwIfAborted(signal);
       lineNumber += 1;
       if (!line.trim()) {
@@ -5072,7 +5067,6 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       if (observeSourcePhases) sourceRecordParseMs += performance.now() - recordStartedAt;
     }
   } finally {
-    rl.close();
     stream.destroy();
     if (observeSourcePhases) {
       const sourceStreamMs = performance.now() - sourceStreamStartedAt;
@@ -5432,9 +5426,9 @@ async function scanCodexRelationshipEvidence(
     sourceBytesRead += chunk.length;
     sourceHash.update(chunk);
   });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const lines = codexRolloutStorage.readLogicalLines(stream, { signal });
   try {
-    for await (const line of rl) {
+    for await (const line of lines) {
       throwIfAborted(signal);
       lineNumber += 1;
       if (!line.trim()) continue;
@@ -5507,7 +5501,6 @@ async function scanCodexRelationshipEvidence(
       if (firstRawFacts.length < 2) firstRawFacts.push(compactCodexForkRawFact(raw));
     }
   } finally {
-    rl.close();
     stream.destroy();
   }
 
@@ -6470,7 +6463,8 @@ async function buildIndex({
         captureCacheObservationSeeds: cacheObservationForTests,
       });
       } catch (error) {
-        if (!historyPlans.has(filePath) || !String(error.code || '').startsWith('CODEX_HISTORY_')) throw error;
+        if (error.code !== codexRolloutStorage.CODEX_ROLLOUT_RECORD_TOO_LARGE
+            && (!historyPlans.has(filePath) || !String(error.code || '').startsWith('CODEX_HISTORY_'))) throw error;
         onDiagnostic({ code: error.code, path: relFile, message: error.message });
         unknownFileCount += 1;
         continue;
@@ -6826,48 +6820,49 @@ async function buildSourceBackedIndex({
     const relFile = codexRolloutRelativePath(sessionsRoot, filePath);
     const initiallyDeep = initialDeepFilePaths.has(filePath);
     let result;
-    if (forceFullRelationshipPassForTests === true || initiallyDeep || historyPlans.has(filePath)) {
-      try {
-      result = await parseFullRelationshipCandidate(
-        filePath,
-        relFile,
-        initiallyDeep,
-      );
-      } catch (error) {
-        if (!historyPlans.has(filePath) || !String(error.code || '').startsWith('CODEX_HISTORY_')) throw error;
-        onDiagnostic({ code: error.code, path: relFile, message: error.message });
-        unknownFileCount += 1;
-        continue;
-      }
-    } else {
-      const scanned = await scanCodexRelationshipEvidence(
-        filePath,
-        relFile,
-        resolvedRepo,
-        signal,
-        {
-          projectPathContext: context.serialized,
-          beforeSourceSnapshotVerificationForTests,
-          acceptedLogicalBytes: codexRolloutStorage.compressionForArtifact(filePath) === 'zstd'
-            ? candidateInspections.get(filePath)?.bytes
-            : undefined,
-        },
-      );
-      if (scanned.requiresFullParse) {
+    try {
+      if (forceFullRelationshipPassForTests === true || initiallyDeep || historyPlans.has(filePath)) {
         result = await parseFullRelationshipCandidate(
           filePath,
           relFile,
-          false,
-          scanned.evidence,
+          initiallyDeep,
         );
       } else {
-        result = {
-          evidence: scanned.evidence,
-          planningProjection: scanned.planningProjection,
-          retainForkEvidence: false,
-          mode: 'light',
-        };
+        const scanned = await scanCodexRelationshipEvidence(
+          filePath,
+          relFile,
+          resolvedRepo,
+          signal,
+          {
+            projectPathContext: context.serialized,
+            beforeSourceSnapshotVerificationForTests,
+            acceptedLogicalBytes: codexRolloutStorage.compressionForArtifact(filePath) === 'zstd'
+              ? candidateInspections.get(filePath)?.bytes
+              : undefined,
+          },
+        );
+        if (scanned.requiresFullParse) {
+          result = await parseFullRelationshipCandidate(
+            filePath,
+            relFile,
+            false,
+            scanned.evidence,
+          );
+        } else {
+          result = {
+            evidence: scanned.evidence,
+            planningProjection: scanned.planningProjection,
+            retainForkEvidence: false,
+            mode: 'light',
+          };
+        }
       }
+    } catch (error) {
+      if (error.code !== codexRolloutStorage.CODEX_ROLLOUT_RECORD_TOO_LARGE
+            && (!historyPlans.has(filePath) || !String(error.code || '').startsWith('CODEX_HISTORY_'))) throw error;
+      onDiagnostic({ code: error.code, path: relFile, message: error.message });
+      unknownFileCount += 1;
+      continue;
     }
     relationshipResultsByFile.set(filePath, result);
     acceptedPrefixInspections.set(filePath, result.planningProjection);
@@ -7804,15 +7799,14 @@ async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, opt
       sourceBytesRead += chunk.length;
       sourceHash.update(chunk);
     });
-    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    const lines = codexRolloutStorage.readLogicalLines(stream, { signal });
     const abortScan = () => {
-      rl.close();
       stream.destroy();
     };
     signal?.addEventListener('abort', abortScan, { once: true });
     let current = 0;
     try {
-      for await (const line of rl) {
+      for await (const line of lines) {
         throwIfAborted(signal);
         current += 1;
         options.onSourceLine?.(relFile, current);
@@ -7857,7 +7851,6 @@ async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, opt
       throw error;
     } finally {
       signal?.removeEventListener('abort', abortScan);
-      rl.close();
       stream.destroy();
     }
   }

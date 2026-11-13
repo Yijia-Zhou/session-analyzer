@@ -17,6 +17,10 @@ const { constants: zlibConstants, createZstdDecompress } = require('node:zlib');
 const CODEX_ROLLOUT_STORAGE_INVALID = 'CODEX_ROLLOUT_STORAGE_INVALID';
 const CODEX_ROLLOUT_ZSTD_UNAVAILABLE = 'CODEX_ROLLOUT_ZSTD_UNAVAILABLE';
 const CODEX_ROLLOUT_SOURCE_BUSY = 'CODEX_ROLLOUT_SOURCE_BUSY';
+const CODEX_ROLLOUT_RECORD_TOO_LARGE = 'CODEX_ROLLOUT_RECORD_TOO_LARGE';
+// A decoded record, not a file-size limit. Keep allocation far below V8's
+// string ceiling, including UTF-8 decoding and subsequent JSON parsing.
+const MAX_CODEX_RECORD_BYTES = 64 * 1024 * 1024;
 const CODEX_ROLLOUT_SOURCE_ROOT_NOT_FOUND = 'SOURCE_ROOT_NOT_FOUND';
 const CODEX_ROLLOUT_SOURCE_ROOT_NOT_DIRECTORY = 'SOURCE_ROOT_NOT_DIRECTORY';
 const CODEX_ROLLOUT_SOURCE_UNREADABLE = 'SOURCE_ARTIFACT_UNREADABLE';
@@ -600,12 +604,16 @@ function createLogicalReadStream(descriptorOrPath, options = {}) {
     throw storageError('Codex rollout logical byte bound is invalid');
   }
   const signal = options.signal;
-  const decoded = descriptor.compression === 'zstd'
-    ? createSnapshotReadStream(descriptor, { ...options, decode: () => openDecodedStream(descriptor, options) })
-    : openDecodedStream(descriptor, options);
   const generator = async function* logicalChunks() {
     let remaining = maxBytes;
+    let decoded;
     try {
+      throwIfAborted(signal);
+      // Do not open a source until a consumer is attached. Cancellation may
+      // happen between stream construction and the first iterator request.
+      decoded = descriptor.compression === 'zstd'
+        ? createSnapshotReadStream(descriptor, { ...options, decode: () => openDecodedStream(descriptor, options) })
+        : openDecodedStream(descriptor, options);
       for await (const chunk of decoded) {
         throwIfAborted(signal);
         const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -618,7 +626,7 @@ function createLogicalReadStream(descriptorOrPath, options = {}) {
     } catch (error) {
       throw mapDecoderError(error, descriptor);
     } finally {
-      decoded.destroy();
+      decoded?.destroy();
     }
   };
   return Readable.from(generator());
@@ -647,6 +655,61 @@ async function hashLogicalPrefix(descriptorOrPath, byteLength, signal, options =
   return { bytesRead, fingerprint: hash.digest('base64url') };
 }
 
+async function* readLogicalLines(input, { signal, maxLineBytes = MAX_CODEX_RECORD_BYTES } = {}) {
+  let pieces = [];
+  let bytes = 0;
+  let lineNumber = 1;
+  let skipLf = false;
+  const abort = () => input.destroy(abortError(signal));
+  try {
+    if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes < 1 || maxLineBytes > MAX_CODEX_RECORD_BYTES) {
+      throw new RangeError('Invalid Codex record byte limit');
+    }
+    throwIfAborted(signal);
+    signal?.addEventListener('abort', abort, { once: true });
+    for await (const chunk of input) {
+      throwIfAborted(signal);
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      let start = 0;
+      if (skipLf && buffer.length) {
+        if (buffer[0] === 10) start = 1;
+        skipLf = false;
+      }
+      while (start < buffer.length) {
+        throwIfAborted(signal);
+        const lf = buffer.indexOf(10, start);
+        const cr = buffer.indexOf(13, start);
+        const boundary = lf < 0 ? cr : cr < 0 ? lf : Math.min(lf, cr);
+        const end = boundary < 0 ? buffer.length : boundary;
+        bytes += end - start;
+        if (bytes > maxLineBytes) {
+          throw Object.assign(storageError(
+            `Codex record at line ${lineNumber} exceeds the ${maxLineBytes}-byte decoded record limit.`,
+            CODEX_ROLLOUT_RECORD_TOO_LARGE,
+          ), { statusCode: 413, lineNumber, limitBytes: maxLineBytes, observedBytes: bytes });
+        }
+        if (end > start) pieces.push(buffer.subarray(start, end));
+        if (boundary < 0) break;
+        const line = Buffer.concat(pieces, bytes).toString('utf8');
+        pieces = [];
+        bytes = 0;
+        lineNumber += 1;
+        start = end + 1;
+        if (buffer[end] === 13) {
+          if (start === buffer.length) skipLf = true;
+          else if (buffer[start] === 10) start += 1;
+        }
+        yield line;
+      }
+    }
+    throwIfAborted(signal);
+    if (bytes) yield Buffer.concat(pieces, bytes).toString('utf8');
+  } finally {
+    signal?.removeEventListener('abort', abort);
+    input.destroy();
+  }
+}
+
 async function readLogicalLine(descriptorOrPath, lineNumber, options = {}) {
   if (!Number.isSafeInteger(lineNumber) || lineNumber < 1) return null;
   const signal = options.signal;
@@ -655,36 +718,11 @@ async function readLogicalLine(descriptorOrPath, lineNumber, options = {}) {
     : normalizeArtifactDescriptor(descriptorOrPath?.physicalPath, descriptorOrPath);
   const stream = createLogicalReadStream(descriptor, { signal });
   let current = 0;
-  let line = null;
-  let carry = '';
-  const decoder = new TextDecoder('utf-8');
-  try {
-    for await (const chunk of stream) {
-      throwIfAborted(signal);
-      carry += decoder.decode(chunk, { stream: true });
-      const parts = carry.split('\n');
-      carry = parts.pop() || '';
-      for (const part of parts) {
-        current += 1;
-        const value = part.endsWith('\r') ? part.slice(0, -1) : part;
-        if (current === lineNumber) {
-          line = value;
-          break;
-        }
-      }
-      if (line !== null) break;
-    }
-    if (line === null) {
-      carry += decoder.decode();
-      if (carry.length > 0) {
-        current += 1;
-        if (current === lineNumber) line = carry;
-      }
-    }
-  } finally {
-    stream.destroy();
+  for await (const line of readLogicalLines(stream, options)) {
+    current += 1;
+    if (current === lineNumber) return { line, lineNumber, descriptor };
   }
-  return line === null ? null : { line, lineNumber, descriptor };
+  return null;
 }
 
 function logicalRelativePath(sessionsRoot, descriptorOrPath) {
@@ -699,11 +737,14 @@ function isStorageFailure(error) {
     CODEX_ROLLOUT_STORAGE_INVALID,
     CODEX_ROLLOUT_ZSTD_UNAVAILABLE,
     CODEX_ROLLOUT_SOURCE_BUSY,
+    CODEX_ROLLOUT_RECORD_TOO_LARGE,
     'ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EIO',
   ].includes(error?.code);
 }
 
 module.exports = {
+  CODEX_ROLLOUT_RECORD_TOO_LARGE,
+  MAX_CODEX_RECORD_BYTES,
   CODEX_ROLLOUT_SOURCE_BUSY,
   CODEX_ROLLOUT_SOURCE_ROOT_NOT_DIRECTORY,
   CODEX_ROLLOUT_SOURCE_ROOT_NOT_FOUND,
@@ -725,6 +766,7 @@ module.exports = {
   normalizeArtifactDescriptor,
   openDecodedStream,
   readLogicalLine,
+  readLogicalLines,
   requireBuiltInZstd,
   resolveRolloutArtifact,
   samePhysicalIdentity,

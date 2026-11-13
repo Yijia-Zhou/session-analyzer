@@ -42,6 +42,10 @@ Codex durable `write_stdin` calls have dedicated Main and Detail presentation: o
 
 Reading controls must remain visible and operable without document-level horizontal overflow at desktop widths, including manual fold overrides that expose Reset folds. Project drill-down offers one return action in the center session header (including while loading), plus one in the Inspector when open. Returning preserves the active query, filters, Layer and project cards, restores Project Scope and focuses the originating card. / 桌面宽度下阅读控件必须可见、可操作，且不产生文档级横向溢出，包括手动折叠后显示 Reset folds 的状态。项目下钻在中间 session header 提供一个返回入口（加载期间也可用），Inspector 打开时另有一个。返回保留当前 query、筛选、Layer 与项目卡片，恢复项目范围并聚焦来源卡片。
 
+## Codex record capacity / Codex 单条记录容量
+
+Codex readers accept individual decoded records up to 64 MiB, for both plain and compressed rollouts. Oversized artifacts are excluded from project discovery/indexing with `CODEX_ROLLOUT_RECORD_TOO_LARGE` diagnostics; direct reads fail explicitly rather than returning truncated Raw content. Other readable artifacts remain available, and diagnostic-bearing counts may be incomplete. Project discovery is cancelled when its request disconnects or its source configuration changes. See [record capacity](../design-docs/codex-record-capacity.md) for exact boundaries. / Codex reader 对普通与压缩 rollout 均接纳最大 64 MiB 的单条解码记录；超限工件从项目发现／初始索引中排除并返回所列诊断，直接读取明确失败，不返回截断 Raw。其他可读工件继续可用，存在诊断的计数可能不完整。请求断开或来源配置改变会取消项目发现；精确边界见所链设计。
+
 ## Native Qoder history / 原生 Qoder 历史
 
 This checkout adds `--source qoder`, `--qoder-home <root>` and a **Qoder** source choice. The default root is `~/.qoder-cn`, containing `projects/`; other installations can select their actual root explicitly. Project identity comes from recorded absolute `cwd`, with the shared project-path interpretation policy. / 此 checkout 新增所列参数及 **Qoder** 来源选项。默认根为包含 `projects/` 的 `~/.qoder-cn`；其他安装可显式选择实际根。项目身份来自记录的绝对 cwd，并遵循共享项目路径解释策略。
