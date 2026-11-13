@@ -31,7 +31,8 @@ async function nativeFixture(t) {
   // Synthetic saved Qoder records only; these commands are displayed, never executed.
   const rows = [
     message('user', 'user', null, [text('Inspect the synthetic native Qoder history.')]),
-    message('assistant', 'command-call', 'user', [call('command-1', 'Bash', { command: 'printf QODER_COMMAND_REQUEST' })]),
+    message('assistant', 'reasoning', 'user', [{ type: 'thinking', thinking: 'QODER_REASONING_MARKER' }]),
+    message('assistant', 'command-call', 'reasoning', [call('command-1', 'Bash', { command: 'printf QODER_COMMAND_REQUEST' })]),
     message('user', 'command-result', 'command-call', [result('command-1', 'QODER_COMMAND_OUTPUT')], {
       toolUseResult: { kind: 'completed', exitCode: 0, interrupted: false, stdout: 'QODER_COMMAND_OUTPUT', stderr: '' },
     }),
@@ -66,7 +67,7 @@ async function nativeFixture(t) {
   return { home, repo, originals };
 }
 
-for (const width of [1440, 390]) test(`Qoder native command, diff, saved image and child navigation (${width})`, { timeout: 45000 }, async (t) => {
+for (const width of [1440, 390]) test(`Qoder native labels, command, diff, saved image and child navigation (${width})`, { timeout: 45000 }, async (t) => {
   const fixture = await nativeFixture(t);
   const service = await createHistoryService({ repo: fixture.repo, source: 'qoder', qoderHome: fixture.home });
   t.after(() => service.close());
@@ -94,6 +95,21 @@ for (const width of [1440, 390]) test(`Qoder native command, diff, saved image a
     await page.waitForFunction((marker) => document.querySelector('#timeline article.selected')?.textContent.includes(marker), query);
     return hit;
   };
+
+  const reasoning = await openHit('QODER_REASONING_MARKER');
+  assert.equal(reasoning.kind, 'reasoning');
+  const reasoningLabel = page.locator('#timeline article.selected.kind-reasoning > .eventHeader > .eventKind');
+  assert.equal(await reasoningLabel.innerText(), 'Reasoning');
+  assert.equal(await reasoningLabel.isVisible(), true);
+  await page.locator('#localeSelect').selectOption('zh-CN', { force: true });
+  await page.waitForFunction(() => (
+    document.querySelector('#timeline article.selected.kind-reasoning > .eventHeader > .eventKind')?.textContent === '推理'
+  ));
+  assert.equal(await reasoningLabel.isVisible(), true);
+  await page.locator('#localeSelect').selectOption('en', { force: true });
+  await page.waitForFunction(() => (
+    document.querySelector('#timeline article.selected.kind-reasoning > .eventHeader > .eventKind')?.textContent === 'Reasoning'
+  ));
 
   const command = await openHit('QODER_COMMAND_OUTPUT');
   assert.equal(command.kind, 'command');

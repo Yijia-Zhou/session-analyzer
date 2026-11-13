@@ -248,6 +248,47 @@ function packedIndex(oracle, query) {
   };
 }
 
+test('default logical labels localize empty Main labels and preserve source labels across session and project queries', async () => {
+  const cases = [
+    { kind: 'reasoning', subtype: 'thinking', label: '', expected: ['Reasoning', '推理'] },
+    { kind: 'user_message', label: '', expected: ['User message', '用户消息'] },
+    { kind: 'assistant_message', label: '', expected: ['Assistant message', '助手消息'] },
+    { kind: 'command', label: '', expected: ['Command', '命令'] },
+    { kind: 'reasoning', label: 'Recorded source label', expected: ['Recorded source label', 'Recorded source label'] },
+    { kind: 'other_tool_call', label: 'User message', expected: ['User message', '用户消息'] },
+    { layer: 'protocol', kind: 'protocol', subtype: 'warning', label: '', expected: ['Warning', '警告'] },
+  ];
+  for (const sourceKind of ['qoder', 'pi', 'workbuddy']) {
+    const query = getSourceAdapter(sourceKind).query;
+    const events = cases.map((entry, i) => ({
+      ...logicalEvent(`label-${i}`, { ...entry, preview: `LABEL_MARKER_${i}`, status: 'success' }),
+      sourceKind,
+      label: entry.label,
+    }));
+    const session = completeSession('labels', events);
+    session.sourceKind = sourceKind;
+    for (const raw of session.rawEvents) raw.sourceKind = sourceKind;
+    const oracle = { ...fullIndex([session]), sourceKind };
+    const packed = packedIndex(oracle, query);
+    for (const [localeIndex, locale] of ['en', 'zh-CN'].entries()) {
+      for (const [i, entry] of cases.entries()) {
+        const layer = entry.layer || 'main';
+        const filters = { layer, locale, q: `LABEL_MARKER_${i}` };
+        const expected = entry.expected[localeIndex];
+        const context = `${sourceKind}/${locale}/${events[i].id}`;
+        assert.equal(query.getTimeline(oracle, session, filters).events.find((event) => event.id === events[i].id).label,
+          expected, context);
+        assert.equal(query.getEvent(oracle, session, events[i].id, { layer, locale }).label, expected, context);
+        const fullResult = query.filterSessions(oracle, filters);
+        const packedResult = await query.filterSessions(packed, filters);
+        assert.equal(fullResult.sessions[0].searchMatch.latestEvent.label, expected, context);
+        assert.deepEqual(packedResult, fullResult, context);
+      }
+    }
+    assert.deepEqual(session.logicalEvents.map((event) => event.label), cases.map((entry) => entry.label));
+  }
+});
+
 test('file activity coalesces redundant relative separators and dot segments without merging distinct paths', () => {
   const query = getSourceAdapter('codex').query;
   for (const repoRoot of ['G:\\repo', '/repo']) {
