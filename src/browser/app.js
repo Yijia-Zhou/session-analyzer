@@ -9365,6 +9365,12 @@ function onTimelineUserScrollIntent(event) {
     scroller.scrollTop = scroller.scrollHeight;
   }
   if (!state.searchProgrammaticScroll.active) return;
+  if (!hasUnsupportedModifier && (event.type !== 'wheel' || event.deltaY !== 0)) {
+    // Stop the browser's search animation at the position reached by this
+    // input. Clearing only the guard lets it pull the pane back before the
+    // existing pagination intent can observe the user's downward scroll.
+    scroller.scrollTo({ top: scroller.scrollTop, left: scroller.scrollLeft, behavior: 'instant' });
+  }
   endProgrammaticSearchScrollGuard();
 }
 
