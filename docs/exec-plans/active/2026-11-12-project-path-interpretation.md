@@ -13,7 +13,8 @@ Implement D1–D5 and the P/S/L/F/Q matrix in the user-provided decision, repres
 - [x] Migrate all six applicable source consumers, preserving their admission and physical reader boundaries. / 已迁移六来源适用消费者，保留准入及读取边界。
 - [x] Run Linux native and complete Node/browser/package acceptance with pinned toolchain. / 已用固定工具链完成 Linux 原生及 Node／浏览器／安装包验收。
 - [x] Obtain fresh independent review of the proposed diff and substantive corrections; verify the final content manifest in the handoff before any commit. / 已完成拟议 diff 及实质修订的 fresh 独立审查；任何提交前在交接中核验最终内容清单。
-- [ ] Exchange an identified candidate and collect Windows native results; distinguish expected zero controls from defects. / 交接固定候选并收集 Windows 原生结果，区分预期零会话负例与缺陷。
+- [x] Exchange candidate `f4494a4762cba1853f5bc5f1662527a665a4d809` and cross-review the first Windows native results, keeping its lifecycle failure explicit. / 已交接所列候选并交叉审查首轮 Windows 原生结果，明确保留其生命周期失败。
+- [ ] Repair equivalent native source-home state regression, accept reviewed test portability corrections and deliver a newly identified candidate for Windows revalidation. / 修复本机等价来源根状态回归，接纳已审查的平台测试修正，交付固定新候选供 Windows 复验。
 
 ## Verification record / 验证记录
 
@@ -34,6 +35,12 @@ Synthetic preview HTTP acceptance switches all six sources and verifies 11 Sessi
 Final build/check and installed-package smoke pass. The package is installed into a fresh temporary project; all six source UI and history status/search/context/read/Raw/open chains pass. Browser shared/i18n Node checks also pass 19/19 after the notice correction. / 最终构建／检查及安装包 smoke 通过；包安装到全新临时项目后，六来源 UI 及 history 状态／搜索／上下文／读取／Raw／open 链路均通过。提示文案修正后的浏览器共享／i18n Node 检查另有 19 项全部通过。
 
 Pending: Windows native same-commit acceptance. Local candidate commit authorization was received on 2026-11-13; the handoff records the exact SHA, reviewed diff and content verification. No CI has been run for this local-only candidate. Remote SMB, Windows symlinks and case-sensitive directories remain outside new support claims. / 尚待 Windows 原生同提交验收。本地候选提交授权已于 2026-11-13 收到；交接记录精确 SHA、已审查 diff 及内容核验。此仅本地候选未运行 CI。远端 SMB、Windows symlink 和大小写敏感目录不新增支持承诺。
+
+### Windows first-round cross-review / Windows 首轮交叉审查
+
+On 2026-11-13, Windows delivered native results on exact commit `f4494a4`: F01 126 builds, 313 exact Raw calls, 34 unchanged main source files; 40 positive matrix cases each admitted one and four prefix controls admitted zero. Six sources with three home transports, namespace/junction pi reader boundaries, history/pi policy changes, HTTP lifecycle and installed-package reading passed. WSL independently verified all 51 delivered file hashes and recomputed the matrix; these are reviewed Windows executions, not WSL-native Windows reruns or CI. / Windows 于所列日期交付精确提交的原生结果：F01 126 次构建、313 次精确 Raw、34 份主源不变；40 项正例各 1、4 项前缀负例各 0。六来源三种 home 访问形式、namespace／junction 的 pi reader 边界、history／pi 策略变化、HTTP 生命周期及安装包阅读通过。WSL 独立核验交付的 51 文件 hash 并重算矩阵；这些是审阅 Windows 执行证据，不是 WSL 重跑 Windows 或 CI。
+
+The candidate remains rejected: six uppercase source-home edits discarded omitted rules and retired the current index, and one running pi job was cancelled (19 HTTP cases: 12 controls passed, seven targets failed). WSL reproduced two lexical regression assertions before repair. The repair separates native scope identity from physical I/O, preserves equivalent-home configuration/rules and canonicalizes captured/history/pi scope without relaxing actual rule-change invalidation. Eight Windows test-only portability corrections were reviewed and adopted; Return and scheduled-origin rejection assertions remain. Fresh exact-diff review, current local validation and the new Windows candidate results are recorded in the subsequent handoff; this plan stays active until the latter passes. / 该候选仍未通过：六来源改为大写 home 会丢掉省略的规则并退役当前索引，另有一项在途 pi 作业被取消（19 项 HTTP 中 12 对照通过、7 目标失败）。WSL 修复前复现了两项词法失败断言；修复区分本机范围身份与物理 I/O，保留等价 home 配置／规则，统一捕获／history／pi scope，不放宽实际规则变化的失效机制。已审查并接纳八文件 Windows 平台测试修正，保留 Return 和定时来源拒绝断言。fresh 精确 diff 审查、当前本地验证及新 Windows 候选结果记录在后续交接；后者通过前本计划继续 active。
 
 ## Acceptance mapping / 验收映射
 

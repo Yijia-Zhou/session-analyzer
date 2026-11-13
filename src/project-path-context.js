@@ -12,6 +12,14 @@ function invalid(message) {
   return error;
 }
 
+// Identity of an already local configuration locator, using the host's path
+// rules. Never use this for recorded cwd interpretation or physical read access.
+// Keep namespaces and configured symlink aliases; do not resolve realpath here.
+function nativeScopePath(input) {
+  const resolved = path.resolve(input);
+  return path.sep === '\\' ? resolved.toLowerCase() : resolved;
+}
+
 function physicalContains(child, parent) {
   const relative = path.relative(parent, child);
   return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
@@ -53,23 +61,28 @@ function createProjectPathContext(options) {
       || !options.sourceHome || options.sourceHome.includes('\0')) throw invalid('A path context requires an explicit source kind and local source root.');
   const sourceKind = options.sourceKind;
   const sourceHome = path.resolve(options.sourceHome);
+  const sourceHomeIdentity = nativeScopePath(sourceHome);
   const configured = options.sourceConfigs?.[sourceKind];
   let rules = Object.hasOwn(options, 'projectPathRules') ? options.projectPathRules
     : (configured && Object.hasOwn(configured, 'projectPathRules') ? configured.projectPathRules : []);
   if (options.projectPathContext !== undefined) {
     let captured;
     try { captured = JSON.parse(options.projectPathContext); } catch { throw invalid('Invalid captured project path context.'); }
-    if (!captured || captured.version !== PROJECT_PATH_VERSION || captured.sourceKind !== sourceKind || captured.sourceHome !== sourceHome) {
+    if (!captured || captured.version !== PROJECT_PATH_VERSION || captured.sourceKind !== sourceKind || captured.sourceHome !== sourceHomeIdentity) {
       throw invalid('Captured project path context belongs to another source or version.');
     }
     rules = captured.rules;
   }
-  const normalized = normalizeProjectPathRules(rules, sourceHome);
-  const serialized = JSON.stringify({ version: PROJECT_PATH_VERSION, sourceKind, sourceHome, rules: normalized });
+  const identities = new Map(normalizeProjectPathRules(rules, sourceHome).map((rule) => {
+    const canonical = { ...rule, path: nativeScopePath(rule.path) };
+    return [JSON.stringify(canonical), canonical];
+  }));
+  const normalized = [...identities].sort(([a], [b]) => a < b ? -1 : 1).map(([, rule]) => rule);
+  const serialized = JSON.stringify({ version: PROJECT_PATH_VERSION, sourceKind, sourceHome: sourceHomeIdentity, rules: normalized });
   if (options.projectPathContext !== undefined && options.projectPathContext !== serialized) throw invalid('Captured project path context is not canonical.');
   if (Buffer.byteLength(serialized, 'utf8') > 64 * 1024) throw invalid('Project path context is too large.');
   const digest = createHash('sha256').update(serialized).digest('hex');
-  return Object.freeze({ sourceKind, sourceHome, serialized, digest,
+  return Object.freeze({ sourceKind, sourceHome, sourceHomeIdentity, serialized, digest,
     rules: Object.freeze(normalized.map((rule) => Object.freeze(rule))) });
 }
 
@@ -133,4 +146,4 @@ function projectPathMatches(raw, repoRoot, artifact, serialized) {
 }
 
 module.exports = { createProjectPathContext, normalizeProjectPathRules, projectPathFor, projectSelection,
-  projectContextIndexFields, projectPathMatches, physicalContains };
+  projectContextIndexFields, projectPathMatches, physicalContains, nativeScopePath };

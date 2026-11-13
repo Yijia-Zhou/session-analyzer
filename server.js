@@ -40,7 +40,7 @@ const { SESSION_LIFECYCLE } = require('./src/source-adapter-contract');
 const { scheduleBoundedSessionPrewarm } = require('./src/session-prewarm');
 const { isPathInsideOrSame, normalizeFsPath } = require('./src/shared/fs-path');
 const { interpretProjectPath, PROJECT_PATH_VERSION } = require('./src/shared/project-path');
-const { createProjectPathContext, normalizeProjectPathRules, projectSelection } = require('./src/project-path-context');
+const { createProjectPathContext, normalizeProjectPathRules, projectSelection, nativeScopePath } = require('./src/project-path-context');
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
 const { createIndexDiagnostics } = require('./src/runtime-diagnostics');
@@ -393,13 +393,15 @@ function cloneSourceConfigs(sourceConfigs = {}) {
 
 function normalizedSourceConfig(config, home, previous) {
   const resolvedHome = path.resolve(home);
+  const sameHome = previous && nativeScopePath(previous.home) === nativeScopePath(resolvedHome);
+  const configuredHome = sameHome ? previous.home : resolvedHome;
   if (config && Object.keys(config).some((key) => !['home', 'projectPathRules'].includes(key))) {
     throw invalidSourceConfigError('Source configuration');
   }
   const rules = config && Object.hasOwn(config, 'projectPathRules') ? config.projectPathRules
-    : (previous?.home === resolvedHome ? previous.projectPathRules : undefined);
-  return { home: resolvedHome, ...(rules !== undefined
-    ? { projectPathRules: normalizeProjectPathRules(rules, resolvedHome) } : {}) };
+    : (sameHome ? previous.projectPathRules : undefined);
+  return { home: configuredHome, ...(rules !== undefined
+    ? { projectPathRules: normalizeProjectPathRules(rules, configuredHome) } : {}) };
 }
 
 function sourceConfigsFromState(state) {

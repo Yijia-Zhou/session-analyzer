@@ -108,7 +108,7 @@ async function createHistoryService(options = {}) {
   if (sourceObservation) await sourceObservation.bindIndex(index, { startedAt: indexStartedAt, endedAt: indexEndedAt });
   const sourceRoot = index.sourceRoot || sourceHome;
   const sourceRootAccessible = await fs.stat(sourceRoot).then((stat) => stat.isDirectory(), () => false);
-  const scope = digest([projectPath.key, adapter.kind, sourceHome, projectPathContext.digest]);
+  const scope = digest([projectPath.key, adapter.kind, projectPathContext.sourceHomeIdentity, projectPathContext.digest]);
   // Old references did not encode a path policy. Preserve them only where the
   // default, unambiguous interpretation has the same recorded-path meaning.
   // A scoped rule or ambiguous/unsupported recorded cwd cannot acquire this

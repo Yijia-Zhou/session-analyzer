@@ -16,7 +16,6 @@ const forward = '//localhost/synthetic-project/Project';
 const unc = '\\\\localhost\\synthetic-project\\Project';
 async function fixture(t) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'project-path-cli-'));
-  t.after(() => fs.rm(home, { recursive: true, force: true }));
   const originals = new Map();
   for (const [i, cwd] of [forward, unc].entries()) {
     const id = `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`;
@@ -55,6 +54,7 @@ function start(t, f, history = false) {
     const timer = setTimeout(() => child.kill('SIGKILL'), 3000);
     try { await exited; } finally { clearTimeout(timer); }
   });
+  t.after(() => fs.rm(f.home, { recursive: true, force: true }));
   return { child, output: () => output, endpoint: `http://127.0.0.1:${f.port}` };
 }
 async function ready(running, operation) {

@@ -242,6 +242,147 @@ test('changing policy cancels a captured job and prevents its late Index from be
   assert.equal((await fetch(`${base}/api/state`)).status, 409);
 });
 
+test('equivalent native home edits retain committed and running HTTP contexts but explicit rule changes retire them', async (t) => {
+  const f = await fixture(t);
+  const rules = [pathRule()];
+  const equivalent = process.platform === 'win32' ? f.home.toUpperCase() + '\\' : f.home + '/';
+  const calls = [];
+  let release; let entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const capturedGate = new Promise(resolve => { entered = resolve; });
+  t.after(release);
+  const base = await start(t, { source: 'pi', piHome: f.home,
+    sourceConfigs: { pi: { home: f.home, projectPathRules: rules } },
+    buildIndex: async context => {
+      calls.push(context);
+      if (calls.length === 2) { entered(); await gate; }
+      return f.build(context);
+    } });
+  const select = async () => (await (await fetch(`${base}/api/project`, jsonRequest({ repoRoot: f.repo }))).json()).job;
+  const edit = async config => {
+    const response = await fetch(`${base}/api/source`, jsonRequest({ source: 'pi', sourceConfigs: { pi: config } }));
+    assert.equal(response.status, 200); return response.json();
+  };
+  const first = await jobResult(base, (await select()).id);
+  assert.equal(first.job.status, 'succeeded');
+  assert.equal(first.state.totals.sessionCount, 1);
+  const changed = await edit({ home: equivalent });
+  assert.equal(changed.projectSelected, true);
+  assert.equal(changed.sourceConfigs.pi.home, f.home);
+  assert.equal(changed.sourceConfigs.pi.projectPathRules.length, 1);
+  assert.equal(changed.projectPathPolicyId, first.job.projectPathPolicyId);
+  assert.equal((await (await fetch(`${base}/api/state`)).json()).indexRevision, first.state.indexRevision);
+  const running = await select();
+  let timer;
+  try { await Promise.race([capturedGate, new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Build did not reach gate')), 2000);
+  })]); } finally { clearTimeout(timer); }
+  const equalRules = rules.map(rule => ({ ...rule, path: process.platform === 'win32' ? 'SESSIONS' : './sessions' }));
+  const same = await edit({ home: equivalent, projectPathRules: equalRules });
+  assert.equal(same.projectPathPolicyId, first.job.projectPathPolicyId);
+  assert.equal(calls[1].signal.aborted, false);
+  assert.equal(calls[1].projectPathContext, calls[0].projectPathContext);
+  assert.ok(calls[1].previousIndex, 'the prior index remains available for refresh');
+  release();
+  assert.equal((await jobResult(base, running.id)).job.status, 'succeeded');
+  const retired = await edit({ home: equivalent, projectPathRules: [] });
+  assert.equal(retired.projectSelected, false);
+  assert.notEqual(retired.projectPathPolicyId, first.job.projectPathPolicyId);
+  assert.equal((await fetch(`${base}/api/state`)).status, 409);
+  assert.equal(await fs.readFile(f.file, 'utf8'), f.bytes);
+});
+
+test('history and pi references survive equivalent native home spelling without crossing an actual rule change', async (t) => {
+  const f = await fixture(t);
+  const services = [];
+  t.after(async () => { for (const service of services) await service.close(); });
+  const create = async (home, rules) => {
+    const service = await createHistoryService({ source: 'pi', repo: f.repo, sourceConfigs: { pi: { home, projectPathRules: rules } } });
+    services.push(service); return service;
+  };
+  const rules = [pathRule()];
+  const equivalent = process.platform === 'win32' ? f.home.toUpperCase() + '\\' : f.home + '/';
+  const first = await create(f.home, rules);
+  const hit = (await first.execute('search', { query: 'policy-lifecycle-needle' })).items[0];
+  assert.ok(hit);
+  const same = await create(equivalent, rules.map(rule => ({ ...rule,
+    path: path.join(equivalent, process.platform === 'win32' ? 'SESSIONS' : 'sessions') })));
+  const read = await same.execute('read', { refs: [hit.ref] });
+  assert.ok(JSON.stringify(read).includes('policy-lifecycle-needle'));
+  const indexed = await f.build({ projectPathRules: rules });
+  const materialized = await materializeSessionForIndex(indexed, indexed.sessions[0]);
+  const raw = materialized.rawEvents.find(event => event.entryId === 'question');
+  const reference = (await createPiEntryReference(indexed, indexed.sessions[0], raw.rawId, 'raw')).reference;
+  assert.ok(reference);
+  const equalIndex = await f.build({ sourceHome: equivalent, projectPathRules: rules });
+  assert.equal((await resolvePiEntryReference(equalIndex, reference)).status, 'resolved');
+  const changed = await create(equivalent, []);
+  await assert.rejects(changed.execute('read', { refs: [hit.ref] }), { code: 'REFERENCE_SCOPE_MISMATCH' });
+  assert.equal((await resolvePiEntryReference(await f.build(), reference)).status, 'unavailable');
+  assert.equal(await fs.readFile(f.file, 'utf8'), f.bytes);
+});
+
+test('Codex SourceRefs use native home identity while retaining rule and artifact ownership checks', async (t) => {
+  const f = await fixture(t);
+  const file = path.join(f.home, 'sessions', 'rollout-00000000-0000-4000-8000-000000000011.jsonl');
+  const bytes = [
+    { type: 'session_meta', payload: { id: '00000000-0000-4000-8000-000000000011', cwd: f.repo } },
+    { type: 'event_msg', payload: { type: 'user_message', message: 'equivalent-home-source-ref' } },
+  ].map(JSON.stringify).join('\n') + '\n';
+  await fs.writeFile(file, bytes);
+  const services = [];
+  t.after(async () => { for (const service of services) await service.close(); });
+  const create = async (home, projectPathRules) => {
+    const service = await createHistoryService({ source: 'codex', repo: f.repo,
+      sourceConfigs: { codex: { home, projectPathRules } } });
+    services.push(service); return service;
+  };
+  const rules = [pathRule()];
+  const first = await create(f.home, rules);
+  const read = await first.execute('read', { source: { sourcePath: file, locator: { type: 'jsonl-line', line: 2 } } });
+  const request = { source: { sourceRef: read.source.sourceRef, locator: { type: 'jsonl-line', line: 2 } } };
+  const equivalent = process.platform === 'win32' ? f.home.toUpperCase() + '\\' : f.home + '/';
+  const same = await create(equivalent, rules);
+  const reread = await same.execute('read', request);
+  assert.equal(reread.source.sourceRef, read.source.sourceRef);
+  assert.ok(JSON.stringify(reread).includes('equivalent-home-source-ref'));
+  const changed = await create(equivalent, []);
+  await assert.rejects(changed.execute('read', request), { code: 'REFERENCE_SCOPE_MISMATCH' });
+  assert.equal(await fs.readFile(file, 'utf8'), bytes);
+});
+
+test('native Linux case, literal backslash and configured symlink homes retain separate scopes',
+  { skip: process.platform !== 'linux' }, async (t) => {
+    const f = await fixture(t);
+    const homes = [path.join(f.home, 'Source'), path.join(f.home, 'source'),
+      path.join(f.home, 'literal\\Root'), path.join(f.home, 'literal', 'Root')];
+    const identities = [];
+    for (const home of homes) {
+      await fs.mkdir(path.join(home, 'sessions'), { recursive: true });
+      await fs.writeFile(path.join(home, 'sessions', 'one.jsonl'), f.bytes);
+      const stat = await fs.stat(home);
+      identities.push(`${stat.dev}:${stat.ino}`);
+    }
+    assert.equal(new Set(identities).size, 4);
+    const alias = path.join(f.home, 'alias');
+    await fs.symlink(homes[0], alias, 'dir');
+    assert.equal((await fs.stat(alias)).ino, (await fs.stat(homes[0])).ino);
+    homes.push(alias);
+    const indexes = [];
+    for (const home of homes) {
+      const index = await f.build({ sourceHome: home, projectPathRules: [pathRule()] });
+      assert.equal(index.sessions.length, 1);
+      indexes.push(index);
+    }
+    assert.equal(new Set(indexes.map(index => index.projectPathPolicyId)).size, 5);
+    const first = indexes[0];
+    const materialized = await materializeSessionForIndex(first, first.sessions[0]);
+    const raw = materialized.rawEvents.find(event => event.entryId === 'question');
+    const reference = (await createPiEntryReference(first, first.sessions[0], raw.rawId, 'raw')).reference;
+    for (const index of indexes.slice(1)) assert.equal((await resolvePiEntryReference(index, reference)).status, 'unavailable');
+    for (const home of homes) assert.equal(await fs.readFile(path.join(home, 'sessions', 'one.jsonl'), 'utf8'), f.bytes);
+  });
+
 test('committed membership and index reuse retire on policy change while equal contexts can reuse', async (t) => {
   const f = await fixture(t);
   const calls = [];
@@ -377,10 +518,13 @@ test('pre-policy evidence and SourceRefs migrate only in an unambiguous default 
   await assert.rejects(changed.execute('read', { source: { sourceRef: legacySource, locator: { type: 'jsonl-line', line: 2 } } }), { code: 'REFERENCE_SCOPE_MISMATCH' });
   const missingScope = 'er1.' + Buffer.from(JSON.stringify({ ...legacyEnvelope, p: null })).toString('base64url');
   await assert.rejects(changed.execute('read', { refs: [missingScope] }), { code: 'REFERENCE_SCOPE_MISMATCH' });
-  rows[0].payload.cwd = '/' + f.repo;
+  const ambiguousRepo = '/synthetic-policy-reference';
+  rows[0].payload.cwd = '/' + ambiguousRepo;
   await fs.writeFile(file, rows.map(JSON.stringify).join('\n') + '\n');
-  const ambiguous = await createHistoryService(options); services.push(ambiguous);
-  const current = (await ambiguous.execute('search', { query: 'legacy-policy-reference-needle' })).items[0].ref.split('.');
-  current[1] = legacyScope.slice(0, 22);
+  const ambiguous = await createHistoryService({ ...options, repo: ambiguousRepo, projectPathSemantics: 'posix' }); services.push(ambiguous);
+  const ambiguousHits = (await ambiguous.execute('search', { query: 'legacy-policy-reference-needle' })).items;
+  assert.equal(ambiguousHits.length, 1);
+  const current = ambiguousHits[0].ref.split('.');
+  current[1] = digest([ambiguousRepo, 'codex', f.home]).slice(0, 22);
   await assert.rejects(ambiguous.execute('read', { refs: [current.join('.')] }), { code: 'REFERENCE_SCOPE_MISMATCH' });
 });

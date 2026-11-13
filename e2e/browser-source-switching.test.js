@@ -958,8 +958,15 @@ test('browser skips home-change confirmation for path-equivalent inputs', async 
     ? `${fixtureCodexHome.toUpperCase()}\\`
     : `${fixtureCodexHome}/`;
   await page.locator('#projectCodexHomeInput').fill(equivalentHome);
+  const appliedHome = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/source'
+    && response.request().method() === 'POST');
   await page.locator('#projectHomeApplyBtn').click();
-  await page.waitForFunction((value) => document.querySelector('#projectCodexHomeInput')?.value === value, fixtureCodexHome);
+  const response = await appliedHome;
+  assert.equal(response.status(), 200);
+  const effectiveHome = (await response.json()).sourceConfigs.codex.home;
+  assert.equal(process.platform === 'win32' ? effectiveHome.toLowerCase() : effectiveHome,
+    process.platform === 'win32' ? fixtureCodexHome.toLowerCase() : fixtureCodexHome);
+  await page.waitForFunction((value) => document.querySelector('#projectCodexHomeInput')?.value === value, effectiveHome);
   assert.equal(await page.locator('#projectSourceConfirm').isHidden(), true);
   assert.equal(await page.locator('.projectSwitchHint').textContent(), 'Return');
 });
@@ -969,6 +976,9 @@ test('browser treats backslashes as literal characters in POSIX home paths', asy
   let sourcePosts = 0;
   const posixCodexHome = '/home/me/.codex';
   const posixDshHome = '/home/me/.dsh/sessions';
+  const posixHomes = { codex: posixCodexHome, 'claude-code': '/home/me/.claude',
+    'deepseek-harness': posixDshHome, pi: '/home/me/.pi/agent',
+    opencode: '/home/me/.local/share/opencode', workbuddy: '/home/me/.codebuddy' };
   const { page } = await openSourceSwitchChooser(t, {
     server: { claudeHome: fixture.claudeHome },
     localStorage: { 'sessionAnalyzer.repoRoot.codex': repoRoot },
@@ -982,12 +992,13 @@ test('browser treats backslashes as literal characters in POSIX home paths', asy
           codexHome: posixCodexHome,
           claudeHome: '/home/me/.claude',
           dshHome: posixDshHome,
-          sourceConfigs: {
-            ...data.sourceConfigs,
-            codex: { home: posixCodexHome },
-            'claude-code': { home: '/home/me/.claude' },
-            'deepseek-harness': { home: posixDshHome },
-          },
+          piHome: posixHomes.pi,
+          opencodeHome: posixHomes.opencode,
+          workbuddyHome: posixHomes.workbuddy,
+          sourceConfigs: Object.fromEntries(Object.keys(data.sourceConfigs).map((kind) => {
+            assert.ok(posixHomes[kind], `synthetic POSIX home for ${kind}`);
+            return [kind, { home: posixHomes[kind] }];
+          })),
         });
         await route.fulfill({ response, json: data });
       });

@@ -7,7 +7,7 @@ const storage = require('./pi-storage');
 const logical = require('./pi-logical');
 const { nativeStatistics } = require('./pi-native-statistics');
 const { redactEmbeddedDataUrls } = require('./shared/logical-detail-sanitizer');
-const { projectSelection } = require('./project-path-context');
+const { projectSelection, nativeScopePath } = require('./project-path-context');
 
 const PREFIX = 'pi-entry-v1.';
 const MAX_REFERENCE = 8192;
@@ -15,7 +15,7 @@ const MAX_BRANCHES = 100;
 const MAX_LABELS = 50;
 const text = (value, limit = 240) => typeof value === 'string' ? redactEmbeddedDataUrls(value).trim().slice(0, limit) : '';
 const digest = (value) => storage.hash(value);
-const scope = (index) => digest(JSON.stringify([path.resolve(index.sessionsRoot),
+const scope = (index) => digest(JSON.stringify([nativeScopePath(index.sessionsRoot),
   (index.projectPath || projectSelection(index.repoRoot)).key, index.projectPathContext || 'legacy-project-path-context']));
 const contentText = (content) => typeof content === 'string' ? content : Array.isArray(content)
   ? content.filter((block) => block?.type === 'text' && typeof block.text === 'string').map((block) => block.text).join('\n') : '';

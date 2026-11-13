@@ -194,7 +194,7 @@ test('discoverConfiguredProjects reads Codex config project headers', async (t) 
 
   await fsp.writeFile(path.join(codexHome, 'config.toml'), [
     `[projects.'${projectA}']`,
-    `[projects.'\\\\?\\${projectA}'] # duplicate with Windows extended prefix`,
+    `[projects.'\\\\?\\${projectA}'] # independent native Windows namespace`,
     `[projects."${projectB.replace(/\\/g, '\\\\')}"]`,
     `[projects.'${missing}']`,
     '[not_projects.\'ignored\']',
@@ -204,7 +204,16 @@ test('discoverConfiguredProjects reads Codex config project headers', async (t) 
   const projects = await discoverConfiguredProjects({ codexHome });
   const byRoot = new Map(projects.map((project) => [project.repoRoot, project]));
 
-  assert.equal(projects.length, 3);
+  assert.equal(projects.length, process.platform === 'win32' ? 4 : 3);
+  if (process.platform === 'win32') {
+    const ordinary = projects.find(project => project.repoRoot === projectA);
+    const extended = projects.find(project => project.repoRoot === `\\\\?\\${projectA}`);
+    assert.ok(ordinary);
+    assert.ok(extended);
+    assert.equal(ordinary.projectPath.namespace, 'windows-drive');
+    assert.equal(extended.projectPath.namespace, 'windows-extended');
+    assert.notEqual(ordinary.projectPath.key, extended.projectPath.key);
+  }
   assert.equal(byRoot.get(path.resolve(projectA)).exists, true);
   assert.equal(byRoot.get(path.resolve(projectB)).exists, true);
   assert.equal(byRoot.get(path.resolve(missing)).exists, false);

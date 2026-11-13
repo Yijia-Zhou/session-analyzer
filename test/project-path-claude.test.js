@@ -35,7 +35,7 @@ async function fixture(t) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     const text = records.map(JSON.stringify).join('\n') + '\n';
     await fs.writeFile(file, text);
-    originals.set(file, { text, records });
+    originals.set(await fs.realpath(file), { text, records });
     return file;
   }
   const options = (rules = []) => ({ claudeHome, sourceKind, sourceHome: claudeHome,
@@ -137,7 +137,7 @@ test('Claude: aliases within one artifact count one discovered session and aggre
   const projects = await discoverClaudeProjects(f.options(rules));
   assert.equal(projects.length, 1);
   assert.equal(projects[0].sessionCount, 1);
-  assert.equal(projects[0].bytes, Buffer.byteLength(f.originals.get(file).text));
+  assert.equal(projects[0].bytes, Buffer.byteLength(f.originals.get(await fs.realpath(file)).text));
   assert.deepEqual(new Set(projects[0].projectPathEvidence), new Set(['syntax', 'user']));
 });
 

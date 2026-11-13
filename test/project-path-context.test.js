@@ -14,6 +14,98 @@ const home = path.resolve('/synthetic-source');
 const rule = (scope, target, interpretation = 'unc') => ({ scope, path: target, interpretation });
 const capture = (rules = []) => createProjectPathContext({ sourceKind: 'pi', sourceHome: home, projectPathRules: rules });
 
+async function windowsContextModule() {
+  const filename = require.resolve('../src/project-path-context');
+  const localRequire = createRequire(filename);
+  const module = { exports: {} };
+  vm.runInNewContext(await fs.readFile(filename, 'utf8'), { module, exports: module.exports, Buffer, process,
+    require: (id) => id === 'node:path' ? path.win32 : localRequire(id) }, { filename });
+  return module.exports;
+}
+
+test('Windows scope serialization ignores equivalent native spelling (lexical simulation, no filesystem claim)', async () => {
+  const { createProjectPathContext: create } = await windowsContextModule();
+  for (const root of ['C:\\SyntheticSource', '\\\\localhost\\share\\Source',
+    '\\\\?\\C:\\SyntheticSource', '\\\\?\\UNC\\localhost\\share\\Source']) {
+    const first = create({ sourceKind: 'pi', sourceHome: root,
+      projectPathRules: [rule('artifact', 'sessions\\One.jsonl')] });
+    const alias = create({ sourceKind: 'pi', sourceHome: root.toUpperCase().replaceAll('\\', '/') + '/',
+      projectPathRules: [rule('artifact', 'sessions/ONE.jsonl'), rule('artifact', 'sessions/One.jsonl')] });
+    assert.equal(first.sourceHome, path.win32.resolve(root), 'reader root retains its configured physical spelling');
+    assert.equal(alias.sourceHome, path.win32.resolve(root.toUpperCase()), 'identity does not replace the physical root');
+    assert.equal(alias.sourceHomeIdentity, first.sourceHomeIdentity);
+    assert.equal(alias.serialized, first.serialized, root);
+    assert.equal(alias.digest, first.digest);
+    assert.equal(create({ sourceKind: 'pi', sourceHome: root.toUpperCase(),
+      projectPathContext: first.serialized }).serialized, first.serialized);
+    assert.notEqual(create({ sourceKind: 'pi', sourceHome: root + '-2',
+      projectPathRules: [rule('artifact', 'sessions\\One.jsonl')] }).digest, first.digest);
+    assert.notEqual(create({ sourceKind: 'codex', sourceHome: root,
+      projectPathRules: [rule('artifact', 'sessions\\One.jsonl')] }).digest, first.digest);
+    assert.notEqual(create({ sourceKind: 'pi', sourceHome: root,
+      projectPathRules: [rule('artifact', 'sessions\\One.jsonl', 'posix')] }).digest, first.digest);
+  }
+  const roots = ['C:\\Source', '\\\\?\\C:\\Source', '\\\\localhost\\share\\Source',
+    '\\\\?\\UNC\\localhost\\share\\Source', '\\\\other\\share\\Source', '\\\\localhost\\other\\Source'];
+  assert.equal(new Set(roots.map(sourceHome => create({ sourceKind: 'pi', sourceHome }).digest)).size, roots.length);
+});
+
+test('POSIX scope serialization preserves case and literal backslash boundaries', { skip: process.platform === 'win32' }, () => {
+  const create = (sourceHome, target) => createProjectPathContext({ sourceKind: 'pi', sourceHome,
+    projectPathRules: [rule('artifact', target)] });
+  const first = create('/synthetic/Source', 'sessions/One.jsonl');
+  assert.equal(create('/synthetic/Source/', './sessions/One.jsonl').serialized, first.serialized);
+  assert.notEqual(create('/synthetic/source', 'sessions/One.jsonl').digest, first.digest);
+  assert.notEqual(create('/synthetic/Source', 'sessions/one.jsonl').digest, first.digest);
+  assert.notEqual(create('/synthetic/Source', 'sessions\\One.jsonl').digest, first.digest);
+});
+
+test('Windows source mutations retain captured rules, index and running job for equal homes (lexical simulation, no filesystem claim)', async () => {
+  const context = await windowsContextModule();
+  const filename = require.resolve('../server');
+  const localRequire = createRequire(filename);
+  const module = { exports: {} };
+  vm.runInNewContext(await fs.readFile(filename, 'utf8'), { module, exports: module.exports, Buffer, process,
+    require: (id) => id === 'node:path' ? path.win32
+      : id === './src/project-path-context' ? context : localRequire(id) }, { filename });
+  const { resolveSourceMutation } = module.exports;
+  const kinds = ['codex', 'claude-code', 'deepseek-harness', 'pi', 'workbuddy', 'opencode'];
+  const { requireSourceAdapter } = require('../src/source-adapters');
+  for (const sourceKind of kinds) {
+    const sourceHome = `C:\\SyntheticSource\\${sourceKind}`;
+    const rules = [rule('container', 'sessions')];
+    const sourceConfigs = Object.fromEntries(kinds.map(kind => [kind, {
+      home: `C:\\SyntheticSource\\${kind}`, projectPathRules: rules,
+    }]));
+    const index = { repoRoot: 'C:\\SyntheticProject' };
+    const controller = new AbortController();
+    const state = { sourceKind, sourceConfigs, sourceRevision: 0, activeSourceRevision: 0,
+      index, activeProjectJob: { status: 'running', controller }, localInputBase: 'C:\\Synthetic',
+      adapter: requireSourceAdapter(sourceKind) };
+    const before = context.createProjectPathContext({ sourceKind, sourceHome, sourceConfigs });
+    for (const body of [
+      { source: sourceKind, sourceConfigs: { [sourceKind]: { home: sourceHome.toUpperCase() + '\\' } } },
+      { source: sourceKind, [requireSourceAdapter(sourceKind).homeOption]: sourceHome.toUpperCase().replaceAll('\\', '/') },
+      { source: sourceKind, sourceConfigs: { [sourceKind]: { home: sourceHome.toUpperCase(),
+        projectPathRules: [rule('container', 'SESSIONS')] } } },
+    ]) {
+      const result = resolveSourceMutation(state, body);
+      assert.equal(result.errors.length, 0);
+      assert.equal(result.payload.projectPathPolicyId, before.digest, sourceKind);
+      assert.equal(state.index, index);
+      assert.equal(controller.signal.aborted, false);
+      assert.equal(state.activeSourceRevision, 0);
+      assert.equal(state.sourceConfigs[sourceKind].home, sourceHome, 'preserve the configured spelling');
+      assert.equal(state.sourceConfigs[sourceKind].projectPathRules.length, 1);
+    }
+    resolveSourceMutation(state, { source: sourceKind,
+      sourceConfigs: { [sourceKind]: { home: sourceHome.toUpperCase(), projectPathRules: [] } } });
+    assert.equal(state.index, null, 'an explicit rule change still retires the index');
+    assert.equal(controller.signal.aborted, true);
+    assert.equal(state.activeSourceRevision, 1);
+  }
+});
+
 test('artifact rules are independent of selected project, comparison order and sibling locators', () => {
   const artifact = path.join(home, 'sessions', 'one.jsonl');
   const context = capture([rule('artifact', artifact)]);
