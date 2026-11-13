@@ -417,7 +417,7 @@ async function makeClaudeSwitchFixture(t) {
 }
 
 async function confirmSourceAction(page, expectedLabel) {
-  const target = { 'Confirm switch to Claude Code': 'claude-code', 'Confirm switch to DeepSeek Harness': 'deepseek-harness', 'Confirm switch to Codex': 'codex', 'Confirm switch to Future Source': 'future-source' }[expectedLabel];
+  const target = { 'Confirm switch to Claude Code': 'claude-code', 'Confirm switch to DeepSeek Harness': 'deepseek-harness', 'Confirm switch to Codex': 'codex', 'Confirm switch to Future Source': 'future-source', 'Confirm switch to Qoder': 'qoder' }[expectedLabel];
   await page.waitForFunction(({ label, target }) => document.querySelector('#projectSourceAction')?.textContent === label || document.querySelector('#projectSourceSwitch')?.dataset.source === target, { label: expectedLabel, target });
   if (await page.locator('#projectSourceAction').isVisible()) await page.locator('#projectSourceAction').click();
 }

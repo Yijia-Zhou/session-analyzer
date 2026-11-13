@@ -12,6 +12,7 @@
     "pi-navigation.test.js",
     "pi-reading-evidence.test.js",
     "pi.test.js",
+    "qoder.test.js",
     "workbuddy.test.js"
   ],
   "search-loading": [
