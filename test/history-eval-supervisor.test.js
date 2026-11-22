@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { once } = require('node:events');
+const { setTimeout: delay } = require('node:timers/promises');
 const { ROOT, sha256 } = require('../scripts/history-eval-common');
 const { createSupervisor } = require('../scripts/history-eval-supervisor');
 
@@ -15,6 +16,38 @@ function temporary(t) {
   return directory;
 }
 const rows = (supervisor) => fs.readFileSync(supervisor.journalPath, 'utf8').trim().split('\n').map(JSON.parse);
+
+function processState(pid) {
+  try {
+    if (process.platform === 'linux') {
+      const filename = `/proc/${pid}/status`;
+      const status = fs.readFileSync(filename, 'utf8');
+      const state = /^State:[ \t]+(\S[^\r\n]*)$/mu.exec(status)?.[1];
+      assert.ok(state, `Missing process state in ${filename}`);
+      // A terminated descendant can remain visible until it is reaped.
+      return { terminated: /^[ZXx](?:\s|$)/u.test(state), description: state };
+    }
+    process.kill(pid, 0);
+    return { terminated: false, description: 'PID is still detectable' };
+  } catch (error) {
+    if (error.code === 'ESRCH' || (process.platform === 'linux' && error.code === 'ENOENT')) {
+      return { terminated: true, description: 'PID no longer exists' };
+    }
+    throw error;
+  }
+}
+
+async function waitForTermination(pid, timeoutMs = 2000) {
+  const deadline = performance.now() + timeoutMs;
+  for (;;) {
+    const state = processState(pid);
+    if (state.terminated) return;
+    const remaining = deadline - performance.now();
+    assert.ok(remaining > 0,
+      `Descendant PID ${pid} did not terminate within ${timeoutMs} ms (last state: ${state.description})`);
+    await delay(Math.min(25, remaining));
+  }
+}
 
 test('supervisor stays idle until asked; captures bytes and observes readiness while another process runs', async (t) => {
   const directory = temporary(t);
@@ -90,7 +123,7 @@ test('a throwing output consumer is recorded and stops its owned child', async (
   assert.match(result.captureError.message, /gate failed/u);
 });
 
-test('cleanup reaps an owned live process tree while leaving an unrelated owned control alive', async (t) => {
+test('cleanup terminates an owned process tree while leaving an unrelated owned control alive', async (t) => {
   const supervisor = createSupervisor({ directory: temporary(t) });
   t.after(() => supervisor.close());
   const control = supervisor.start({ id: 'unrelated', command: process.execPath,
@@ -105,9 +138,12 @@ test('cleanup reaps an owned live process tree while leaving an unrelated owned 
     onStdout(bytes) { captured += bytes.toString('utf8'); if (captured.includes('\n')) { descendantPid = Number(captured.trim()); resolveReady(); } } });
   await ready;
   assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
+  await assert.rejects(waitForTermination(descendantPid, 0), {
+    code: 'ERR_ASSERTION', message: /did not terminate within 0 ms/u,
+  });
   const result = await supervisor.stop('tree', 'synthetic_tree_cleanup');
   assert.equal(result.cleanupError, null);
-  assert.throws(() => process.kill(descendantPid, 0), { code: 'ESRCH' });
-  assert.equal(control.exited, false);
+  await waitForTermination(descendantPid);
+  assert.equal(processState(control.child.pid).terminated, false, 'Unrelated control must still be alive');
   await supervisor.close();
 });
