@@ -6,10 +6,12 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { chromium } = require('playwright');
+const { requestHistory } = require('../src/history-cli');
+const { startHistoryServer } = require('../src/history-server');
 const { createHistoryService } = require('../src/history-service');
 
 // Synthetic native-v3 shapes. This checks the shared viewer, not pi's TUI.
-for (const width of [1440, 390]) test(`pi branch search, detail and Raw reading (${width})`, { timeout: 45000 }, async (t) => {
+for (const width of [1440, 390]) test(`pi branch default compact handoff, detail and Raw reading (${width})`, { timeout: 45000 }, async (t) => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-browser-'));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const repo = path.join(home, 'project');
@@ -31,22 +33,32 @@ for (const width of [1440, 390]) test(`pi branch search, detail and Raw reading 
   const original = rows.map((row) => JSON.stringify(row)).join('\n') + '\n';
   await fs.writeFile(file, original);
   const service = await createHistoryService({ repo, source: 'pi', piHome: home });
-  t.after(() => service.close());
-  const server = service.createViewerServer();
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
-  const url = `http://127.0.0.1:${server.address().port}`;
-  const search = async (query) => (await service.execute('search', { query })).items;
-  const alpha = await search('ALPHA_BRANCH_ONLY');
-  const beta = await search('BETA_TOOL_OUTPUT');
-  assert.equal(alpha.length, 1); assert.equal(beta.length, 1);
-  assert.notEqual(alpha[0].sessionId, beta[0].sessionId);
+  const running = await startHistoryServer({ port: 0 }, async () => service);
+  t.after(() => running.close());
+  const alpha = await requestHistory(running.endpoint, 'search', { query: 'ALPHA_BRANCH_ONLY' });
+  const beta = await requestHistory(running.endpoint, 'search', { query: 'BETA_TOOL_OUTPUT' });
+  assert.equal(alpha.items.length, 1); assert.equal(beta.items.length, 1);
+  assert.notEqual(alpha.items[0].sessionId, beta.items[0].sessionId);
   const browser = await chromium.launch(); t.after(() => browser.close());
   const page = await browser.newPage({ locale: 'en-US', viewport: { width, height: 900 } });
   page.setDefaultTimeout(10000);
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
-  const open = async (hit, expectedText) => {
-    await page.goto(`${url}/#ref=${encodeURIComponent(hit.ref)}`);
+  const open = async (search, expectedText) => {
+    const [hit] = search.items;
+    assert.equal(search.presentation, 'compact');
+    assert.match(hit.ref, /^hr1\./u);
+    const read = await requestHistory(running.endpoint, 'read', {
+      refs: [hit.ref], contextRef: search.contextRef, parts: ['projection'],
+    });
+    assert.equal(read.presentation, 'compact');
+    const [item] = read.items;
+    assert.ok(item.parts.some((part) => part.part === 'projection' && part.text.includes(expectedText)));
+    assert.match(item.evidenceRef, /^er2\./u);
+    const handoff = await requestHistory(running.endpoint, 'open', { refs: [item.evidenceRef] });
+    assert.equal(handoff.evidenceRef, item.evidenceRef);
+    assert.equal(handoff.targetVerified, true);
+    assert.deepEqual(handoff.target, { sessionId: hit.sessionId, eventId: hit.eventId, layer: 'main' });
+    await page.goto(handoff.url);
     await page.waitForFunction(({ sessionId, eventId }) =>
       document.querySelector('#sessionList .sessionItem.active')?.dataset.sessionId === sessionId
         && document.querySelector('#timeline article.selected')?.dataset.eventId === eventId,
@@ -58,10 +70,10 @@ for (const width of [1440, 390]) test(`pi branch search, detail and Raw reading 
       return selected?.dataset.eventId === eventId && selected.innerText.includes(expectedText);
     }, { eventId: hit.eventId, expectedText });
   };
-  await open(alpha[0], 'ALPHA_BRANCH_ONLY');
+  await open(alpha, 'ALPHA_BRANCH_ONLY');
   assert.match(await page.locator('#timeline').innerText(), /ALPHA_BRANCH_ONLY/);
   assert.doesNotMatch(await page.locator('#timeline').innerText(), /BETA_BRANCH_ONLY|BETA_FINAL/);
-  await open(beta[0], 'BETA_TOOL_OUTPUT');
+  await open(beta, 'BETA_TOOL_OUTPUT');
   assert.doesNotMatch(await page.locator('#timeline').innerText(), /ALPHA_BRANCH_ONLY/);
   if (width < 760) await page.getByRole('button', { name: 'Detail', exact: true }).click();
   await page.locator('#detail [data-detail-action="raw"]').click();

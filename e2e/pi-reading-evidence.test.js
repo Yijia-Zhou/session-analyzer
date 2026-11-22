@@ -50,12 +50,24 @@ for (const width of [1440, 390]) test(`native pi recorded evidence reading (${wi
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.locator(`[data-session-id="${session.id}"]`).click();
+  const layerSelect = page.locator('#layerSelect');
+  const eventsTab = page.locator('button[data-mobile-view="events"]');
   const open = async (event, expected) => {
-    if (width < 760) await page.locator('button[data-mobile-view="events"]').click();
-    await page.locator('#layerSelect').selectOption(event.layer);
-    await page.locator(`#timeline .event[data-event-id="${event.id}"]`).waitFor({ state: 'attached' });
-    if (width < 760) await page.locator('button[data-mobile-view="events"]').click();
-    await page.locator(`#timeline .event[data-event-id="${event.id}"] .eventHeader`).click();
+    const switchingLayer = await layerSelect.inputValue() !== event.layer;
+    const restoresSelection = switchingLayer && (await page.locator('#timeline .event.selected').count()) > 0;
+    if (switchingLayer) {
+      if (width < 760) await eventsTab.click();
+      await layerSelect.selectOption(event.layer);
+    }
+    const card = page.locator(`#timeline .event[data-event-id="${event.id}"]`);
+    await card.waitFor({ state: 'attached' });
+    if (restoresSelection) {
+      // Layer changes can render cards before restoring the prior Inspector and opening Detail.
+      const inspector = width < 760 ? 'body[data-mobile-view="detail"][data-detail-view="inspector"]' : 'body[data-detail-view="inspector"]';
+      await page.locator(`${inspector} #timeline .event.selected`).waitFor({ state: 'attached' });
+    }
+    if (width < 760) await eventsTab.click();
+    await card.locator('.eventHeader').click();
     await page.waitForFunction((text) => document.querySelector('#detail')?.textContent.includes(text), expected);
   };
   const edit = session.logicalEvents.find((event) => event.subtype === 'pi_context_edit');

@@ -73,10 +73,10 @@ async function fixture(t, options = {}) {
   await page.route('**/assets/app.js', (route) => route.fulfill({ contentType: 'application/javascript', body: bundle.outputFiles[0].text }));
   const requests = [];
   page.on('request', (request) => requests.push(new URL(request.url()).pathname));
-  const search = async (query, layer = 'main') => (await service.execute('search', { query, layer })).items[0];
+  const search = async (query, layer = 'main') => (await service.execute('search', { query, layer, presentation: 'full' })).items[0];
   const hit = await search('DEEP_OUTPUT_HIT');
   assert.ok(hit?.ref);
-  const context = options.withContext ? (await service.execute('context', { refs: [hit.ref] })).items[0] : null;
+  const context = options.withContext ? (await service.execute('context', { refs: [hit.ref], presentation: 'full' })).items[0] : null;
   return { page, url, service, requests, hit, search, context };
 }
 

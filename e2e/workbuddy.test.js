@@ -72,7 +72,7 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
   const server = service.createViewerServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
-  const hits = (await service.execute('search', { query: 'WORKBUDDY_TOOL_EVIDENCE' })).items;
+  const hits = (await service.execute('search', { query: 'WORKBUDDY_TOOL_EVIDENCE', presentation: 'full' })).items;
   assert.equal(hits.length, 1, 'the paired tool result has one logical search owner');
   const hit = hits[0];
   const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined });
@@ -96,7 +96,8 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
   await page.waitForFunction(() => document.body.dataset.mainPresentation === 'trajectory');
   assert.match(await page.locator('#timeline').innerText(), /WORKBUDDY_FINAL|Read|example\.txt/);
   for (const marker of ['WORKBUDDY_COMPLETED_TASK', 'WORKBUDDY_COMPACT_SUMMARY', 'WORKBUDDY_INTERNAL_CONTEXT', 'WORKBUDDY_IMAGE.png', 'WORKBUDDY_MULTI.png', 'WORKBUDDY_MIXED', 'WORKBUDDY_HEADLESS_UNAVAILABLE', 'WORKBUDDY_FILE_TEXT', 'WORKBUDDY_ONLY_FILE.txt']) {
-    const matches = (await service.execute('search', { query: marker, ...(marker === 'WORKBUDDY_INTERNAL_CONTEXT' ? { layer: 'protocol' } : {}) })).items;
+    const matches = (await service.execute('search', { query: marker, presentation: 'full',
+      ...(marker === 'WORKBUDDY_INTERNAL_CONTEXT' ? { layer: 'protocol' } : {}) })).items;
     assert.equal(matches.length, 1);
     await page.goto(`http://127.0.0.1:${server.address().port}/#ref=${encodeURIComponent(matches[0].ref)}`);
     await page.waitForFunction((expected) => document.querySelector('#timeline article.selected')?.innerText.includes(expected), marker);
@@ -135,7 +136,7 @@ for (const width of [1440, 390]) test(`WorkBuddy native search, tool Detail and 
   if (width === 1440) {
     await page.locator('#localeSelect').selectOption('zh-CN', { force: true });
     for (const [marker, expected] of [['WORKBUDDY_IMAGE.png', '图片附件'], ['WORKBUDDY_FILE_TEXT', '文件引用']]) {
-      const [match] = (await service.execute('search', { query: marker, layer: 'main' })).items;
+      const [match] = (await service.execute('search', { query: marker, layer: 'main', presentation: 'full' })).items;
       await page.goto(`http://127.0.0.1:${server.address().port}/#ref=${encodeURIComponent(match.ref)}`);
       await page.waitForFunction((value) => document.querySelector('#timeline article.selected')?.textContent.includes(value), expected);
       const detail = (await page.locator('#timeline article.selected').innerText()).split('搜索命中')[0];
@@ -205,7 +206,7 @@ test('WorkBuddy runtime user envelopes stay in Protocol while real requests and 
   ], 'a genuine steer remains in its existing user turn');
   for (const [index, [, marker]] of internal.entries()) {
     assert.equal((await service.execute('search', { query: marker, layer: 'main' })).items.length, 0, marker);
-    const hits = (await service.execute('search', { query: marker, layer: 'protocol' })).items;
+    const hits = (await service.execute('search', { query: marker, layer: 'protocol', presentation: 'full' })).items;
     assert.equal(hits.length, 1, `${marker} has one Protocol owner`);
     const hit = hits[0];
     await page.goto(`${origin}/#ref=${encodeURIComponent(hit.ref)}`);
@@ -239,7 +240,8 @@ test('WorkBuddy desktop scheduled input is searchable in Protocol with copied pr
   db.prepare('INSERT INTO sessions VALUES (?,?,?,?)').run('scheduled', repo, 1, JSON.stringify({ conversationTags: { automationId: 'auto-1' } }));
   db.prepare('INSERT INTO automation_runs VALUES (?,?,?,?)').run('run-1', 'auto-1', repo, JSON.stringify({ sessionId: 'scheduled', conversationId: 'scheduled', runKind: 'scheduled' })); db.close();
   const service = await createHistoryService({ repo, source: 'workbuddy', workbuddyHome: home }); t.after(() => service.close());
-  const hits = (await service.execute('search', { query: 'WB_SCHEDULED_INPUT', layer: 'protocol' })).items; assert.equal(hits.length, 1);
+  const hits = (await service.execute('search', { query: 'WB_SCHEDULED_INPUT', layer: 'protocol', presentation: 'full' })).items;
+  assert.equal(hits.length, 1);
   assert.equal((await service.execute('search', { query: 'WB_SCHEDULED_INPUT', kind: 'user_message' })).items.length, 0);
   const server = service.createViewerServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
