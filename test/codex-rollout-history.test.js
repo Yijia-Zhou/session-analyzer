@@ -8,7 +8,7 @@ const os = require('node:os');
 const { zstdCompressSync } = require('node:zlib');
 const codex = require('../src/codex');
 const { materializeSessionForIndex, validateIndexOwnershipForCommit } = require('../src/source-adapters');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 const { parseRolloutArtifactIdentity, parseHistoryBase, resolveRolloutHistoryPlans, validateHistorySegmentBoundary } = require('../src/codex-rollout-history');
 
 // Synthetic structural fixtures for rust-v0.162.1 history positions and filenames.

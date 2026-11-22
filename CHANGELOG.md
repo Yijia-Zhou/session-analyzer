@@ -4,6 +4,12 @@
 
 ### English
 
+- Default history responses to `compact` JSON with context-bound short handles and keep explicit `full` available. Export durable `evidenceRef` values from compact reads and align the packaged English Skill with the recommended workflow.
+
+- Keep ordinary history reads in `content` mode and offer `--mode auto` as an opt-in. Add ordinary CLI flags for existing around-hit reads and support UTF-8 JSON input from a file or piped stdin with `--input-file`.
+
+- Use `offset` and `endOffset` for text positions and `rawOffset` for Raw-link pagination. Fit read text to the complete response budget while preserving truncation status and replayable continuations. Keep Raw association continuations bound to their record and report a size error when a continuation would exceed the CLI/HTTP input limit.
+
 - Polish browser display details: use singular count labels such as `1 tool` and `1 event` in English, show ellipses for long project status lines and session source paths, keep event times of day on one line on narrow screens, and use red text for nonzero failed-command counts on session cards.
 
 - Add native OpenCode 2.1.4 SQLite history with immutable revision snapshots, project search, Detail, typed Raw references and history retrieval. Read without OpenCode or export; bounded capture and failed refresh preserve previous evidence, with explicit schema, permission and capacity diagnostics.
@@ -23,6 +29,12 @@
 - Skip browser CI for narrowly classified documentation-only pull requests while retaining Node and package checks; execute publish-workflow release checks once through the guarded directory dry-run.
 
 ### 中文
+
+- 历史检索默认返回 `compact` JSON 和绑定上下文的短句柄，保留显式 `full`。compact 读取导出持久 `evidenceRef`，随包英文 Skill 与推荐调用流程同步。
+
+- 普通历史读取保持 `content`，提供显式可选的 `--mode auto`。为既有的命中附近读取提供普通 CLI flags，并通过 `--input-file` 从文件或管道 stdin 接收 UTF-8 JSON。
+
+- `offset` 和 `endOffset` 用于文本位置，Raw 链接分页使用 `rawOffset`。按完整响应预算缩短读取文本，保留截断状态及可直接提交的续读。Raw 关联续读保持绑定原记录，续读超出 CLI／HTTP 输入上限时明确返回尺寸错误。
 
 - 优化浏览器显示细节：英文计数标签使用 `1 tool`、`1 event` 等单数形式，项目状态行和会话来源路径过长时显示省略号，窄屏上事件的时刻保持在同一行，并在会话卡片中用红色文字显示非零失败命令数。
 

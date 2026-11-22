@@ -8,7 +8,7 @@ const path = require('node:path');
 const { buildPiIndex, discoverPiProjects } = require('../src/pi');
 const { materializeSessionForIndex, buildEventDetailForSession, readIndexedRawRecord } = require('../src/source-adapters');
 const { disposeProjectQueryStore } = require('../src/project-query-store');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 
 const created = '2026-10-01T00:00:00.000Z';
 const older = '2026-10-20T00:00:00.000Z';

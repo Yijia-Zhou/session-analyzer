@@ -7,7 +7,7 @@ const os = require('node:os');
 const { workbuddyAdapter, buildWorkbuddyIndex, discoverWorkbuddyProjects, parseWorkbuddySessionArtifact } = require('../src/workbuddy');
 const { materializeSessionForIndex, validateIndexOwnershipForCommit, buildEventDetailForSession, readIndexedRawRecord } = require('../src/source-adapters');
 const { disposeProjectQueryStore, projectQueryProjectionDigestAsync } = require('../src/project-query-store');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 const timestamp = 1793400000000;
 function record(type, id, parentId, fields = {}) { return { type, id, ...(parentId ? { parentId } : {}), timestamp, ...fields }; }
 function user(id = 'u', text = 'USER_MARKER') { return record('message', id, '', { role: 'user', content: [{ type: 'input_text', text }] }); }

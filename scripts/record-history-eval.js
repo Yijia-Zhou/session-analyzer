@@ -106,4 +106,30 @@ function utf8Prefix(bytes, maximum) {
 }
 
 if (require.main === module) mainGuard(() => { const { options, args } = parse(process.argv.slice(2)); record(options, args); });
-module.exports = { parse, record };
+// The asynchronous evaluation gate uses the same byte-budget and capture contract.
+// It owns execution/lifecycle and calls this only after a command has completed;
+// a long-lived service therefore never holds the recorder's cross-command lock.
+function captureRow({ identity, args, phase = 'retrieval', at, elapsedMs, stdout = Buffer.alloc(0),
+  stderr = Buffer.alloc(0), maxOutputBytes, exitCode = 0, error = null, executed = true, withheld = false,
+  withheldMessage = Buffer.alloc(0), captureComplete = true }) {
+  const limit = maxOutputBytes ?? Infinity;
+  if (limit !== Infinity && (!Number.isSafeInteger(limit) || limit < 256)) throw new Error('Capture delivery budget must be at least 256 bytes');
+  const notice = Buffer.from('\nRecorder: OUTPUT_TRUNCATED; captured output exceeds delivery budget.\n');
+  const outputTruncated = !withheld && stdout.length + stderr.length > limit;
+  const available = limit - (outputTruncated ? notice.length : 0);
+  const deliveredStdout = withheld ? Buffer.alloc(0) : utf8Prefix(stdout, available);
+  const deliveredStderr = withheld ? utf8Prefix(withheldMessage, limit) : Buffer.concat([
+    utf8Prefix(stderr, available - deliveredStdout.length), outputTruncated ? notice : Buffer.alloc(0),
+  ]);
+  const row = { schemaVersion: 2, identity, phase, at, elapsedMs,
+    command: 'controlled-history-eval-entry', args, cwd: process.cwd(), executed, exitCode,
+    signal: null, captureComplete, outputTruncated, withheld, error };
+  for (const [name, bytes] of Object.entries({ stdout, stderr, deliveredStdout, deliveredStderr })) {
+    row[name] = bytes.toString('utf8'); row[`${name}Base64`] = bytes.toString('base64');
+    row[`${name}Sha256`] = sha256(bytes);
+    row[name === 'stdout' ? 'outputBytes' : name === 'stderr' ? 'stderrBytes' : `${name}Bytes`] = bytes.length;
+  }
+  return row;
+}
+
+module.exports = { parse, record, captureRow };

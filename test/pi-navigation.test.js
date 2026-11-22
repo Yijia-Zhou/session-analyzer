@@ -8,7 +8,7 @@ const path = require('node:path');
 const { buildPiIndex, parsePiSessionArtifact } = require('../src/pi');
 const { readPiNavigation, createPiEntryReference, resolvePiEntryReference } = require('../src/pi-navigation');
 const { disposeProjectQueryStore } = require('../src/project-query-store');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 
 const user = (id, parentId, content) => ({ type: 'message', id, parentId, message: { role: 'user', content } });
 const assistant = (id, parentId, content) => ({ type: 'message', id, parentId, message: { role: 'assistant', content: [{ type: 'text', text: content }] } });

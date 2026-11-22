@@ -10,7 +10,7 @@ const { createServer } = require('../server');
 const { piAdapter, buildPiIndex } = require('../src/pi');
 const { materializeSessionForIndex, buildEventDetailForSession, readIndexedRawRecord } = require('../src/source-adapters');
 const { disposeProjectQueryStore } = require('../src/project-query-store');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 
 const timestamp = '2026-10-22T12:00:00.000Z';
 const entry = (id, parentId, type, fields) => ({ type, id, parentId, timestamp, ...fields });

@@ -43,7 +43,7 @@ async function fixture(t, width, diagnostics) {
   await diagnostics?.attach(page);
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, []));
-  return { page, url, files, search: async (query) => (await service.execute('search', { query })).items[0] };
+  return { page, url, files, search: async (query) => (await service.execute('search', { query, presentation: 'full' })).items[0] };
 }
 
 async function waitForTurnDetail(page, hit, turnId, locale = 'en') {

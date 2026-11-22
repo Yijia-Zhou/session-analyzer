@@ -12,7 +12,7 @@ const { buildPiIndex, piAdapter } = require('../src/pi');
 const { readPiNavigation } = require('../src/pi-navigation');
 const { materializeSessionForIndex } = require('../src/source-adapters');
 const { disposeProjectQueryStore, projectQueryProjectionDigestAsync } = require('../src/project-query-store');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 
 const header = { type: 'session', version: 3, id: 'native-statistics', cwd: '/synthetic-project' };
 const entry = (type, id, parentId, rest = {}) => ({ type, id, parentId, ...rest });
