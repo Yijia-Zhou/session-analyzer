@@ -6,6 +6,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const adapters = require('../src/source-adapters');
+const { withFullPresentation } = require('./helpers/full-history-service');
 
 async function fixture(t, supported) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'history-artifact-prefilter-'));
@@ -36,7 +37,7 @@ async function fixture(t, supported) {
   const servicePath = require.resolve('../src/history-service');
   delete require.cache[servicePath];
   const { createHistoryService } = require(servicePath);
-  const service = await createHistoryService({ repo, source: 'codex', codexHome: home });
+  const service = withFullPresentation(await createHistoryService({ repo, source: 'codex', codexHome: home }));
   t.after(() => service.close());
   return { service, file, original, materializations };
 }

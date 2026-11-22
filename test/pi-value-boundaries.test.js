@@ -9,7 +9,7 @@ const { piAdapter, buildPiIndex, discoverPiProjects } = require('../src/pi');
 const { iso } = require('../src/pi-logical');
 const { materializeSessionForIndex, buildEventDetailForSession, readIndexedRawRecord } = require('../src/source-adapters');
 const { disposeProjectQueryStore } = require('../src/project-query-store');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 
 const timestamp = '2026-10-22T12:00:00.000Z';
 const deepJson = '['.repeat(10000) + '0' + ']'.repeat(10000);

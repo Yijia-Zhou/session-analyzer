@@ -8,7 +8,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { zstdCompressSync } = require('node:zlib');
 const { createHistorySourceObservation } = require('../src/history-source-observation');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 const { createHistoryServer } = require('../src/history-server');
 const { requestHistory, parseHistoryArgs } = require('../src/history-cli');
 
