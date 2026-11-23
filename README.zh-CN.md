@@ -133,6 +133,8 @@ npm run dev -- --source qoder --repo /path/to/project --qoder-home /path/to/.qod
 
 根目录包含 `projects/`，默认为 `~/.qoder-cn`。原生消息、思考、工具结果、子会话和内嵌图片可通过既有视图阅读。此能力属于源码 checkout；详见[覆盖范围与真实案例缺口](docs/design-docs/qoder-native-sessions.md)。
 
+可选添加 `--qoder-desktop-db /path/to/main.sqlite` 读取经验证的桌面会话标题，History CLI 支持相同参数。JSONL 显式自定义标题保持优先，桌面重命名在项目重建索引后生效。缺失或不支持的元数据会诊断并保持原生记录可读，不猜测数据库位置。
+
 ## 此 checkout 的原生 WorkBuddy / CodeBuddy 会话支持
 
 完成[源码配置](docs/development.md)后运行：

@@ -226,6 +226,51 @@ test('discoverConfiguredProjects returns empty list when config is absent', asyn
   assert.deepEqual(await discoverConfiguredProjects({ codexHome }), []);
 });
 
+test('discoverConfiguredProjects propagates cancellation from the config read', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const controller = new AbortController();
+  const readFile = fsp.readFile;
+  const configPath = path.join(codexHome, 'config.toml');
+  const configReads = [];
+  t.mock.method(fsp, 'readFile', async (filename, options) => {
+    if (filename !== configPath) return readFile(filename, options);
+    configReads.push(options.signal);
+    controller.abort();
+    controller.signal.throwIfAborted();
+  });
+
+  await assert.rejects(discoverConfiguredProjects({ codexHome, signal: controller.signal }), { name: 'AbortError' });
+  assert.deepEqual(configReads, [controller.signal]);
+});
+
+for (const discover of [discoverConfiguredProjects, discoverProjects]) {
+  test(`${discover.name} stops checking directories after cancellation`, async (t) => {
+    const codexHome = await makeTempCodexHome(t);
+    const first = path.join(codexHome, 'project-a');
+    const second = path.join(codexHome, 'project-b');
+    if (discover === discoverConfiguredProjects) {
+      await fsp.writeFile(path.join(codexHome, 'config.toml'), `[projects.'${first}']\n[projects.'${second}']\n`);
+    } else {
+      const sessionsRoot = path.join(codexHome, 'sessions');
+      await fsp.mkdir(sessionsRoot);
+      const lines = [first, second].map((cwd) => JSON.stringify({ type: 'session_meta', payload: { cwd } }));
+      await fsp.writeFile(path.join(sessionsRoot, 'rollout-projects.jsonl'), lines.join('\n') + '\n');
+    }
+    const controller = new AbortController();
+    const checked = [];
+    const stat = fsp.stat;
+    t.mock.method(fsp, 'stat', async (filename, ...args) => {
+      if (filename !== first && filename !== second) return stat(filename, ...args);
+      checked.push(filename);
+      controller.abort();
+      return { isDirectory: () => true };
+    });
+
+    await assert.rejects(discover({ codexHome, signal: controller.signal }), { name: 'AbortError' });
+    assert.deepEqual(checked, [first]);
+  });
+}
+
 test('buildIndex exposes dynamic event kind options by layer', async () => {
   const index = await buildFixtureIndex();
   const session = primaryFixtureSession(index);

@@ -4,7 +4,7 @@
 
 Root cause reproduced on 2026-11-13 at `9e352ad1f0ed79785ad3980818d73d9e4fc5d086`, Node `24.22.2`, Linux. Implementation and local validation are complete; remote CI is not yet evidence. / 2026-11-13 在所列提交、Node 24.22.2 和 Linux 环境复现根因；实现与本地验证已完成，远程 CI 尚不能作为依据。
 
-Related work: [optional Qoder titles](../active/2026-11-13-qoder-desktop-titles.md). The crash occurs in existing Codex discovery, independently of Qoder title metadata or SQLite reads. / 相关工作为所链 Qoder 可选标题方案；本次崩溃发生在既有 Codex 项目发现路径，与 Qoder 标题元数据或 SQLite 读取无关。
+Related work: [optional Qoder titles](2026-11-13-qoder-desktop-titles.md). The crash occurs in existing Codex discovery, independently of Qoder title metadata or SQLite reads. / 相关工作为所链 Qoder 可选标题方案；本次崩溃发生在既有 Codex 项目发现路径，与 Qoder 标题元数据或 SQLite 读取无关。
 
 ## Reproduced cause / 已复现原因
 

@@ -1911,18 +1911,21 @@ function parseProjectConfigHeader(line) {
   return parts[1].value;
 }
 
-async function discoverConfiguredProjects({ codexHome, ...options }) {
+async function discoverConfiguredProjects({ codexHome, signal, ...options }) {
+  throwIfAborted(signal);
   const context = createProjectPathContext({ ...options, sourceKind: CODEX_SOURCE_KIND, sourceHome: codexHome });
   const configPath = path.join(path.resolve(codexHome), 'config.toml');
   let text = '';
   try {
-    text = await fsp.readFile(configPath, 'utf8');
+    text = await fsp.readFile(configPath, { encoding: 'utf8', signal });
   } catch (error) {
+    throwIfAborted(signal);
     if (error.code !== 'ENOENT') {
       console.warn(`Unable to read Codex config for project summary: ${error.message}`);
     }
     return [];
   }
+  throwIfAborted(signal);
 
   const projects = new Map();
   for (const line of text.split(/\r?\n/)) {
@@ -1946,12 +1949,14 @@ async function discoverConfiguredProjects({ codexHome, ...options }) {
   }
 
   for (const project of projects.values()) {
+    throwIfAborted(signal);
     try {
       project.exists = (await fsp.stat(project.repoRoot)).isDirectory();
     } catch {
       project.exists = false;
     }
   }
+  throwIfAborted(signal);
   return [...projects.values()];
 }
 
@@ -2094,6 +2099,7 @@ async function discoverProjects({ codexHome, signal, onDiagnostic, ...options } 
   }
 
   for (const project of projects.values()) {
+    throwIfAborted(signal);
     try {
       project.exists = (await fsp.stat(project.repoRoot)).isDirectory();
     } catch {
@@ -2101,6 +2107,7 @@ async function discoverProjects({ codexHome, signal, onDiagnostic, ...options } 
     }
   }
 
+  throwIfAborted(signal);
   return [...projects.values()].sort((a, b) => (
     String(b.updatedAt).localeCompare(String(a.updatedAt))
     || b.sessionCount - a.sessionCount
@@ -5057,6 +5064,9 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       session.rawEvents.push(raw);
       if (observeSourcePhases) sourceRecordParseMs += performance.now() - recordStartedAt;
     }
+  } catch (error) {
+    if (error?.code === codexRolloutStorage.CODEX_ROLLOUT_RECORD_TOO_LARGE) error.sourceFile = relFile;
+    throw error;
   } finally {
     stream.destroy();
     if (observeSourcePhases) {
@@ -6456,7 +6466,7 @@ async function buildIndex({
       } catch (error) {
         if (error.code !== codexRolloutStorage.CODEX_ROLLOUT_RECORD_TOO_LARGE
             && (!historyPlans.has(filePath) || !String(error.code || '').startsWith('CODEX_HISTORY_'))) throw error;
-        onDiagnostic({ code: error.code, path: relFile, message: error.message });
+        onDiagnostic({ code: error.code, path: error.sourceFile ?? relFile, message: error.message });
         unknownFileCount += 1;
         continue;
       }
@@ -6811,6 +6821,7 @@ async function buildSourceBackedIndex({
     const relFile = codexRolloutRelativePath(sessionsRoot, filePath);
     const initiallyDeep = initialDeepFilePaths.has(filePath);
     let result;
+    let scanned;
     try {
       if (forceFullRelationshipPassForTests === true || initiallyDeep || historyPlans.has(filePath)) {
         result = await parseFullRelationshipCandidate(
@@ -6819,7 +6830,7 @@ async function buildSourceBackedIndex({
           initiallyDeep,
         );
       } else {
-        const scanned = await scanCodexRelationshipEvidence(
+        scanned = await scanCodexRelationshipEvidence(
           filePath,
           relFile,
           resolvedRepo,
@@ -6832,28 +6843,24 @@ async function buildSourceBackedIndex({
               : undefined,
           },
         );
-        if (scanned.requiresFullParse) {
-          result = await parseFullRelationshipCandidate(
-            filePath,
-            relFile,
-            false,
-            scanned.evidence,
-          );
-        } else {
-          result = {
-            evidence: scanned.evidence,
-            planningProjection: scanned.planningProjection,
-            retainForkEvidence: false,
-            mode: 'light',
-          };
-        }
       }
     } catch (error) {
       if (error.code !== codexRolloutStorage.CODEX_ROLLOUT_RECORD_TOO_LARGE
             && (!historyPlans.has(filePath) || !String(error.code || '').startsWith('CODEX_HISTORY_'))) throw error;
-      onDiagnostic({ code: error.code, path: relFile, message: error.message });
+      onDiagnostic({ code: error.code, path: error.sourceFile ?? relFile, message: error.message });
       unknownFileCount += 1;
       continue;
+    }
+    if (scanned) {
+      // The light scan verified this prefix. A failed replay rejects the build.
+      result = scanned.requiresFullParse
+        ? await parseFullRelationshipCandidate(filePath, relFile, false, scanned.evidence)
+        : {
+          evidence: scanned.evidence,
+          planningProjection: scanned.planningProjection,
+          retainForkEvidence: false,
+          mode: 'light',
+        };
     }
     relationshipResultsByFile.set(filePath, result);
     acceptedPrefixInspections.set(filePath, result.planningProjection);

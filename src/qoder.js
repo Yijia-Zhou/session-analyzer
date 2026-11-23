@@ -13,6 +13,7 @@ const { createProjectQueryStoreBuilder } = require('./project-query-store');
 const { createSourceDiagnostics } = require('./source-diagnostics');
 const storage = require('./qoder-storage');
 const logical = require('./qoder-logical');
+const { readDesktopTitles, validTitle, titleDependency } = require('./qoder-desktop-titles');
 const { buildQoderEventDetail } = require('./qoder-detail');
 const { readQoderImagePreview } = require('./qoder-images');
 
@@ -47,7 +48,7 @@ const qoderQuery = createSessionQuery({ schemaVersion: CANONICAL_SCHEMA_VERSION,
 async function parseQoderSessionArtifact(filePath, relFile, _repoRoot, signal, options = {}) {
   const snapshot = await storage.readQoderSnapshot(filePath, { ...options, signal });
   const document = storage.parseQoderDocument(snapshot, relFile);
-  return logical.makeQoderSession(document, relFile);
+  return logical.makeQoderSession(document, relFile, options.desktopTitle);
 }
 
 async function discoverQoderProjects(options) {
@@ -98,6 +99,15 @@ async function buildQoderIndex(options) {
   const addDiagnostic = diagnostics.add;
   diagnostics.add = (value) => { addDiagnostic(value); onDiagnostic?.(value); };
   const files = await storage.collectQoderFiles(sessionsRoot, signal, diagnostics.add);
+  const scanComplete = diagnostics.summary.totalCount === 0;
+  const physicalIdentities = new Map();
+  for (const file of files) {
+    const parts = path.relative(sessionsRoot, file).split(path.sep);
+    if (parts.length === 2) {
+      const id = path.basename(file, '.jsonl');
+      physicalIdentities.set(id, (physicalIdentities.get(id) || 0) + 1);
+    }
+  }
   const candidates = [];
   let skippedFileCount = 0; let unknownFileCount = 0; let candidateBytes = 0;
   for (const file of files) {
@@ -120,6 +130,24 @@ async function buildQoderIndex(options) {
         sourceFile });
     } catch (error) { report(error, file, diagnostics.add, signal); skippedFileCount++; }
   }
+  const configured = options.sourceConfigs?.qoder;
+  const metadataHomeMatches = !configured?.desktopDb || (typeof configured.home === 'string'
+    && path.resolve(configured.home) === path.resolve(sourceHome));
+  const desktopTitles = await readDesktopTitles(configured?.desktopDb ?? options.qoderDesktopDb,
+    candidates, { signal, onDiagnostic: diagnostics.add, physicalIdentities,
+      scanComplete: scanComplete && metadataHomeMatches, projectPathContext: context });
+  if (desktopTitles.size) {
+    // Title ownership depends on a unique main transcript across containers.
+    // Recheck membership after the optional database copy, which may take time.
+    const count = diagnostics.summary.totalCount;
+    const currentFiles = await storage.collectQoderFiles(sessionsRoot, signal, diagnostics.add);
+    const mainFiles = (entries) => entries.filter((file) => path.relative(sessionsRoot, file).split(path.sep).length === 2).sort();
+    if (diagnostics.summary.totalCount !== count || !isDeepStrictEqual(mainFiles(files), mainFiles(currentFiles))) {
+      desktopTitles.clear();
+      diagnostics.add({ code: 'QODER_DESKTOP_TITLE_UNVERIFIED', path: sessionsRoot,
+        message: 'Main transcript membership changed during desktop title capture; JSONL titles are retained.' });
+    }
+  }
   const builder = createProjectQueryStoreBuilder({ signal, presentationForEvent: qoderQuery.projectQueryPresentation,
     shareTextRanges: true });
   try {
@@ -135,10 +163,12 @@ async function buildQoderIndex(options) {
         document = storage.parseQoderDocument(await storage.readQoderSnapshot(path.resolve(sessionsRoot, sourceFile),
           { sessionsRoot, acceptedSnapshot, signal }), sourceFile);
       } catch (error) { report(error, sourceFile, diagnostics.add, signal); skippedFileCount++; continue; }
-      const nativeSessions = [logical.makeQoderSession(document, sourceFile)];
+      const desktopTitle = desktopTitles.get(sourceFile);
+      const nativeSessions = [logical.makeQoderSession(document, sourceFile, desktopTitle)];
       const entries = [{ role: 'primary_transcript', pathIdentity: sourceFile, existence: 'present', kind: 'file',
         policy: 'accepted_prefix', acceptedBytes: document.acceptedBytes, lineCount: document.lines.length,
         digest: document.digest, directoryEntries: [], evidence: { fileIdentity: document.fileIdentity } }];
+      if (desktopTitle) entries.push(titleDependency(desktopTitle));
       const dependencySet = { schemaVersion: 1, id: dependencyId(entries), sourceKind: SOURCE_KIND, entries };
       materializationDependencies.set(dependencySet.id, dependencySet);
       for (const session of nativeSessions) {
@@ -182,8 +212,14 @@ function validateQoderMaterializationDescriptor({ materializationContext, indexe
   const { sourceFile } = descriptor.payload;
   if (typeof sourceFile !== 'string' || !sourceFile || sourceFile !== indexedSession.sourceFile
       || !validSourceFile(sourceFile) || path.isAbsolute(sourceFile) || !isPathInsideOrSame(path.resolve(materializationContext.sessionsRoot, sourceFile), materializationContext.sessionsRoot)
-      || dependencySet.entries.length !== 1 || typeof descriptor.payload.parentToolUseId !== 'string'
+      || ![1, 2].includes(dependencySet.entries.length) || typeof descriptor.payload.parentToolUseId !== 'string'
       || (sourceFile.split('/').length !== 4 && descriptor.payload.parentToolUseId)) throw new Error('Invalid Qoder transcript descriptor');
+  if (dependencySet.entries.length === 2) {
+    const extra = dependencySet.entries[1];
+    if (sourceFile.split('/').length !== 2
+      || !validTitle(extra.evidence?.title, indexedSession.sourceSessionId, indexedSession.cwdSet[0])
+      || !isDeepStrictEqual(extra, titleDependency(extra.evidence.title))) throw new Error('Invalid Qoder desktop title dependency');
+  }
   const entry = dependencySet.entries[0];
   exactKeys(entry, ['role', 'pathIdentity', 'existence', 'kind', 'policy', 'acceptedBytes', 'lineCount', 'digest', 'directoryEntries', 'evidence']);
   exactKeys(entry.evidence, ['fileIdentity']); exactKeys(entry.evidence.fileIdentity, ['device', 'inode']);
@@ -204,7 +240,7 @@ async function materializeQoderSession({ materializationContext, indexedSession,
   const payload = indexedSession.materializationDescriptor.payload;
   const session = await parseQoderSessionArtifact(path.resolve(materializationContext.sessionsRoot, payload.sourceFile), payload.sourceFile,
     materializationContext.repoRoot, signal, { sessionsRoot: materializationContext.sessionsRoot,
-      acceptedSnapshot: accepted(dependencySet.entries[0]) });
+      acceptedSnapshot: accepted(dependencySet.entries[0]), desktopTitle: dependencySet.entries[1]?.evidence.title });
   if (!session || session.id !== indexedSession.id || session.rawEventCount !== indexedSession.rawEventCount || session.logicalEventCount !== indexedSession.logicalEventCount) throw storage.stale();
   return { ...session, materializationSnapshotId: indexedSession.materializationDescriptor.sourceSnapshotId };
 }

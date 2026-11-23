@@ -567,7 +567,7 @@ async function preparedExcerpt(t, detailView, diagnostics) {
   rows.find((row) => row.id === 'summary-b').summary += '\n\n' + Array.from({ length: 24 }, (_, i) => `Synthetic recovery paragraph ${i}: retain the reader viewport and disclosure choices.`).join('\n\n');
   await fs.writeFile(data.file, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
   const server = await data.start();
-  const hit = (await server.service.execute('search', { query: 'A failed', layer: 'protocol' })).items[0];
+  const hit = (await server.service.execute('search', { query: 'A failed', layer: 'protocol', presentation: 'full' })).items[0];
   assert.ok(hit?.ref);
   const browser = await chromium.launch(); t.after(() => browser.close());
   const page = await browser.newPage({ locale: 'en-US', viewport: { width: 1440, height: 900 } });
@@ -742,7 +742,7 @@ test('pi excerpt manual reference changes still resolve after snapshot-owned bro
   await page.getByRole('button', { name: 'Read referenced entry', exact: true }).evaluate((node) => node.click());
   await page.waitForFunction(() => new URL(location.href).searchParams.has('piEntry') && window.__piExcerptTrace.pending === 0);
   await page.goBack(); await excerptSettled(page, selected);
-  const alternate = (await server.service.execute('search', { query: 'Successful attempt', layer: 'protocol' })).items[0];
+  const alternate = (await server.service.execute('search', { query: 'Successful attempt', layer: 'protocol', presentation: 'full' })).items[0];
   assert.ok(alternate?.ref);
   const before = await page.evaluate(() => window.__piExcerptTrace.requests.length);
   // Assigning location.hash is a real user-style fragment navigation; the browser

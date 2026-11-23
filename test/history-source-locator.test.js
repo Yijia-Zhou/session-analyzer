@@ -10,7 +10,7 @@ const { zstdCompressSync } = require('node:zlib');
 const { buildSourceBackedIndex } = require('../src/codex');
 const { materializeSessionForIndex } = require('../src/source-adapters');
 const { createHistorySourceLocator } = require('../src/history-source-locator');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 
 async function fixture(t, { compressed = false } = {}) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'source-locator-'));

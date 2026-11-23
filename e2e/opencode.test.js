@@ -50,7 +50,7 @@ for (const width of [1440, 390]) test(`OpenCode source choice, search, Detail, R
     // Hold a separate fixed revision to verify that refreshing the Web index
     // does not redirect a previously returned durable evidence reference.
     oldService = await createHistoryService({ source: 'opencode', opencodeHome: dbPath, repo });
-    const oldHit = (await oldService.execute('search', { query: 'OPENCODE_OUTPUT_V1' })).items[0];
+    const oldHit = (await oldService.execute('search', { query: 'OPENCODE_OUTPUT_V1', presentation: 'full' })).items[0];
     assert.ok(oldHit?.ref);
     server = createServer(null, 0, { source: 'codex', codexHome: path.join(home, 'empty-codex'),
       opencodeHome: dbPath, sessionPrewarm: false });
@@ -145,7 +145,7 @@ for (const width of [1440, 390]) test(`OpenCode source choice, search, Detail, R
     assert.equal(await page.locator('#sessionList .sessionItem').count(), 0);
     assert.equal(await page.locator('#timeline .event').count(), 0);
     assert.doesNotMatch(await page.locator('#detail').innerText(), /OPENCODE_OUTPUT_V2/);
-    const oldEvidence = await oldService.execute('read', { refs: [oldHit.ref], parts: ['projection', 'raw'] });
+    const oldEvidence = await oldService.execute('read', { refs: [oldHit.ref], parts: ['projection', 'raw'], presentation: 'full' });
     assert.match(JSON.stringify(oldEvidence.items), /OPENCODE_OUTPUT_V1/);
     const oldRaw = await oldService.execute('read', { refs: oldEvidence.items[0].rawRefs, parts: ['raw'] });
     assert.match(JSON.stringify(oldRaw.items), /OPENCODE_OUTPUT_V1/);

@@ -7,7 +7,7 @@ const os = require('node:os');
 const { buildQoderIndex, discoverQoderProjects, qoderAdapter } = require('../src/qoder');
 const { materializeSessionForIndex, validateIndexOwnershipForCommit, buildEventDetailForSession, readIndexedRawRecord } = require('../src/source-adapters');
 const { disposeProjectQueryStore, projectQueryProjectionDigestAsync } = require('../src/project-query-store');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 const timestamp = '2026-11-01T00:00:00.000Z';
 const message = (type, uuid, parentUuid, content, extra = {}) => ({ type, uuid, parentUuid, timestamp, version: '1.1.79-hotfix.19',
   isSidechain: false, message: { role: type, content }, ...extra });

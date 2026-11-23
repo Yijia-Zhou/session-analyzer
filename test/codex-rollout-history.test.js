@@ -7,8 +7,10 @@ const path = require('node:path');
 const os = require('node:os');
 const { zstdCompressSync } = require('node:zlib');
 const codex = require('../src/codex');
+const { CODEX_ROLLOUT_RECORD_TOO_LARGE, MAX_CODEX_RECORD_BYTES } = require('../src/codex-rollout-storage');
+const { disposeIndexResources } = require('../src/index-resources');
 const { materializeSessionForIndex, validateIndexOwnershipForCommit } = require('../src/source-adapters');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 const { parseRolloutArtifactIdentity, parseHistoryBase, resolveRolloutHistoryPlans, validateHistorySegmentBoundary } = require('../src/codex-rollout-history');
 
 // Synthetic structural fixtures for rust-v0.162.1 history positions and filenames.
@@ -115,6 +117,35 @@ async function historyFixture(t) {
   await fs.writeFile(path.join(sessionsRoot, file(ONE)), secondRows.map(JSON.stringify).join('\n') + '\n');
   return { repoRoot, codexHome, sessionsRoot, firstRows, secondRows, options: { repoRoot, codexHome, currentRolloutPathsForTests: new Map([[ROOT, path.join(sessionsRoot, file(ONE))]]) } };
 }
+
+test('oversized history record diagnostics identify the ancestor containing the record', async (t) => {
+  const f = await historyFixture(t);
+  const ancestor = file(ROOT);
+  const header = JSON.stringify(f.firstRows[0]) + '\n';
+  const terminatorOffset = Buffer.byteLength(header) + MAX_CODEX_RECORD_BYTES + 1;
+  const handle = await fs.open(path.join(f.sessionsRoot, ancestor), 'w');
+  try {
+    await handle.writeFile(header);
+    await handle.write(Buffer.from('\n'), 0, 1, terminatorOffset);
+  } finally {
+    await handle.close();
+  }
+  f.secondRows[0].payload.history_base.end_byte_offset = terminatorOffset + 1;
+  await fs.writeFile(path.join(f.sessionsRoot, file(ONE)), f.secondRows.map(JSON.stringify).join('\n') + '\n');
+
+  for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+    const diagnostics = [];
+    const index = await build({ ...f.options, onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) });
+    try {
+      const capacity = diagnostics.filter((diagnostic) => diagnostic.code === CODEX_ROLLOUT_RECORD_TOO_LARGE);
+      assert.deepEqual(capacity.map((diagnostic) => diagnostic.path.replace(/\\/g, '/')), [ancestor]);
+      assert.match(capacity[0].message, /line 2\b/);
+      assert.equal(index.sessions.length, 0);
+    } finally {
+      await disposeIndexResources(index);
+    }
+  }
+});
 
 test('history observation samples full physical ancestors including compressed and admitted archived dependencies', async (t) => {
   for (const archived of [false, true]) for (const compressed of [false, true]) {

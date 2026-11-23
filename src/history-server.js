@@ -6,9 +6,9 @@ const { validateGroups } = require('./history-search-groups');
 const OPERATIONS = new Set(['status', 'observe', 'search', 'context', 'read', 'open']);
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-const STRING_FIELDS = new Set(['contextRef', 'cursor', 'query', 'order', 'session', 'callerSessionId', 'layer', 'kind', 'status', 'tool', 'file', 'retrievalArtifacts', 'presentation', 'view', 'textFormat', 'from', 'to']);
+const STRING_FIELDS = new Set(['contextRef', 'cursor', 'query', 'order', 'session', 'callerSessionId', 'layer', 'kind', 'status', 'tool', 'file', 'retrievalArtifacts', 'presentation', 'view', 'textFormat', 'mode', 'from', 'to']);
 const ARRAY_FIELDS = new Set(['queries', 'exclude', 'refs', 'parts']);
-const NUMBER_FIELDS = new Set(['limit', 'maxBytes', 'maxFiles', 'offset', 'length']);
+const NUMBER_FIELDS = new Set(['limit', 'maxBytes', 'maxFiles', 'offset', 'endOffset', 'rawOffset', 'length']);
 const OBSERVE_FIELDS = new Set(['callerSessionId', 'maxFiles', 'limit', 'maxBytes', 'presentation', 'contextRef']);
 
 function historyError(code, message, statusCode = 400) {
@@ -36,14 +36,14 @@ function validateHistoryInput(input, operation) {
       for (const { id, ...query } of value) validateHistoryInput(query);
     } else if (key === 'source') {
       if (!value || typeof value !== 'object' || Array.isArray(value)
-          || Object.keys(value).some((field) => !['sourceRef', 'sourcePath', 'locator', 'logicalOffset'].includes(field))
+          || Object.keys(value).some((field) => !['sourceRef', 'sourcePath', 'locator', 'logicalOffset', 'rawRef'].includes(field))
           || (value.logicalOffset !== undefined && (!Number.isSafeInteger(value.logicalOffset) || value.logicalOffset < 0))
           || (value.sourceRef === undefined) === (value.sourcePath === undefined)
-          || [value.sourceRef, value.sourcePath].some((s) => s !== undefined && (typeof s !== 'string' || !s.trim() || s.length > 8192))
+          || [value.sourceRef, value.sourcePath, value.rawRef].some((s) => s !== undefined && (typeof s !== 'string' || !s.trim() || s.length > 8192))
           || !value.locator || typeof value.locator !== 'object' || Array.isArray(value.locator)
           || Object.keys(value.locator).some((field) => !['type', 'line'].includes(field))
           || value.locator.type !== 'jsonl-line' || !Number.isSafeInteger(value.locator.line) || value.locator.line < 1) {
-        throw historyError('INVALID_INPUT', 'source requires sourceRef or sourcePath and a positive 1-based jsonl-line locator.');
+        throw historyError('INVALID_INPUT', 'source requires sourceRef or sourcePath and a positive 1-based jsonl-line locator; rawRef, if supplied, must be a reference string.');
       }
     } else if (STRING_FIELDS.has(key)) {
       if (typeof value !== 'string' || !value.trim() || value.length > 65536) throw historyError('INVALID_INPUT', `${key} must be a non-empty string of at most 65536 characters.`);

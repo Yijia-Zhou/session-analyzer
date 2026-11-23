@@ -11,7 +11,7 @@ const { validateIndexOwnershipForCommit, materializeSessionForIndex, readIndexed
   buildEventDetailForSession, supportedSourceKinds } = require('../src/source-adapters');
 const { disposeIndexResources } = require('../src/index-resources');
 const { projectQueryProjectionDigestAsync } = require('../src/project-query-store');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 const storage = require('../src/opencode-storage');
 
 async function fixture(t, overrides = {}) {

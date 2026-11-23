@@ -157,6 +157,20 @@ test('discovery and both index builders exclude oversized artifacts without part
   }
 });
 
+test('accepted Codex prefix replay rejects a capacity failure instead of excluding the Session', async (t) => {
+  const f = await fixture(t);
+  await fs.appendFile(path.join(f.root, 'rollout-healthy.jsonl'), 'invalid JSON\n');
+  const readLogicalLines = storage.readLogicalLines;
+  let reads = 0;
+  t.mock.method(storage, 'readLogicalLines', (input, options) => {
+    reads += 1;
+    // Simulate the bounded reader encountering a capacity failure on replay.
+    return readLogicalLines(input, reads === 2 ? { ...options, maxLineBytes: 7 } : options);
+  });
+  await assert.rejects(codex.buildSourceBackedIndex({ codexHome: f.home, repoRoot: f.repoRoot }), capacityError);
+  assert.equal(reads, 2);
+});
+
 test('project statistics with an oversized record leave the HTTP process alive', { timeout: 30000 }, async (t) => {
   const f = await oversizedFixture(t);
   const child = spawn(process.execPath, ['-e', `

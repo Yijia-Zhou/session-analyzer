@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 
 // Real synthetic Codex files exercise indexing, source projections and artifact
 // recognition together. A long recent discussion must not hide older constraints.

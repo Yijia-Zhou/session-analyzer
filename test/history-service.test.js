@@ -6,8 +6,11 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
+const bodyParts = (parts) => parts.map(({ previous, next, ...part }) => part);
 const { requireSourceAdapter } = require('../src/source-adapters');
+const { requestHistory } = require('../src/history-cli');
+const { createHistoryServer } = require('../src/history-server');
 const { scanProjectQueryShard, disposeProjectQueryStore } = require('../src/project-query-store');
 const { isDiskStore } = require('../src/project-query-disk');
 
@@ -171,8 +174,9 @@ test('grouped queries retain independent counts, pagination and query identities
 test('grouped response budgets distinguish omitted, unexecuted and zero-hit groups', async (t) => {
   const { service } = await corpus(t);
   const groups = Array.from({ length: 8 }, (_, n) => ({ id: `g${n}`, query: 'queryNeedle', limit: 100, maxBytes: 24000 }));
-  const result = await service.execute('search', { groups, maxBytes: 4096 });
-  assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 4096);
+  // Complete retry inputs for all eight groups also count toward the envelope.
+  const result = await service.execute('search', { groups, maxBytes: 6000 });
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 6000);
   assert.ok(result.groups.some((g) => g.state === 'results_omitted'));
   assert.ok(result.groups.some((g) => g.state === 'not_executed'));
   for (const invalid of [{ order: 'invalid' }, { from: 'not-a-date' }, { session: 'not-indexed' }, { kind: 42 }, { cursor: 'invalid' }]) {
@@ -200,7 +204,7 @@ test('omitted grouped continuation retries the same page with its original group
   assert.ok(first.nextCursor);
   const next = { ...query, limit: 100, maxBytes: 24000, cursor: first.nextCursor };
   const groups = [next, ...Array.from({ length: 7 }, (_, n) => ({ ...query, id: `other${n}` }))];
-  const omitted = (await service.execute('search', { groups, maxBytes: 4096 })).groups[0];
+  const omitted = (await service.execute('search', { groups, maxBytes: 6000 })).groups[0];
   assert.equal(omitted.state, 'results_omitted');
   assert.equal(omitted.resumeCursor, first.nextCursor);
   const retry = (await service.execute('search', { groups: [{ ...next, cursor: omitted.resumeCursor }] })).groups[0];
@@ -258,7 +262,7 @@ test('blank source locations still validate read options and return honest empty
   await assert.rejects(service.execute('read', { source: { ...source, logicalOffset: -1 } }), { code: 'INVALID_ARGUMENT' });
 });
 
-test('source read pages multiple explicit logical owners without losing compact links', async (t) => {
+test('source read continues logical associations of the same Raw independently of batch pages', async (t) => {
   const { sourceFile, options } = await corpus(t);
   const vm = require('node:vm');
   const { createRequire } = require('node:module');
@@ -267,23 +271,25 @@ test('source read pages multiple explicit logical owners without losing compact 
   const realLocator = serviceRequire('./history-source-locator');
   const sourceCode = await fs.readFile(serviceFile, 'utf8');
   const serviceModule = { exports: {} };
-  // Supply a second valid canonical event reference at the locator boundary.
-  // Association correctness is tested by the locator unit tests; this test
-  // exercises service pagination and handle expansion with two links.
+  // At the locator boundary, project two distinct canonical Raw Records onto
+  // the same physical line and give each multiple explicit logical owners.
+  // The real locator still enumerates matches and the service reads the
+  // original canonical records from the synthetic index.
   const locatorModule = { ...realLocator, createHistorySourceLocator(config) {
-    const base = realLocator.createHistorySourceLocator(config);
-    return { async resolveLocator(input) {
-      const resolved = await base.resolveLocator(input);
-      if (input.locator.line !== 2 || !resolved.matches.length) return resolved;
-      const owner = config.index.sessions.find((session) => session.id === resolved.matches[0].sessionId);
-      const hydrated = await config.materialize(owner);
-      const existing = new Set(resolved.matches[0].logicalRefs.map((link) => link.eventId));
-      const second = hydrated.logicalEvents.find((event) => event.layer === 'main' && !existing.has(event.id));
-      assert.ok(second, 'fixture needs a second canonical event');
-      resolved.matches[0].logicalRefs.push({ layer: second.layer, eventId: second.id,
-        ref: config.makeEvidenceRef(owner, second.layer, second) });
-      return resolved;
-    } };
+    return realLocator.createHistorySourceLocator({ ...config, async materialize(owner) {
+      const session = await config.materialize(owner);
+      const [first, second] = [2, 3].map((line) => session.rawEvents.find((raw) => raw.sourceLocator?.line === line));
+      assert.ok(first && second && first.rawId !== second.rawId);
+      const extra = session.logicalEvents.filter((event) => event.layer === 'main').slice(-4);
+      assert.equal(extra.length, 4);
+      return { ...session,
+        rawEvents: session.rawEvents.map((raw) => raw === second ? { ...raw, sourceLocator: first.sourceLocator } : raw),
+        logicalEvents: session.logicalEvents.map((event) => {
+          const i = extra.indexOf(event);
+          return i < 0 ? event : { ...event, rawRefs: [...event.rawRefs, i < 2 ? first : second] };
+        }),
+      };
+    } });
   } };
   vm.runInNewContext(sourceCode, { module: serviceModule, exports: serviceModule.exports,
     require: (id) => id === './history-source-locator' ? locatorModule : serviceRequire(id), Buffer },
@@ -308,6 +314,50 @@ test('source read pages multiple explicit logical owners without losing compact 
   } while (logicalOffset !== null);
   assert.deepEqual(actual, expected);
   assert.equal(new Set(actual).size, actual.length);
+  const tail = await service.execute('read', { source, limit: 1, presentation: 'compact', endOffset: 120, length: 17 });
+  const firstItem = tail.items[0];
+  const continuation = firstItem.logicalRefsNext;
+  assert.equal(continuation.endOffset, 120);
+  assert.equal(continuation.offset, undefined);
+  const continued = await service.execute('read', JSON.parse(JSON.stringify(continuation)));
+  const nextItem = continued.items[0];
+  assert.notEqual(nextItem.logicalRefs[0].eventId, firstItem.logicalRefs[0].eventId);
+  assert.equal(nextItem.parts[0].offset, firstItem.parts[0].offset);
+  assert.equal(nextItem.parts[0].endOffset, firstItem.parts[0].endOffset);
+  assert.equal(nextItem.parts[0].text, firstItem.parts[0].text);
+
+  const server = createHistoryServer(service);
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
+  const read = (input) => requestHistory(`http://127.0.0.1:${server.address().port}`, 'read', input);
+  assert.equal(all.source.matchedRawRecords, 2);
+  const firstRaw = await read({ source, limit: 1 });
+  assert.equal(firstRaw.items[0].evidenceRef, all.items[0].evidenceRef);
+  assert.ok(firstRaw.next, 'the physical location has a second Raw');
+  const secondRaw = await read(firstRaw.next);
+  const secondItem = secondRaw.items[0];
+  assert.equal(secondItem.evidenceRef, all.items[1].evidenceRef);
+  assert.equal(secondRaw.next, null);
+  const expectedLinks = all.items[1].logicalRefs.map((link) => link.eventId);
+  assert.ok(expectedLinks.length >= 2);
+  const actualLinks = secondItem.logicalRefs.map((link) => link.eventId);
+  for (let next = secondItem.logicalRefsNext; next;) {
+    const continued = await read(next);
+    assert.ifError(continued.error);
+    assert.equal(continued.items.length, 1);
+    const item = continued.items[0];
+    assert.equal(item.evidenceRef, secondItem.evidenceRef, 'association continuation must keep the second Raw');
+    assert.equal(continued.next, null, 'association continuation is not a Raw batch page');
+    actualLinks.push(...item.logicalRefs.map((link) => link.eventId));
+    assert.ok(actualLinks.length <= expectedLinks.length);
+    next = item.logicalRefsNext;
+  }
+  assert.deepEqual(actualLinks, expectedLinks);
+  assert.equal(new Set(actualLinks).size, expectedLinks.length);
+  const resume = secondItem.logicalRefsNext;
+  for (const source of [{ ...resume.source, locator: { type: 'jsonl-line', line: 4 } }, { ...resume.source, rawRef: 'unresolvable' }]) {
+    assert.equal((await read({ ...resume, source })).error?.code, 'INVALID_REFERENCE');
+  }
 });
 
 test('compact handles bind to their service, export durable evidence and retain source checks', async (t) => {
@@ -521,8 +571,8 @@ test('compact evidence remains durable and legacy evidence remains readable', as
   const read = await service.execute('read', { refs: [old], parts: ['message'] });
   assert.match(read.items[0].parts[0].text, /Earlier independent/);
   const aroundHit = { before: 2, after: 4 };
-  assert.deepEqual((await service.execute('read', { refs: [old], aroundHit })).items[0].parts,
-    (await service.execute('read', { refs: [hit.ref], aroundHit })).items[0].parts);
+  assert.deepEqual(bodyParts((await service.execute('read', { refs: [old], aroundHit })).items[0].parts),
+    bodyParts((await service.execute('read', { refs: [hit.ref], aroundHit })).items[0].parts));
   const restarted = await createHistoryService(options);
   t.after(() => restarted.close());
   assert.equal((await restarted.execute('read', { refs: [hit.ref] })).items[0].ref, hit.ref);
@@ -727,7 +777,7 @@ test('duplicate part selectors preserve raw-link continuation and equivalent bat
   assert.equal(first.items[0].parts.length, 1);
   assert.equal(first.items[0].rawRefsNextOffset, 1);
   const next = await service.execute('read', { refs: [refs[0]], parts: ['raw', 'raw'], limit: 1,
-    offset: first.items[0].rawRefsNextOffset });
+    rawOffset: first.items[0].rawRefsNextOffset });
   assert.equal(next.items[0].rawRefsOffset, 1);
   assert.notEqual(next.items[0].rawRefs[0], first.items[0].rawRefs[0]);
   assert.equal(next.items[0].rawRefsNextOffset, null);
@@ -747,7 +797,7 @@ test('persistent refs survive restart while contexts and cursors expire; source/
   assert.equal((await restarted.execute('read', { refs: [ref] })).items[0].ref, ref);
   const focusedInput = { refs: [ref], aroundHit: { before: 20, after: 40 } };
   const focused = await service.execute('read', focusedInput);
-  assert.deepEqual((await restarted.execute('read', focusedInput)).items[0].parts, focused.items[0].parts);
+  assert.deepEqual(bodyParts((await restarted.execute('read', focusedInput)).items[0].parts), bodyParts(focused.items[0].parts));
   await assert.rejects(restarted.execute('read', { refs: [ref], contextRef: found.contextRef }), { code: 'CONTEXT_EXPIRED' });
   await assert.rejects(restarted.execute('search', { queries: ['queryNeedle'], cursor: found.nextCursor }), { code: 'INVALID_CURSOR' });
   const otherRepo = path.join(home, 'other-repo');
@@ -788,7 +838,10 @@ test('UTF-8 output budgets are enforced for multibyte text and resume without lo
   assert.equal(new Set(allRefs).size, allRefs.length);
   assert.equal(allRefs.length, search.scan.matchedEvents);
   const long = (await service.execute('search', { queries: ['LONG_UNICODE'] })).items[0];
-  await assert.rejects(service.execute('read', { refs: [long.ref], parts: ['projection'], length: 20000, maxBytes: 4096 }), { code: 'OUTPUT_BUDGET_TOO_SMALL' });
+  const fitted = await service.execute('read', { refs: [long.ref], parts: ['projection'], length: 20000, maxBytes: 4096 });
+  assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= 4096);
+  assert.equal(fitted.contentTruncated, true);
+  assert.ok(fitted.items[0].parts[0].next);
 });
 
 test('context length rejection explains nearby versus session-start recovery in either presentation', async (t) => {
@@ -813,7 +866,7 @@ test('context length rejection explains nearby versus session-start recovery in 
   }
 });
 
-test('read budget repairs distinguish ordinary text, aroundHit, Raw text and source locators', async (t) => {
+test('read budgets fit ordinary text, aroundHit, Raw text and source locators', async (t) => {
   const { service, sourceFile } = await corpus(t);
   const hit = (await service.execute('search', { query: 'LONG_UNICODE' })).items[0];
   const cases = [
@@ -828,15 +881,12 @@ test('read budget repairs distinguish ordinary text, aroundHit, Raw text and sou
   const rows = (await fs.readFile(sourceFile, 'utf8')).trim().split('\n');
   const source = { sourcePath: sourceFile, locator: { type: 'jsonl-line', line: rows.length } };
   cases.push([{ source, length: 20000 }, { source, length: 80 }, /length for selected text.*limit.*logicalRefs/u]);
-  for (const [input, repair, hint] of cases) {
-    await assert.rejects(service.execute('read', { ...input, maxBytes: 4096 }), (error) => {
-      assert.equal(error.code, 'OUTPUT_BUDGET_TOO_SMALL');
-      assert.match(error.message, /No item fits.*UTF-8 JSON bytes/u);
-      assert.match(error.message, hint);
-      assert.match(error.message, /omit cursor/u);
-      if (input.aroundHit) assert.doesNotMatch(error.message, /reduce length|select fewer parts/u);
-      return true;
-    });
+  for (const [input, repair] of cases) {
+    const fitted = await service.execute('read', { ...input, maxBytes: 4096 });
+    assert.equal(fitted.items.length, 1);
+    assert.equal(fitted.contentTruncated, true);
+    assert.ok(fitted.items[0].parts[0].text.length > 0);
+    assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= 4096);
     const result = await service.execute('read', { ...repair, maxBytes: 4096 });
     assert.equal(result.items.length, 1);
     assert.ok(result.items[0].parts[0].text.length <= 80);
@@ -888,7 +938,7 @@ test('duplicate Raw selectors recover a large linked-record item by reducing lim
   const first = await service.execute('read', { ...input, limit: 1 });
   assert.equal(first.items[0].parts.length, 1);
   assert.equal(first.items[0].rawRefsNextOffset, 1);
-  const next = await service.execute('read', { ...input, limit: 1, offset: first.items[0].rawRefsNextOffset });
+  const next = await service.execute('read', { ...input, limit: 1, rawOffset: first.items[0].rawRefsNextOffset });
   assert.notEqual(next.items[0].rawRefs[0], first.items[0].rawRefs[0]);
   assert.equal(next.items[0].rawRefsNextOffset, 2);
 });
@@ -979,16 +1029,16 @@ test('around-hit reads preserve middle/tail UTF-16 positions and exact adjacent 
     assert.equal(part.nextOffset, part.endOffset < full.length ? part.endOffset : null);
     for (const [direction, range] of [['previous', part.previous], ['next', part.next]]) {
       if (!range) { assert.equal(direction, 'next'); assert.equal(part.endOffset, full.length); continue; }
-      const continuation = (await service.execute('read', { refs: [hit.ref], parts: ['projection'], ...range })).items[0].parts[0];
-      assert.equal(continuation.text, full.slice(range.offset, range.offset + range.length));
-      if (direction === 'previous') assert.equal(range.offset + range.length, part.offset);
+      const continuation = (await service.execute('read', range)).items[0].parts[0];
+      assert.equal(continuation.text, full.slice(continuation.offset, continuation.endOffset));
+      if (direction === 'previous') assert.equal(continuation.endOffset, part.offset);
       else assert.equal(range.offset, part.endOffset);
     }
     const compact = await service.execute('read', { refs: [hit.ref], aroundHit, presentation: 'compact', contextRef: batch.contextRef });
     assert.equal(compact.items[0].evidenceRef, hit.ref);
-    assert.deepEqual(compact.items[0].parts[0], part);
+    assert.deepEqual(bodyParts(compact.items[0].parts), bodyParts([part]));
     const fromHandle = await service.execute('read', { refs: [compact.items[0].ref], contextRef: compact.contextRef, aroundHit });
-    assert.deepEqual(fromHandle.items[0].parts[0], part);
+    assert.deepEqual(bodyParts(fromHandle.items[0].parts), bodyParts([part]));
   }
   const zero = (await service.execute('search', { query: 'LONG_UNICODE' })).items[0];
   const part = (await service.execute('read', { refs: [zero.ref], aroundHit: { before: 50, after: 0 } })).items[0].parts[0];
@@ -997,7 +1047,9 @@ test('around-hit reads preserve middle/tail UTF-16 positions and exact adjacent 
   assert.equal(part.endOffset, 1);
   assert.equal(part.text, 'L');
   assert.equal(part.previous, null);
-  assert.deepEqual(part.next, { offset: 1, length: 51 });
+  assert.equal(part.next.offset, 1);
+  assert.equal(part.next.length, 51);
+  assert.equal((await service.execute('read', part.next)).items[0].parts[0].offset, 1);
 });
 
 test('around-hit options never infer offsets or cross representation coordinates', async (t) => {
@@ -1033,7 +1085,7 @@ test('around-hit item cursors bind windows and preserve selected-page and byte-b
   const first = await service.execute('read', { refs, aroundHit, limit: 1, parts: ['projection', 'projection'] });
   assert.equal(first.hasMore, true);
   const next = await service.execute('read', { refs, aroundHit, limit: 2, maxBytes: 10000, cursor: first.nextCursor });
-  assert.deepEqual(next.items[0].parts, first.items[0].parts);
+  assert.deepEqual(bodyParts(next.items[0].parts), bodyParts(first.items[0].parts));
   assert.equal(next.hasMore, false);
   for (const input of [{ parts: ['projection'] }, { aroundHit: { before: 99, after: 200 } }]) {
     await assert.rejects(service.execute('read', { refs, ...input, cursor: first.nextCursor }), { code: 'INVALID_CURSOR' });
@@ -1046,13 +1098,18 @@ test('around-hit item cursors bind windows and preserve selected-page and byte-b
   let cursor;
   let count = 0;
   do {
-    const page = await service.execute('read', { refs: manyRefs, aroundHit, limit: 20, maxBytes: 4096, cursor });
-    assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 4096);
+    // The submit-ready batch continuation repeats all input refs. Its metadata
+    // also belongs to the budget; leave space for that twenty-reference request.
+    const page = await service.execute('read', { refs: manyRefs, aroundHit, limit: 20, maxBytes: 8192, cursor });
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 8192);
     count += page.items.length;
     cursor = page.nextCursor;
   } while (cursor);
   assert.equal(count, manyRefs.length);
-  await assert.rejects(service.execute('read', { refs: [hit.ref], aroundHit: { before: 0, after: 20000 }, maxBytes: 4096 }), { code: 'OUTPUT_BUDGET_TOO_SMALL' });
+  const fitted = await service.execute('read', { refs: [hit.ref], aroundHit: { before: 0, after: 20000 }, maxBytes: 4096 });
+  assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= 4096);
+  assert.equal(fitted.items[0].parts[0].hitOffset, 0);
+  assert.ok(fitted.items[0].parts[0].next);
 });
 
 test('existing Codex, Claude Code and DeepSeek sources support history search/context/read', async (t) => {

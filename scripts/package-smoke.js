@@ -409,6 +409,15 @@ async function main() {
     const qoderSessionDir = path.join(qoderHome, 'projects', 'package-smoke-project');
     await fsp.mkdir(qoderSessionDir, { recursive: true });
     await fsp.writeFile(path.join(qoderSessionDir, qoderSessionId + '.jsonl'), JSON.stringify(qoderUser) + '\n', 'utf8');
+    const qoderDesktopDb = path.join(smokeRoot, 'qoder-desktop.sqlite');
+    const { DatabaseSync } = require('node:sqlite');
+    const qoderDb = new DatabaseSync(qoderDesktopDb);
+    qoderDb.exec(`CREATE TABLE chat_sessions(session_id TEXT PRIMARY KEY, cwd TEXT, title TEXT, extra_json TEXT,
+      conversation_mode TEXT, execution_kind TEXT, deleted_at TEXT, session_kind TEXT DEFAULT 'standard')`);
+    qoderDb.prepare("INSERT INTO chat_sessions(session_id,cwd,title,extra_json,conversation_mode,execution_kind) VALUES(?,?,?,'{}','normal','local')")
+      .run(qoderSessionId, projectDir, 'Packaged Qoder desktop title');
+    qoderDb.close();
+
     const opencodeFixture = createOpenCodeFixture({ dbPath: opencodeDbPath, repoRoot: projectDir,
       sessionId: opencodeSessionId, userText: opencodeText });
     const opencodeUser = JSON.parse(JSON.stringify(opencodeFixture.db.prepare('SELECT * FROM session_message WHERE id = ?').get(opencodeFixture.messageId)));
@@ -576,7 +585,7 @@ async function main() {
 
     const packagedServer = path.join(smokeRoot, 'node_modules', 'session-analyzer', 'server.js');
     const packageRoot = path.dirname(packagedServer);
-    for (const relative of ['src/history-cli.js', 'src/history-browser-open.js', 'src/history-server.js', 'src/history-service.js', 'src/history-presentation.js', 'src/history-search-groups.js', 'src/history-source-locator.js', 'src/history-source-observation.js', 'src/history-artifacts.js', 'skills/history-retrieval/SKILL.md', 'skills/history-retrieval/references/source-observation.md']) {
+    for (const relative of ['src/history-cli.js', 'src/history-browser-open.js', 'src/history-server.js', 'src/history-service.js', 'src/history-read-budget.js', 'src/history-presentation.js', 'src/history-search-groups.js', 'src/history-source-locator.js', 'src/history-source-observation.js', 'src/history-artifacts.js', 'skills/history-retrieval/SKILL.md', 'skills/history-retrieval/references/source-observation.md']) {
       assert.ok((await fsp.stat(path.join(packageRoot, relative))).isFile(), 'Missing packaged history file: ' + relative);
     }
     verifyPackagedHistorySkill(packageRoot);
@@ -688,11 +697,12 @@ async function main() {
     await stopChild(child);
     child = null;
     launched = await launchPackagedServer(packagedServer, smokeRoot, [
-      '--source', 'qoder', '--repo', projectDir, '--qoder-home', qoderHome,
+      '--source', 'qoder', '--repo', projectDir, '--qoder-home', qoderHome, '--qoder-desktop-db', qoderDesktopDb,
     ]);
     child = launched.child;
     baseUrl = `http://127.0.0.1:${launched.port}`;
     const qoderState = await waitForPackageState(baseUrl);
+    assert.equal(JSON.parse((await requestText(baseUrl + '/api/sessions')).body).sessions[0].title, 'Packaged Qoder desktop title');
     await verifyPackageReading(baseUrl, qoderState.json, {
       sourceKind: 'qoder', repoRoot: projectDir, sourceHome: qoderHome,
       sessions: [{ id: qoderSessionId, text: qoderText, record: qoderUser }],
@@ -706,15 +716,17 @@ async function main() {
       { source: 'pi', rootOption: '--pi-home', home: piHome, text: piText, count: 1 },
       { source: 'opencode', rootOption: '--opencode-home', home: opencodeHome, text: opencodeText, count: 1 },
       { source: 'workbuddy', rootOption: '--workbuddy-home', home: workbuddyHome, text: workbuddyText, count: 1 },
-      { source: 'qoder', rootOption: '--qoder-home', home: qoderHome, text: qoderText, count: 1 },
+      { source: 'qoder', rootOption: '--qoder-home', home: qoderHome, text: qoderText, count: 1, extraArgs: ['--qoder-desktop-db', qoderDesktopDb] },
     ]) {
       launched = await launchPackagedServer(packagedServer, smokeRoot, [
-        'history', 'serve', '--source', fixture.source, '--repo', projectDir, fixture.rootOption, fixture.home,
+        'history', 'serve', '--source', fixture.source, '--repo', projectDir, fixture.rootOption, fixture.home, ...(fixture.extraArgs || []),
       ]);
       child = launched.child;
       const endpoint = `http://127.0.0.1:${launched.port}`;
-      const history = (operation, input = {}) => {
-        const result = run(process.execPath, [packagedServer, 'history', operation, '--endpoint', endpoint, '--input', JSON.stringify(input), ...(operation === 'open' ? ['--no-browser'] : [])], { cwd: smokeRoot });
+      const history = (operation, input = {}, usePresentationDefault = false) => {
+        // Keep the legacy durable-reference flow explicit, and check the default separately below.
+        const requestInput = operation === 'open' || usePresentationDefault ? input : { presentation: 'full', ...input };
+        const result = run(process.execPath, [packagedServer, 'history', operation, '--endpoint', endpoint, '--input', JSON.stringify(requestInput), ...(operation === 'open' ? ['--no-browser'] : [])], { cwd: smokeRoot });
         const response = JSON.parse(result.stdout);
         assert.equal(response.producer, 'session-analyzer');
         assert.equal(response.operation, `history.${operation}`);
@@ -726,6 +738,14 @@ async function main() {
       assert.equal(status.coverage.repo, projectDir);
       assert.equal(status.coverage.source, fixture.source);
       assert.equal(status.coverage.sessionCount, fixture.count);
+      const defaultSearch = history('search', { query: fixture.text, kind: 'user_message', limit: 1 }, true);
+      assert.equal(defaultSearch.presentation, 'compact');
+      assert.match(defaultSearch.items[0].ref, /^hr1\./u);
+      const defaultRead = history('read', { refs: [defaultSearch.items[0].ref], contextRef: defaultSearch.contextRef,
+        parts: ['projection'] }, true);
+      assert.equal(defaultRead.presentation, 'compact');
+      assert.match(defaultRead.items[0].evidenceRef, /^er2\./u);
+      assert.ok(defaultRead.items[0].parts[0].text.includes(fixture.text));
       const search = history('search', { queries: [fixture.text], kind: 'user_message', limit: 1 });
       assert.equal(search.items.length, 1);
       if (fixture.source === 'codex') {

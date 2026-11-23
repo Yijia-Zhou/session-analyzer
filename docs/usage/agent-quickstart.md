@@ -48,6 +48,8 @@ Check `sourceKind: opencode`, the selected database and recorded project, diagno
 
 After source setup/build, use `node server.js --source qoder --repo <recorded-project> --qoder-home <root-containing-projects>`. Windows example root: `C:\Users\<user>\.qoder-cn`; from WSL use the accessible `/mnt/c/Users/<user>/.qoder-cn` root while keeping the recorded Windows project identity. The default is `~/.qoder-cn`. / 完成源码配置与构建后使用所列命令。Windows 示例根如上；在 WSL 使用可访问的挂载根，同时保留日志记录的 Windows 项目身份。默认根为 `~/.qoder-cn`。
 
+For desktop session titles, optionally add `--qoder-desktop-db <selected-main.sqlite>` to the server or History CLI. Use the database belonging to that Qoder home; no location is guessed. A path-config example is `{"qoder":{"home":"./qoder-home","desktopDb":"./desktop/main.sqlite"}}`, with both paths relative to the config file. Missing/unsupported metadata retains JSONL titles with diagnostics. JSONL custom titles remain first priority; desktop rename changes appear after project reindex. Changing Qoder home clears an omitted database association, so specify both together when relocating. / 需要桌面会话标题时，可向服务或 History CLI 添加所列参数。选择属于该 Qoder home 的数据库，不猜测位置。路径配置示例如上，两条相对路径均以配置文件为基准。缺失／不支持的元数据会诊断并保留 JSONL 标题；JSONL 自定义标题保持第一优先级，桌面重命名在项目重建索引后生效。改变 Qoder home 时会清除未同时提供的数据库关联，迁移时应一并指定两者。
+
 Verify `sourceKind:qoder`, the intended root/project, completed indexing, diagnostics, count and actual search→Detail→Raw reading using the bounded acceptance below. Physical history includes old branches; external tool output paths remain references. / 按下文有界验收核验来源、预期根／项目、索引完成、诊断、会话数及实际搜索→详情→Raw 阅读。物理历史包含旧分支，外部工具输出路径仍为引用。
 
 ### Native WorkBuddy / CodeBuddy in this checkout / 此 checkout 的原生 WorkBuddy／CodeBuddy
