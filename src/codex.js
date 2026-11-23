@@ -1962,7 +1962,6 @@ async function inspectSessionFile(filePath, options = {}) {
   const descriptor = codexRolloutDescriptor(filePath);
   const stat = await codexRolloutStorage.acquireRolloutStat(descriptor);
   const stream = codexRolloutStorage.createLogicalReadStream(descriptor, { signal });
-  const lines = codexRolloutStorage.readLogicalLines(stream, { signal });
   const cwdSet = new Set();
   const leadingSessionFacts = createCodexLeadingSessionFacts();
   let historyBase = null;
@@ -1973,40 +1972,32 @@ async function inspectSessionFile(filePath, options = {}) {
       logicalBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk), 'utf8');
     });
   }
-  try {
-    for await (const line of lines) {
-      throwIfAborted(signal);
-      if (!line.trim()) continue;
-      let record = null;
-      if (!leadingSessionFacts.firstRecordSeen) {
-        record = safeJsonParse(line);
-        if (record?.type === 'session_meta' && record.payload?.history_base != null) {
-          const parsedBase = rolloutHistory.parseHistoryBase(record.payload.history_base);
-          historyBase = parsedBase.error ? {} : record.payload.history_base;
-          if (!parsedBase.error) historyBase = { thread_id: parsedBase.base.rolloutId,
-            end_ordinal_exclusive: parsedBase.base.endOrdinalExclusive, end_byte_offset: parsedBase.base.endByteOffset };
-        }
-        observeCodexLeadingSessionRecord(leadingSessionFacts, record);
+  await codexRolloutStorage.visitLogicalLines(stream, (line) => {
+    if (!line.trim()) return;
+    let record = null;
+    if (!leadingSessionFacts.firstRecordSeen) {
+      record = safeJsonParse(line);
+      if (record?.type === 'session_meta' && record.payload?.history_base != null) {
+        const parsedBase = rolloutHistory.parseHistoryBase(record.payload.history_base);
+        historyBase = parsedBase.error ? {} : record.payload.history_base;
+        if (!parsedBase.error) historyBase = { thread_id: parsedBase.base.rolloutId,
+          end_ordinal_exclusive: parsedBase.base.endOrdinalExclusive, end_byte_offset: parsedBase.base.endByteOffset };
       }
-      if (!line.includes('"cwd"')) continue;
-      record ||= safeJsonParse(line);
-      if (!record) continue;
-      const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
-      const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
-      if (typeof cwd === 'string' && cwd) {
-        cwdSet.add(cwd);
-        if (repoRoot && projectPathMatches(cwd, repoRoot, filePath, options.projectPathContext)) {
-          matchedRepo = true;
-          if (descriptor.compression === 'none') {
-            stream.destroy();
-            break;
-          }
-        }
+      observeCodexLeadingSessionRecord(leadingSessionFacts, record);
+    }
+    if (!line.includes('"cwd"')) return;
+    record ||= safeJsonParse(line);
+    if (!record) return;
+    const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
+    const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
+    if (typeof cwd === 'string' && cwd) {
+      cwdSet.add(cwd);
+      if (repoRoot && projectPathMatches(cwd, repoRoot, filePath, options.projectPathContext)) {
+        matchedRepo = true;
+        if (descriptor.compression === 'none') return false;
       }
     }
-  } finally {
-    stream.destroy();
-  }
+  }, { signal });
 
   if (descriptor.compression === 'zstd') {
     const verified = await codexRolloutStorage.acquireRolloutStat(descriptor);

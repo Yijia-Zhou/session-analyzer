@@ -22,12 +22,18 @@ async function collect(input, options) {
 
 test('bounded Codex lines retain UTF-8, empty lines and split CRLF at exact byte limits', async () => {
   const bytes = Buffer.from('界🙂\r\n\r\nx\ry\nlast');
+  const expected = ['界🙂', '', 'x', 'y', 'last'];
   for (const width of [1, 2, 3, 8, bytes.length]) {
     const chunks = [];
     for (let i = 0; i < bytes.length; i += width) chunks.push(bytes.subarray(i, i + width));
     const input = Readable.from(chunks);
-    assert.deepEqual(await collect(input, { maxLineBytes: 7 }), ['界🙂', '', 'x', 'y', 'last']);
+    assert.deepEqual(await collect(input, { maxLineBytes: 7 }), expected);
     assert.equal(input.destroyed, true);
+    const visitorInput = Readable.from(chunks);
+    const visited = [];
+    await storage.visitLogicalLines(visitorInput, (line) => { visited.push(line); }, { maxLineBytes: 7 });
+    assert.deepEqual(visited, expected);
+    assert.equal(visitorInput.destroyed, true);
   }
   assert.deepEqual(await collect(Readable.from([])), []);
   assert.deepEqual(await collect(Readable.from([Buffer.from('\n\n')])), ['', '']);
@@ -48,6 +54,42 @@ test('oversized Codex lines reject before consuming the remainder and identify t
   assert.ok(reads < 10, 'backpressure stops the oversized source early');
   assert.equal(input.destroyed, true);
   await assert.rejects(collect(Readable.from([Buffer.from('eight888')]), { maxLineBytes: 7 }), capacityError);
+});
+
+test('Codex line visitor stops before an oversized record in the same chunk', async () => {
+  const chunk = Buffer.from('small\noversized\n');
+  const options = { maxLineBytes: 7 };
+  const input = Readable.from([chunk]);
+  const visited = [];
+  await storage.visitLogicalLines(input, (line) => {
+    visited.push(line);
+    return false;
+  }, options);
+  assert.deepEqual(visited, ['small']);
+  assert.equal(input.destroyed, true);
+
+  await assert.rejects(storage.visitLogicalLines(Readable.from([chunk]), () => {}, options),
+    (error) => capacityError(error) && error.lineNumber === 2 && error.limitBytes === 7);
+});
+
+test('Codex line visitor closes input on a callback failure or cancellation', async () => {
+  const cause = new Error('synthetic visitor failure');
+  const input = Readable.from([Buffer.from('first\nsecond\n')]);
+  await assert.rejects(storage.visitLogicalLines(input, () => { throw cause; }), (error) => error === cause);
+  assert.equal(input.destroyed, true);
+
+  for (const [text, stop] of [['first\nsecond\n', false], ['first\nsecond\n', true], ['first', false]]) {
+    const controller = new AbortController();
+    const cancelled = Readable.from([Buffer.from(text)]);
+    const visited = [];
+    await assert.rejects(storage.visitLogicalLines(cancelled, (line) => {
+      visited.push(line);
+      controller.abort();
+      if (stop) return false;
+    }, { signal: controller.signal }), { name: 'AbortError' });
+    assert.deepEqual(visited, ['first']);
+    assert.equal(cancelled.destroyed, true);
+  }
 });
 
 test('bounded Codex readers propagate I/O and cancellation and close on early return', async () => {

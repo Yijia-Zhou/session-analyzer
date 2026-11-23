@@ -655,59 +655,92 @@ async function hashLogicalPrefix(descriptorOrPath, byteLength, signal, options =
   return { bytesRead, fingerprint: hash.digest('base64url') };
 }
 
-async function* readLogicalLines(input, { signal, maxLineBytes = MAX_CODEX_RECORD_BYTES } = {}) {
-  let pieces = [];
-  let bytes = 0;
-  let lineNumber = 1;
-  let skipLf = false;
-  const abort = () => input.destroy(abortError(signal));
-  try {
-    if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes < 1 || maxLineBytes > MAX_CODEX_RECORD_BYTES) {
-      throw new RangeError('Invalid Codex record byte limit');
-    }
-    throwIfAborted(signal);
-    signal?.addEventListener('abort', abort, { once: true });
-    for await (const chunk of input) {
+function createLogicalLineScanner(yieldLines) {
+  return async function* scanLogicalLines(input, { signal, maxLineBytes = MAX_CODEX_RECORD_BYTES } = {}, visitLine) {
+    let pieces = [];
+    let bytes = 0;
+    let lineNumber = 1;
+    let skipLf = false;
+    const abort = () => input.destroy(abortError(signal));
+    try {
+      if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes < 1 || maxLineBytes > MAX_CODEX_RECORD_BYTES) {
+        throw new RangeError('Invalid Codex record byte limit');
+      }
       throwIfAborted(signal);
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      let start = 0;
-      if (skipLf && buffer.length) {
-        if (buffer[0] === 10) start = 1;
-        skipLf = false;
-      }
-      while (start < buffer.length) {
+      signal?.addEventListener('abort', abort, { once: true });
+      for await (const chunk of input) {
         throwIfAborted(signal);
-        const lf = buffer.indexOf(10, start);
-        const cr = buffer.indexOf(13, start);
-        const boundary = lf < 0 ? cr : cr < 0 ? lf : Math.min(lf, cr);
-        const end = boundary < 0 ? buffer.length : boundary;
-        bytes += end - start;
-        if (bytes > maxLineBytes) {
-          throw Object.assign(storageError(
-            `Codex record at line ${lineNumber} exceeds the ${maxLineBytes}-byte decoded record limit.`,
-            CODEX_ROLLOUT_RECORD_TOO_LARGE,
-          ), { statusCode: 413, lineNumber, limitBytes: maxLineBytes, observedBytes: bytes });
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        let start = 0;
+        if (skipLf && buffer.length) {
+          if (buffer[0] === 10) start = 1;
+          skipLf = false;
         }
-        if (end > start) pieces.push(buffer.subarray(start, end));
-        if (boundary < 0) break;
-        const line = Buffer.concat(pieces, bytes).toString('utf8');
-        pieces = [];
-        bytes = 0;
-        lineNumber += 1;
-        start = end + 1;
-        if (buffer[end] === 13) {
-          if (start === buffer.length) skipLf = true;
-          else if (buffer[start] === 10) start += 1;
+        // Keep each match until consumed. A delimiter absent from the rest of
+        // this chunk does not need to be searched for again on every line.
+        let lf = buffer.indexOf(10, start);
+        let cr = buffer.indexOf(13, start);
+        while (start < buffer.length) {
+          throwIfAborted(signal);
+          const boundary = lf < 0 ? cr : cr < 0 ? lf : Math.min(lf, cr);
+          const end = boundary < 0 ? buffer.length : boundary;
+          bytes += end - start;
+          if (bytes > maxLineBytes) {
+            throw Object.assign(storageError(
+              `Codex record at line ${lineNumber} exceeds the ${maxLineBytes}-byte decoded record limit.`,
+              CODEX_ROLLOUT_RECORD_TOO_LARGE,
+            ), { statusCode: 413, lineNumber, limitBytes: maxLineBytes, observedBytes: bytes });
+          }
+          if (boundary < 0) {
+            pieces.push(buffer.subarray(start));
+            break;
+          }
+          let line;
+          if (pieces.length === 0) {
+            line = buffer.toString('utf8', start, end);
+          } else {
+            if (end > start) pieces.push(buffer.subarray(start, end));
+            line = (pieces.length === 1 ? pieces[0] : Buffer.concat(pieces, bytes)).toString('utf8');
+            pieces = [];
+          }
+          bytes = 0;
+          lineNumber += 1;
+          start = end + 1;
+          if (buffer[end] === 13) {
+            if (start === buffer.length) skipLf = true;
+            else if (buffer[start] === 10) start += 1;
+          }
+          if (yieldLines) yield line;
+          else if (visitLine(line) === false) return;
+          if (lf >= 0 && lf < start) lf = buffer.indexOf(10, start);
+          if (cr >= 0 && cr < start) cr = buffer.indexOf(13, start);
         }
-        yield line;
       }
+      throwIfAborted(signal);
+      if (bytes) {
+        const line = (pieces.length === 1 ? pieces[0] : Buffer.concat(pieces, bytes)).toString('utf8');
+        if (yieldLines) yield line;
+        else visitLine(line);
+      }
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      input.destroy();
     }
-    throwIfAborted(signal);
-    if (bytes) yield Buffer.concat(pieces, bytes).toString('utf8');
-  } finally {
-    signal?.removeEventListener('abort', abort);
-    input.destroy();
+  };
+}
+
+// Both entry points share the scan loop with a fixed delivery mode.
+const readLogicalLines = createLogicalLineScanner(true);
+const scanVisitedLines = createLogicalLineScanner(false);
+
+// Visit each line synchronously. Returning false stops after the current line.
+async function visitLogicalLines(input, visitLine, options) {
+  const scan = scanVisitedLines(input, options, visitLine);
+  if (!(await scan.next()).done) {
+    await scan.return();
+    throw new Error('Codex line visitor unexpectedly yielded a record');
   }
+  throwIfAborted(options?.signal);
 }
 
 async function readLogicalLine(descriptorOrPath, lineNumber, options = {}) {
@@ -773,4 +806,5 @@ module.exports = {
   sameRolloutIdentity,
   storageError,
   throwIfAborted,
+  visitLogicalLines,
 };
