@@ -45,9 +45,18 @@ async function copyDatabaseFile(source, destination, expected, signal) {
 
 async function copySqliteMetadataSnapshot(filename, { root, signal,
   maxFileBytes = 256 * 1024 * 1024, maxTotalBytes = Number.POSITIVE_INFINITY,
-  prefix = 'session-analyzer-sqlite-metadata-' } = {}) {
+  prefix = 'session-analyzer-sqlite-metadata-', onCleanupError } = {}) {
   signal?.throwIfAborted();
   let directory;
+  async function dispose() {
+    if (!directory) return;
+    try {
+      await fs.rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    } catch (error) {
+      if (!onCleanupError) throw error;
+      onCleanupError(directory, error);
+    }
+  }
   try {
     const before = await inspectDatabase(filename, root, maxFileBytes);
     const bytes = [...before.values()].reduce((sum, stat) => sum + Number(stat.size), 0);
@@ -60,9 +69,9 @@ async function copySqliteMetadataSnapshot(filename, { root, signal,
       throw new Error('Desktop database changed across copy');
     }
     signal?.throwIfAborted();
-    return { filename: copied, bytes, dispose: () => fs.rm(directory, { recursive: true, force: true }) };
+    return { filename: copied, bytes, dispose };
   } catch (error) {
-    if (directory) await fs.rm(directory, { recursive: true, force: true });
+    try { await dispose(); } finally { signal?.throwIfAborted(); }
     throw error;
   }
 }

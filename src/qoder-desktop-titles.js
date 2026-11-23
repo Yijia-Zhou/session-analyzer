@@ -9,6 +9,7 @@ const { hash } = require('./qoder-storage');
 
 const MAX_DATABASE_BYTES = 512 * 1024 * 1024;
 const MAX_CANDIDATES = 10000;
+const SNAPSHOT_CLEANUP_FAILED = 'QODER_DESKTOP_TITLE_SNAPSHOT_CLEANUP_FAILED';
 const scalar = (v) => typeof v === 'string' && v.trim().length > 0 && v.length <= 4096 && !v.includes('\0');
 const titleSources = new Set(['ai', 'custom', 'fallback', 'legacy']);
 const voicePlaceholders = new Set(['新语音会话', 'New voice chat', 'New voice session']);
@@ -43,12 +44,16 @@ async function readDesktopTitles(filename, candidates, { signal, onDiagnostic, p
   const titles = new Map();
   signal?.throwIfAborted();
   if (!filename || !candidates.some((c) => c.sourceFile.split('/').length === 2)) return titles;
+  const reportUnavailable = () => onDiagnostic?.({ code: 'QODER_DESKTOP_TITLES_UNAVAILABLE', path: filename,
+    message: 'Optional desktop titles could not be captured (missing, busy, unsupported or over budget); JSONL sessions remain readable.' });
+  const onCleanupError = (directory, error) => onDiagnostic?.({ code: SNAPSHOT_CLEANUP_FAILED, path: directory,
+    message: `Private desktop title snapshot cleanup failed (${error.code || 'unknown error'}). Remove this temporary directory once its files are no longer in use.` });
   let snapshot; let db;
   try {
     if (!scanComplete || candidates.length > MAX_CANDIDATES) throw new Error('Incomplete or oversized candidate set');
     const root = await fs.realpath(path.dirname(filename));
     snapshot = await copySqliteMetadataSnapshot(filename, { root, signal,
-      maxFileBytes: MAX_DATABASE_BYTES, maxTotalBytes: MAX_DATABASE_BYTES, prefix: 'session-analyzer-qoder-title-' });
+      maxFileBytes: MAX_DATABASE_BYTES, maxTotalBytes: MAX_DATABASE_BYTES, prefix: 'session-analyzer-qoder-title-', onCleanupError });
     const { DatabaseSync } = require('node:sqlite');
     db = new DatabaseSync(snapshot.filename, { readOnly: true, allowExtension: false });
     db.exec('PRAGMA query_only = ON; PRAGMA busy_timeout = 50; BEGIN');
@@ -94,15 +99,21 @@ async function readDesktopTitles(filename, candidates, { signal, onDiagnostic, p
       if (validTitle(value, candidate.header.id, candidate.header.cwd)) titles.set(candidate.sourceFile, value);
     }
     db.exec('ROLLBACK');
-    return titles;
-  } catch (error) {
+  } catch {
     signal?.throwIfAborted();
-    onDiagnostic?.({ code: 'QODER_DESKTOP_TITLES_UNAVAILABLE', path: filename,
-      message: 'Optional desktop titles could not be captured (missing, busy, unsupported or over budget); JSONL sessions remain readable.' });
-    return new Map();
+    titles.clear();
+    reportUnavailable();
   } finally {
-    try { db?.close(); } finally { await snapshot?.dispose(); }
+    try { db?.close(); }
+    catch {
+      titles.clear();
+      reportUnavailable();
+    } finally {
+      await snapshot?.dispose();
+      signal?.throwIfAborted();
+    }
   }
+  return titles;
 }
 
 function titleDependency(value) {
@@ -112,4 +123,4 @@ function titleDependency(value) {
     directoryEntries: [], evidence: { title: value } };
 }
 
-module.exports = { readDesktopTitles, titleState, validTitle, titleDependency };
+module.exports = { SNAPSHOT_CLEANUP_FAILED, readDesktopTitles, titleState, validTitle, titleDependency };

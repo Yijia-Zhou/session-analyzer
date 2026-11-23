@@ -49,6 +49,7 @@ const { queryPagination, requireQueryRevision } = require('./src/shared/query-pa
 const { withQueryStoreBuildScope } = require('./src/project-query-disk');
 const { withIndexResourceBuildScope } = require('./src/index-resources');
 const { readPiNavigation, createPiEntryReference, resolvePiEntryReference } = require('./src/pi-navigation');
+const { SNAPSHOT_CLEANUP_FAILED: QODER_TITLE_SNAPSHOT_CLEANUP_FAILED } = require('./src/qoder-desktop-titles');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -725,6 +726,11 @@ function startProjectJob(state, repoRoot, locale = i18n.DEFAULT_LOCALE, semantic
     projectPathContext: projectPathContext.serialized,
     previousIndex,
     signal: controller.signal,
+    onDiagnostic: (entry) => {
+      if (entry.code !== QODER_TITLE_SNAPSHOT_CLEANUP_FAILED) return;
+      // A cancelled build has no committed diagnostic samples to inspect.
+      try { state.warn(`${entry.code}: ${entry.path}: ${entry.message}`); } catch { /* Preserve the build outcome. */ }
+    },
     onProgress: (progress) => {
       job.progress = { ...job.progress, ...progress };
       job.diagnostics?.progress(job.progress);
@@ -1463,6 +1469,7 @@ async function main() {
         }
         if (!count) console.log(warnings ? 'No readable matching sessions; inspect source diagnostics in the browser.' : 'No matching sessions found; check the selected source and target repository.');
         for (const diagnostic of job.sourceDiagnostics?.samples || []) {
+          if (diagnostic.code === QODER_TITLE_SNAPSHOT_CLEANUP_FAILED) continue;
           console.warn(diagnostic.code + ': ' + diagnostic.path + ': ' + diagnostic.message);
         }
       } else {

@@ -6,6 +6,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { DatabaseSync, StatementSync } = require('node:sqlite');
+const { createServer } = require('../server');
 const { buildQoderIndex, discoverQoderProjects, qoderAdapter } = require('../src/qoder');
 const { titleState } = require('../src/qoder-desktop-titles');
 const { copySqliteMetadataSnapshot } = require('../src/sqlite-metadata-snapshot');
@@ -178,34 +179,124 @@ for (const kind of ['missing', 'corrupt', 'schema', 'view', 'journal', 'oversize
 test('WAL titles are captured without modifying source DB/WAL/SHM or leaving temporary snapshots', async (t) => {
   const f = await fixture(t);
   const writer = new DatabaseSync(f.qoderDesktopDb);
-  t.after(() => writer.close());
-  writer.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0');
-  writer.prepare('UPDATE chat_sessions SET title = ?').run('WAL title');
-  const state = async () => Object.fromEntries(await Promise.all(['', '-wal', '-shm'].map(async (s) => {
-    const st = await fs.stat(f.qoderDesktopDb + s, { bigint: true });
-    return [s, [st.dev, st.ino, st.size, st.mtimeNs, st.ctimeNs, await fs.readFile(f.qoderDesktopDb + s)]];
-  })));
-  const temporary = async () => (await fs.readdir(os.tmpdir())).filter((f) => f.startsWith('session-analyzer-qoder-title-')).sort();
-  const before = await state(); const dirs = await temporary();
-  assert.equal((await f.index()).sessions[0].title, 'WAL title');
-  assert.deepEqual(await state(), before);
-  assert.deepEqual(await temporary(), dirs);
+  try {
+    writer.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0');
+    writer.prepare('UPDATE chat_sessions SET title = ?').run('WAL title');
+    const state = async () => Object.fromEntries(await Promise.all(['', '-wal', '-shm'].map(async (s) => {
+      const st = await fs.stat(f.qoderDesktopDb + s, { bigint: true });
+      return [s, [st.dev, st.ino, st.size, st.mtimeNs, st.ctimeNs, await fs.readFile(f.qoderDesktopDb + s)]];
+    })));
+    const temporary = async () => (await fs.readdir(os.tmpdir())).filter((f) => f.startsWith('session-analyzer-qoder-title-')).sort();
+    const before = await state(); const dirs = await temporary();
+    assert.equal((await f.index()).sessions[0].title, 'WAL title');
+    assert.deepEqual(await state(), before);
+    assert.deepEqual(await temporary(), dirs);
+  } finally {
+    writer.close();
+  }
 });
+
+for (const cancelAt of [null, 'cleanup', 'copy']) {
+  test(`persistent snapshot cleanup failure ${cancelAt ? `preserves cancellation during ${cancelAt}` : 'keeps Qoder sessions readable'}`, async (t) => {
+    const f = await fixture(t);
+    const controller = new AbortController();
+    const diagnostics = [];
+    const originalRemove = fs.rm;
+    let removal;
+    t.mock.method(fs, 'rm', async (filename, options) => {
+      if (!path.basename(filename).startsWith('session-analyzer-qoder-title-')) return originalRemove(filename, options);
+      removal = { filename, options };
+      if (cancelAt === 'cleanup') controller.abort();
+      throw Object.assign(new Error('Synthetic lock persists after rm retries'), { code: 'EBUSY' });
+    });
+    if (cancelAt === 'copy') abortOnSnapshotRead(t, f.qoderDesktopDb, controller);
+    try {
+      const pending = f.index({ signal: controller.signal, onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) });
+      if (cancelAt) {
+        await assert.rejects(pending, (error) => error === controller.signal.reason && error?.name === 'AbortError');
+      } else {
+        const index = await pending;
+        const indexed = index.sessions[0];
+        assert.equal(indexed.title, 'Desktop title');
+        const session = await materializeSessionForIndex(index, indexed);
+        assert.equal((await readIndexedRawRecord(index, session, session.rawEvents[0].rawId)).raw, f.text.trimEnd());
+        assert.equal(index.sourceDiagnostics.counts.QODER_DESKTOP_TITLE_SNAPSHOT_CLEANUP_FAILED, 1);
+      }
+      assert.ok(removal.options.maxRetries > 0 && removal.options.retryDelay > 0);
+      assert.equal(diagnostics.length, 1);
+      assert.equal(diagnostics[0].code, 'QODER_DESKTOP_TITLE_SNAPSHOT_CLEANUP_FAILED');
+      assert.equal(diagnostics[0].path, removal.filename);
+      assert.equal((await fs.stat(removal.filename)).isDirectory(), true);
+    } finally {
+      if (removal) await originalRemove(removal.filename, removal.options);
+    }
+  });
+}
+
+function abortOnSnapshotRead(t, database, controller) {
+  const originalOpen = fs.open;
+  t.mock.method(fs, 'open', async (filename, ...args) => {
+    const handle = await originalOpen(filename, ...args);
+    if (filename === database) {
+      const originalRead = handle.read.bind(handle);
+      handle.read = async (...readArgs) => {
+        const result = await originalRead(...readArgs);
+        controller.abort();
+        return result;
+      };
+    }
+    return handle;
+  });
+}
 
 test('snapshot copying cancels during I/O and removes its private directory', async (t) => {
   const f = await fixture(t);
-  await fs.truncate(f.qoderDesktopDb, 32 * 1024 * 1024);
   const controller = new AbortController();
   const prefix = `qoder-cancel-${path.basename(f.sourceHome)}-`;
-  const pending = copySqliteMetadataSnapshot(f.qoderDesktopDb, { root: f.sourceHome, prefix, signal: controller.signal });
-  // Wait until copying starts, rather than testing only an already-aborted signal.
-  const deadline = Date.now() + 5000;
-  while (!(await fs.readdir(os.tmpdir())).some((f) => f.startsWith(prefix))) {
-    assert.ok(Date.now() < deadline); await new Promise((r) => setImmediate(r));
-  }
-  controller.abort();
-  await assert.rejects(pending, { name: 'AbortError' });
+  const root = await fs.realpath(f.sourceHome);
+  abortOnSnapshotRead(t, f.qoderDesktopDb, controller);
+  await assert.rejects(copySqliteMetadataSnapshot(f.qoderDesktopDb, { root, prefix, signal: controller.signal }),
+    (error) => error === controller.signal.reason && error?.name === 'AbortError');
   assert.equal((await fs.readdir(os.tmpdir())).some((f) => f.startsWith(prefix)), false);
+});
+
+test('cancelling a server index still reports the private snapshot that could not be removed', { timeout: 10000 }, async (t) => {
+  const f = await fixture(t);
+  const originalRemove = fs.rm;
+  const cleanup = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const settled = Promise.withResolvers();
+  const warnings = [];
+  let directory;
+  t.mock.method(fs, 'rm', async (filename, options) => {
+    if (!path.basename(filename).startsWith('session-analyzer-qoder-title-')) return originalRemove(filename, options);
+    directory = filename;
+    cleanup.resolve();
+    await release.promise;
+    throw Object.assign(new Error('Synthetic lock persists after rm retries'), { code: 'EBUSY' });
+  });
+  const server = createServer(null, 0, { source: 'qoder', qoderHome: f.sourceHome, qoderDesktopDb: f.qoderDesktopDb,
+    warn: (message) => warnings.push(message), onProjectJobSettled: settled.resolve });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const start = await fetch(base + '/api/project', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ repoRoot: f.repoRoot }), signal: t.signal });
+    assert.equal(start.status, 202);
+    const { job } = await start.json();
+    await Promise.race([cleanup.promise, settled.promise]);
+    assert.ok(directory, 'The job must reach snapshot cleanup');
+    const cancel = await fetch(base + '/api/project/status?jobId=' + job.id, { method: 'DELETE', signal: t.signal });
+    assert.equal(cancel.status, 200);
+    release.resolve();
+    assert.equal((await settled.promise).status, 'cancelled');
+    assert.equal(warnings.length, 1);
+    assert.ok(warnings[0].startsWith(`QODER_DESKTOP_TITLE_SNAPSHOT_CLEANUP_FAILED: ${directory}: `));
+  } finally {
+    release.resolve();
+    await new Promise((resolve) => server.close(resolve));
+    if (directory) await originalRemove(directory, { recursive: true, force: true });
+  }
 });
 
 test('remote, deleted and side-chat desktop rows cannot supply a main local title', async (t) => {
