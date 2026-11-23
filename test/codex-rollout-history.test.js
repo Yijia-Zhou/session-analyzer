@@ -147,6 +147,59 @@ test('oversized history record diagnostics identify the ancestor containing the 
   }
 });
 
+async function writeOversizedCompressedRollout(physicalPath, firstRow) {
+  const header = Buffer.from(JSON.stringify(firstRow) + '\n');
+  const bytes = Buffer.alloc(header.length + MAX_CODEX_RECORD_BYTES + 2);
+  header.copy(bytes);
+  bytes[bytes.length - 1] = 10;
+  await fs.writeFile(physicalPath, zstdCompressSync(bytes));
+}
+
+test('an unreadable compressed head cannot make either index builder infer a superseded ancestor', async (t) => {
+  const f = await historyFixture(t);
+  const head = path.join(f.sessionsRoot, file(ONE));
+  await writeOversizedCompressedRollout(`${head}.zst`, f.secondRows[0]);
+  await fs.unlink(head);
+  const independent = [
+    { ...f.firstRows[0], payload: { ...f.firstRows[0].payload, id: OTHER } },
+    f.firstRows[1],
+  ];
+  await fs.writeFile(path.join(f.sessionsRoot, file(OTHER, OTHER)), independent.map(JSON.stringify).join('\n') + '\n');
+
+  const ancestor = path.join(f.sessionsRoot, file(ROOT));
+  delete f.firstRows[0].payload.history_mode;
+  for (const row of f.firstRows) delete row.ordinal;
+  await fs.writeFile(ancestor, f.firstRows.map(JSON.stringify).join('\n') + '\n');
+  for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+    const cases = [[new Map([[ROOT, head]]), [OTHER]], [new Map(), [OTHER]], [new Map([[ROOT, ancestor]]), [ROOT, OTHER]]];
+    for (const [pointer, expectedIds] of cases) {
+      const index = await build({ ...f.options, currentRolloutPathsForTests: pointer });
+      try {
+        assert.equal(index.sourceDiagnostics.counts[CODEX_ROLLOUT_RECORD_TOO_LARGE], 1);
+        assert.deepEqual(index.sessions.map((session) => session.id).sort(), expectedIds);
+      } finally {
+        await disposeIndexResources(index);
+      }
+    }
+  }
+});
+
+test('an unreadable duplicate physical rollout still makes a selected dependency ambiguous', async (t) => {
+  const f = await historyFixture(t);
+  const duplicate = path.join(f.sessionsRoot, file(ROOT, ROOT, '2026-10-14T09-00-00'));
+  await writeOversizedCompressedRollout(`${duplicate}.zst`, f.firstRows[0]);
+  for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+    const index = await build(f.options);
+    try {
+      assert.equal(index.sourceDiagnostics.counts[CODEX_ROLLOUT_RECORD_TOO_LARGE], 1);
+      assert.equal(index.sourceDiagnostics.counts.CODEX_HISTORY_ARTIFACT_ID_AMBIGUOUS, 1);
+      assert.equal(index.sessions.length, 0);
+    } finally {
+      await disposeIndexResources(index);
+    }
+  }
+});
+
 test('history observation samples full physical ancestors including compressed and admitted archived dependencies', async (t) => {
   for (const archived of [false, true]) for (const compressed of [false, true]) {
     await t.test(`${archived ? 'archived' : 'live'} ${compressed ? 'Zstd' : 'plain'}`, async (t) => {

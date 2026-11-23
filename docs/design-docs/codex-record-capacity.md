@@ -6,6 +6,8 @@ Codex JSONL readers admit at most 64 MiB of decoded UTF-8 bytes per physical rec
 
 Project discovery diagnoses and excludes the affected artifact, then continues independent artifacts. Index builders exclude a candidate rejected during initial parsing/relationship analysis; they never publish that candidate's partial Session or query data. A later failure while replaying already accepted evidence rejects the operation, preserving the existing index. Counts with source diagnostics must not be described as complete corpus coverage. / 项目发现诊断并排除受影响工件，继续其他独立工件；索引构建排除初始解析／关系分析阶段被拒绝的候选，不发布其部分会话或查询数据。回放已接纳依据期间的后续失败拒绝该操作并保留既有索引。存在来源诊断时，计数不能被描述为完整语料覆盖。
 
+A discovered rollout with a canonical filename and a failed inspection leaves that thread's filesystem history incomplete. A valid current-rollout pointer can still select a readable chain whose physical rollout identities resolve uniquely. The index excludes the Session if the pointer is unavailable, selects the unreadable artifact, or selects a chain that shares a rollout identity with an unreadable artifact. / 发现的规范文件名 rollout 若检查失败，该线程的文件系统历史即不完整。有效的当前 rollout 指针仍可选择物理 rollout 标识可唯一解析的可读历史链。指针不可用、指向不可读工件，或选中与不可读工件共享 rollout 标识的历史链时，索引排除该会话。
+
 No JSON text is truncated or fabricated. Accepted records retain their Raw identity, line numbering, native bytes and prefix hashes. The shared iterator preserves the previous parser's LF, CRLF and standalone-CR handling, including delimiter boundaries split across stream chunks and an unterminated final record. / 不截断或伪造 JSON。已接纳记录保持 Raw 身份、行号、原生字节及前缀 hash；共用迭代器保留既有 parser 对 LF、CRLF、独立 CR 的处理，覆盖分隔符跨 chunk 及未换行结尾的记录。
 
 ## Implementation and tradeoffs / 实现与取舍

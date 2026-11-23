@@ -44,7 +44,7 @@ Reading controls must remain visible and operable without document-level horizon
 
 ## Codex record capacity / Codex 单条记录容量
 
-Codex readers accept individual decoded records up to 64 MiB, for both plain and compressed rollouts. Oversized artifacts are excluded from project discovery/indexing with `CODEX_ROLLOUT_RECORD_TOO_LARGE` diagnostics; direct reads fail explicitly rather than returning truncated Raw content. Other readable artifacts remain available, and diagnostic-bearing counts may be incomplete. Project discovery is cancelled when its request disconnects or its source configuration changes. See [record capacity](../design-docs/codex-record-capacity.md) for exact boundaries. / Codex reader 对普通与压缩 rollout 均接纳最大 64 MiB 的单条解码记录；超限工件从项目发现／初始索引中排除并返回所列诊断，直接读取明确失败，不返回截断 Raw。其他可读工件继续可用，存在诊断的计数可能不完整。请求断开或来源配置改变会取消项目发现；精确边界见所链设计。
+Codex readers accept individual decoded records up to 64 MiB for both plain and compressed rollouts. Project discovery and initial indexing exclude oversized artifacts with `CODEX_ROLLOUT_RECORD_TOO_LARGE` diagnostics. Direct reads return an explicit capacity error. Unrelated readable Sessions remain available, and counts with diagnostics may be incomplete. Project discovery is cancelled when its request disconnects or its source configuration changes. See [record capacity](../design-docs/codex-record-capacity.md) for exact boundaries. / Codex reader 对普通与压缩 rollout 均接纳最大 64 MiB 的单条解码记录。项目发现和初始索引排除超限工件并返回所列诊断。直接读取返回明确的容量错误。无关的可读会话继续可用，存在诊断的计数可能不完整。请求断开或来源配置改变会取消项目发现。精确边界见所链设计。
 
 ## Native Qoder history / 原生 Qoder 历史
 

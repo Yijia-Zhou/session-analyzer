@@ -6224,9 +6224,18 @@ async function admitArchivedHistoryDependencies(candidateIds, inspections, sessi
   }
 }
 
-async function prepareCodexHistoryCandidates(candidates, inspections, sessionsRoot, codexHome, signal, onDiagnostic, currentPathsOverride) {
+async function prepareCodexHistoryCandidates(candidates, inspections, discoveredFiles, sessionsRoot, codexHome, signal, onDiagnostic, currentPathsOverride) {
   const initialInspectionCount = inspections.size;
   const candidateIds = new Set(candidates.map((file) => inspections.get(file)?.leadingSessionId || codexSessionIdFromFilePath(file)));
+  const uninspectedThreadIds = new Set();
+  const uninspectedRolloutIds = new Set();
+  for (const file of discoveredFiles) {
+    if (inspections.has(file)) continue;
+    const identity = rolloutHistory.parseRolloutArtifactIdentity(file);
+    if (!identity) continue;
+    uninspectedThreadIds.add(identity.threadId);
+    uninspectedRolloutIds.add(identity.rolloutId);
+  }
   await admitArchivedHistoryDependencies(candidateIds, inspections, sessionsRoot, signal, onDiagnostic);
   const nodes = [...inspections].map(([file, inspection]) => ({ sourceFile: codexRolloutRelativePath(sessionsRoot, file),
     sessionId: inspection.leadingSessionId || codexSessionIdFromFilePath(file), historyBase: inspection.historyBase,
@@ -6237,12 +6246,13 @@ async function prepareCodexHistoryCandidates(candidates, inspections, sessionsRo
     const group = groups.get(node.sessionId) || [];
     group.push(node); groups.set(node.sessionId, group);
   }
-  const affectedIds = [...candidateIds].filter((id) => {
+  const historyCandidateIds = new Set([...candidateIds].filter((id) => {
     const group = groups.get(id) || [];
     return group.length > 1 || group.some((node) => node.historyBase != null
       || rolloutHistory.parseRolloutArtifactIdentity(node.sourceFile)?.rolloutId !== id
         && rolloutHistory.parseRolloutArtifactIdentity(node.sourceFile));
-  });
+  }));
+  const affectedIds = [...candidateIds].filter((id) => historyCandidateIds.has(id) || uninspectedThreadIds.has(id.toLowerCase()));
   if (!affectedIds.length) return new Map();
   const pointer = currentPathsOverride ? { currentPaths: currentPathsOverride, diagnostics: [], evidence: {
     kind: 'codex-current-rollout-v1', status: 'test-override', entries: affectedIds.map((sessionId) => ({ sessionId,
@@ -6251,18 +6261,35 @@ async function prepareCodexHistoryCandidates(candidates, inspections, sessionsRo
   for (const diagnostic of pointer.diagnostics) onDiagnostic(diagnostic);
   const resolved = rolloutHistory.resolveRolloutHistoryPlans(nodes, { currentPaths: pointer.currentPaths, sessionsRoot });
   const plans = new Map();
+  const confirmedSingleFiles = new Set();
   plans.archivedDependencyFileCount = inspections.size - initialInspectionCount;
   const invalidHints = new Set(pointer.evidence.entries.filter((entry) => entry.status === 'invalid').map((entry) => entry.sessionId));
   for (const diagnostic of resolved.diagnostics) if (affectedIds.includes(diagnostic.sessionId)) onDiagnostic({
     code: diagnostic.code, path: diagnostic.sourceFile, message: 'The explicit Codex rollout history could not be resolved completely.' });
   for (const plan of resolved.plans) {
     if (!affectedIds.includes(plan.sessionId) || invalidHints.has(plan.sessionId)) continue;
+    // A failed inspection leaves the filesystem graph incomplete for this thread.
+    if (plan.headSelection === 'filesystem-inferred' && uninspectedThreadIds.has(plan.sessionId.toLowerCase())) continue;
+    const ambiguousSegment = uninspectedRolloutIds.size
+      ? plan.segments.find((segment) => uninspectedRolloutIds.has(segment.rolloutId))
+      : undefined;
+    if (ambiguousSegment) {
+      onDiagnostic({ code: 'CODEX_HISTORY_ARTIFACT_ID_AMBIGUOUS', path: ambiguousSegment.sourceFile,
+        message: 'An unreadable Codex artifact shares the rollout identity of the selected history segment.' });
+      continue;
+    }
     // Archives are source dependencies, never standalone current-session heads.
     // Keep the same artifact available to another valid child's prefix chain.
     const headFile = physicalFiles.get(plan.headSourceFile);
     if (!headFile || !isPathInsideOrSame(headFile, sessionsRoot)) {
       onDiagnostic({ code: 'CODEX_HISTORY_STANDALONE_HEAD_UNAVAILABLE', path: plan.headSourceFile,
         message: 'The inferred current history head is archived; its logical session is excluded while explicit dependent histories remain available.' });
+      continue;
+    }
+    // A pointer can confirm an ordinary single-file Session after a sibling
+    // failed inspection. Keep that file on the ordinary parser path.
+    if (!historyCandidateIds.has(plan.sessionId)) {
+      confirmedSingleFiles.add(headFile);
       continue;
     }
     plan.currentPointer = { kind: pointer.evidence.kind, status: pointer.evidence.status,
@@ -6273,7 +6300,9 @@ async function prepareCodexHistoryCandidates(candidates, inspections, sessionsRo
       message: 'A unique filesystem history head was inferred; the current rollout database pointer is unavailable.' });
   }
   const affectedSet = new Set(affectedIds);
-  candidates.splice(0, candidates.length, ...candidates.filter((file) => !affectedSet.has(inspections.get(file)?.leadingSessionId || codexSessionIdFromFilePath(file))), ...plans.keys());
+  const remainingCandidates = candidates.filter((file) => confirmedSingleFiles.has(file)
+    || !affectedSet.has(inspections.get(file)?.leadingSessionId || codexSessionIdFromFilePath(file)));
+  candidates.splice(0, candidates.length, ...remainingCandidates, ...plans.keys());
   return plans;
 }
 
@@ -6376,7 +6405,7 @@ async function buildIndex({
   }
 
   const sessions = [];
-  const historyPlans = await prepareCodexHistoryCandidates(candidates, candidateInspections, sessionsRoot,
+  const historyPlans = await prepareCodexHistoryCandidates(candidates, candidateInspections, files, sessionsRoot,
     resolvedCodex, signal, onDiagnostic, currentRolloutPathsForTests);
   const selectedPhysicalFileCount = codexSelectedPhysicalFiles(candidates, historyPlans, sessionsRoot).size;
   const discoveredPhysicalFileCount = files.length + (historyPlans.archivedDependencyFileCount || 0);
@@ -6670,7 +6699,7 @@ async function buildSourceBackedIndex({
     });
   }
 
-  const historyPlans = await prepareCodexHistoryCandidates(candidates, candidateInspections, sessionsRoot,
+  const historyPlans = await prepareCodexHistoryCandidates(candidates, candidateInspections, files, sessionsRoot,
     resolvedCodex, signal, onDiagnostic, currentRolloutPathsForTests);
   let selectedPhysicalFileCount = codexSelectedPhysicalFiles(candidates, historyPlans, sessionsRoot).size;
   const discoveredPhysicalFileCount = files.length + (historyPlans.archivedDependencyFileCount || 0);
