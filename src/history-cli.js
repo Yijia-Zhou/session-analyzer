@@ -4,8 +4,9 @@ const fs = require('node:fs');
 const { OPERATIONS, MAX_BODY_BYTES, MAX_RESPONSE_BYTES, historyError, errorEnvelope, validateHistoryInput, startHistoryServer } = require('./history-server');
 const { supportedSourceKinds } = require('./source-adapters');
 const { openViewerBrowser, validateViewerUrl } = require('./history-browser-open');
+const { SNAPSHOT_CLEANUP_FAILED: QODER_TITLE_SNAPSHOT_CLEANUP_FAILED } = require('./qoder-desktop-titles');
 
-const SERVE_OPTIONS = { '--repo': 'repo', '--source': 'source', '--codex-home': 'codexHome', '--claude-home': 'claudeHome', '--dsh-home': 'dshHome', '--pi-home': 'piHome', '--opencode-home': 'opencodeHome', '--workbuddy-home': 'workbuddyHome', '--qoder-home': 'qoderHome', '--path-config': 'pathConfig', '--project-path-semantics': 'projectPathSemantics', '--port': 'port' };
+const SERVE_OPTIONS = { '--repo': 'repo', '--source': 'source', '--codex-home': 'codexHome', '--claude-home': 'claudeHome', '--dsh-home': 'dshHome', '--pi-home': 'piHome', '--opencode-home': 'opencodeHome', '--workbuddy-home': 'workbuddyHome', '--qoder-home': 'qoderHome', '--qoder-desktop-db': 'qoderDesktopDb', '--path-config': 'pathConfig', '--project-path-semantics': 'projectPathSemantics', '--port': 'port' };
 const INPUT_OPTIONS = { '--context': 'contextRef', '--cursor': 'cursor', '--order': 'order', '--session': 'session', '--caller-session': 'callerSessionId', '--max-files': 'maxFiles', '--layer': 'layer', '--kind': 'kind', '--status': 'status', '--tool': 'tool', '--file': 'file', '--retrieval-artifacts': 'retrievalArtifacts', '--presentation': 'presentation', '--view': 'view', '--text-format': 'textFormat', '--mode': 'mode', '--from': 'from', '--to': 'to', '--limit': 'limit', '--max-bytes': 'maxBytes', '--offset': 'offset', '--end-offset': 'endOffset', '--raw-offset': 'rawOffset', '--length': 'length', '--around-hit-before': 'aroundHit.before', '--around-hit-after': 'aroundHit.after', '--parts': 'parts', '--query': 'queries', '--exclude': 'exclude', '--ref': 'refs' };
 const REPEATED = new Set(['queries', 'exclude', 'refs']);
 const LITERAL_VALUES = new Set(['queries', 'exclude', 'file', 'tool', 'kind', 'status', 'session', 'callerSessionId']);
@@ -23,6 +24,7 @@ function formatHistoryHelp() {
     '  session-analyzer history open --ref <reference> [--context <contextRef>] [--no-browser]',
     '    [--endpoint http://127.0.0.1:17891]    Reuse the original search service.', '',
     'Options:',
+    '  --qoder-desktop-db <file> Serve: optional Qoder desktop title metadata, captured at indexing.',
     '  --path-config <file>   Serve: Analyzer sourceConfigs JSON with home and scoped projectPathRules.',
     '  --project-path-semantics <windows|posix> Serve: explicit --repo interpretation, separate from historical cwd rules.',
     '  --input <JSON>         Query object; cannot overlap fields supplied by flags.',
@@ -219,13 +221,25 @@ async function runHistoryCli(args, io = {}) {
     if (options.help) { out.write(`${formatHistoryHelp()}\n`); return 0; }
     operation = options.operation;
     if (operation === 'serve') {
-      const running = await startHistoryServer(options, io.createService);
-      err.write(`${JSON.stringify({ producer: 'session-analyzer', operation: 'history.serve', schemaVersion: 1, endpoint: running.endpoint })}\n`);
-      const stop = () => { running.close().catch(() => { process.exitCode = 1; }); };
-      process.once('SIGINT', stop);
-      process.once('SIGTERM', stop);
-      running.server.once('close', () => { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); });
-      return 0;
+      let cleanupWarning;
+      try {
+        const running = await startHistoryServer({ ...options, onDiagnostic(entry) {
+          if (entry.code === QODER_TITLE_SNAPSHOT_CLEANUP_FAILED) cleanupWarning = entry;
+        } }, io.createService);
+        err.write(`${JSON.stringify({ producer: 'session-analyzer', operation: 'history.serve', schemaVersion: 1, endpoint: running.endpoint })}\n`);
+        const stop = () => { running.close().catch(() => { process.exitCode = 1; }); };
+        process.once('SIGINT', stop);
+        process.once('SIGTERM', stop);
+        running.server.once('close', () => { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); });
+        return 0;
+      } finally {
+        if (cleanupWarning) {
+          try {
+            const { code, path, message } = cleanupWarning;
+            err.write(`${JSON.stringify({ producer: 'session-analyzer', operation: 'history.diagnostic', schemaVersion: 1, code, path, message })}\n`);
+          } catch { /* A warning sink must not change the startup outcome. */ }
+        }
+      }
     }
     const result = await requestHistory(options.endpoint, operation, await resolveHistoryInput(options, io));
     if (operation === 'open' && !result.error) {

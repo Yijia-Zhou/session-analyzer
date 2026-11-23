@@ -409,6 +409,15 @@ async function main() {
     const qoderSessionDir = path.join(qoderHome, 'projects', 'package-smoke-project');
     await fsp.mkdir(qoderSessionDir, { recursive: true });
     await fsp.writeFile(path.join(qoderSessionDir, qoderSessionId + '.jsonl'), JSON.stringify(qoderUser) + '\n', 'utf8');
+    const qoderDesktopDb = path.join(smokeRoot, 'qoder-desktop.sqlite');
+    const { DatabaseSync } = require('node:sqlite');
+    const qoderDb = new DatabaseSync(qoderDesktopDb);
+    qoderDb.exec(`CREATE TABLE chat_sessions(session_id TEXT PRIMARY KEY, cwd TEXT, title TEXT, extra_json TEXT,
+      conversation_mode TEXT, execution_kind TEXT, deleted_at TEXT, session_kind TEXT DEFAULT 'standard')`);
+    qoderDb.prepare("INSERT INTO chat_sessions(session_id,cwd,title,extra_json,conversation_mode,execution_kind) VALUES(?,?,?,'{}','normal','local')")
+      .run(qoderSessionId, projectDir, 'Packaged Qoder desktop title');
+    qoderDb.close();
+
     const opencodeFixture = createOpenCodeFixture({ dbPath: opencodeDbPath, repoRoot: projectDir,
       sessionId: opencodeSessionId, userText: opencodeText });
     const opencodeUser = JSON.parse(JSON.stringify(opencodeFixture.db.prepare('SELECT * FROM session_message WHERE id = ?').get(opencodeFixture.messageId)));
@@ -688,11 +697,12 @@ async function main() {
     await stopChild(child);
     child = null;
     launched = await launchPackagedServer(packagedServer, smokeRoot, [
-      '--source', 'qoder', '--repo', projectDir, '--qoder-home', qoderHome,
+      '--source', 'qoder', '--repo', projectDir, '--qoder-home', qoderHome, '--qoder-desktop-db', qoderDesktopDb,
     ]);
     child = launched.child;
     baseUrl = `http://127.0.0.1:${launched.port}`;
     const qoderState = await waitForPackageState(baseUrl);
+    assert.equal(JSON.parse((await requestText(baseUrl + '/api/sessions')).body).sessions[0].title, 'Packaged Qoder desktop title');
     await verifyPackageReading(baseUrl, qoderState.json, {
       sourceKind: 'qoder', repoRoot: projectDir, sourceHome: qoderHome,
       sessions: [{ id: qoderSessionId, text: qoderText, record: qoderUser }],
@@ -706,10 +716,10 @@ async function main() {
       { source: 'pi', rootOption: '--pi-home', home: piHome, text: piText, count: 1 },
       { source: 'opencode', rootOption: '--opencode-home', home: opencodeHome, text: opencodeText, count: 1 },
       { source: 'workbuddy', rootOption: '--workbuddy-home', home: workbuddyHome, text: workbuddyText, count: 1 },
-      { source: 'qoder', rootOption: '--qoder-home', home: qoderHome, text: qoderText, count: 1 },
+      { source: 'qoder', rootOption: '--qoder-home', home: qoderHome, text: qoderText, count: 1, extraArgs: ['--qoder-desktop-db', qoderDesktopDb] },
     ]) {
       launched = await launchPackagedServer(packagedServer, smokeRoot, [
-        'history', 'serve', '--source', fixture.source, '--repo', projectDir, fixture.rootOption, fixture.home,
+        'history', 'serve', '--source', fixture.source, '--repo', projectDir, fixture.rootOption, fixture.home, ...(fixture.extraArgs || []),
       ]);
       child = launched.child;
       const endpoint = `http://127.0.0.1:${launched.port}`;
