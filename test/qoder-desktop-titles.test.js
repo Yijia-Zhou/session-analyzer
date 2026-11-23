@@ -3,10 +3,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const http = require('node:http');
 const path = require('node:path');
 const os = require('node:os');
 const { DatabaseSync, StatementSync } = require('node:sqlite');
 const { createServer } = require('../server');
+const { runHistoryCli } = require('../src/history-cli');
 const { buildQoderIndex, discoverQoderProjects, qoderAdapter } = require('../src/qoder');
 const { titleState } = require('../src/qoder-desktop-titles');
 const { copySqliteMetadataSnapshot } = require('../src/sqlite-metadata-snapshot');
@@ -295,6 +297,61 @@ test('cancelling a server index still reports the private snapshot that could no
   } finally {
     release.resolve();
     await new Promise((resolve) => server.close(resolve));
+    if (directory) await originalRemove(directory, { recursive: true, force: true });
+  }
+});
+
+test('history serve reports a retained snapshot locally and keeps its JSON protocol available', { timeout: 10000 }, async (t) => {
+  const f = await fixture(t);
+  const originalRemove = fs.rm;
+  const originalListen = http.Server.prototype.listen;
+  let directory;
+  let server;
+  let stderr = '';
+  let stdout = '';
+  t.mock.method(fs, 'rm', async (filename, options) => {
+    if (!path.basename(filename).startsWith('session-analyzer-qoder-title-')) return originalRemove(filename, options);
+    directory = filename;
+    throw Object.assign(new Error('Synthetic lock persists after rm retries'), { code: 'EBUSY' });
+  });
+  t.mock.method(http.Server.prototype, 'listen', function (_port, ...args) {
+    server = this;
+    return originalListen.call(this, 0, ...args);
+  });
+  try {
+    assert.equal(await runHistoryCli(['serve', '--source', 'qoder', '--repo', f.repoRoot,
+      '--qoder-home', f.sourceHome, '--qoder-desktop-db', f.qoderDesktopDb], {
+      stderr: { write: (text) => { stderr += text; } },
+      stdout: { write: (text) => { stdout += text; } },
+    }), 0);
+    assert.equal(stdout, '');
+    const records = stderr.trim().split('\n').map(JSON.parse);
+    assert.equal(records.length, 2);
+    const [ready, { message, ...warning }] = records;
+    assert.deepEqual(ready, { producer: 'session-analyzer', operation: 'history.serve', schemaVersion: 1,
+      endpoint: `http://127.0.0.1:${server.address().port}` });
+    assert.deepEqual(warning, { producer: 'session-analyzer', operation: 'history.diagnostic', schemaVersion: 1,
+      code: 'QODER_DESKTOP_TITLE_SNAPSHOT_CLEANUP_FAILED', path: directory });
+    assert.match(message, /EBUSY/);
+    assert.ok((await fs.stat(directory)).isDirectory());
+
+    const request = async (operation, input) => {
+      const response = await fetch(`${ready.endpoint}/api/history/${operation}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), signal: t.signal,
+      });
+      assert.equal(response.status, 200);
+      const envelope = await response.json();
+      assert.equal(envelope.operation, `history.${operation}`);
+      return envelope;
+    };
+    const status = await request('status', {});
+    assert.equal(status.coverage.sessionCount, 1);
+    assert.deepEqual(status.coverage.diagnostics, { totalCount: 1, counts: { QODER_DESKTOP_TITLE_SNAPSHOT_CLEANUP_FAILED: 1 } });
+    assert.equal(JSON.stringify(status).includes(JSON.stringify(directory).slice(1, -1)), false);
+    const search = await request('search', { queries: ['First user prompt'] });
+    assert.equal(search.items.length, 1);
+  } finally {
+    if (server) await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); });
     if (directory) await originalRemove(directory, { recursive: true, force: true });
   }
 });

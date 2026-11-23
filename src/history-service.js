@@ -97,7 +97,10 @@ async function createHistoryService(options = {}) {
     const candidate = await adapter.buildIndex({ repoRoot: projectPath.path, sourceHome, sourceConfigs,
       qoderDesktopDb: desktopDb,
       projectPathContext: projectPathContext.serialized,
-      onDiagnostic: (entry) => diagnostics.add(entry) });
+      onDiagnostic: (entry) => {
+        diagnostics.add(entry);
+        try { options.onDiagnostic?.(entry); } catch { /* Diagnostic output cannot invalidate the index. */ }
+      } });
     if ((candidate.projectPathContext !== undefined && candidate.projectPathContext !== projectPathContext.serialized)
         || (candidate.projectPathContext === undefined && projectPathContext.rules.length > 0)
         || projectSelection(candidate.repoRoot).key !== projectPath.key) {
