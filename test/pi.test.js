@@ -10,7 +10,7 @@ const { piAdapter, buildPiIndex, discoverPiProjects } = require('../src/pi');
 const { materializeSessionForIndex, buildEventDetailForSession, readIndexedRawRecord,
   validateIndexOwnershipForCommit, supportedSourceKinds } = require('../src/source-adapters');
 const { projectQueryProjectionDigestAsync, disposeProjectQueryStore } = require('../src/project-query-store');
-const { createHistoryService } = require('../src/history-service');
+const { createHistoryService } = require('./helpers/full-history-service');
 
 const timestamp = '2026-10-22T12:00:00.000Z';
 function entry(id, parentId, type, fields = {}) { return { type, id, parentId, timestamp, ...fields }; }

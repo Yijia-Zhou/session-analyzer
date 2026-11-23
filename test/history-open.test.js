@@ -31,7 +31,7 @@ async function fixture(t) {
     if (running.server.listening) await running.close();
     await fs.rm(home, { recursive: true, force: true });
   });
-  const search = await requestHistory(running.endpoint, 'search', { query: 'THE_EXACT_EVIDENCE_HIT' });
+  const search = await requestHistory(running.endpoint, 'search', { query: 'THE_EXACT_EVIDENCE_HIT', presentation: 'full' });
   assert.equal(search.items.length, 1);
   return { ...running, options, ref: search.items[0].ref, sourceFile, original };
 }
@@ -157,7 +157,7 @@ test('viewer startup failure retains target verification and can retry', async (
 test('open preserves Protocol and Raw event identity instead of mapping them to Main', async (t) => {
   const running = await fixture(t);
   for (const layer of ['protocol', 'raw']) {
-    const search = await requestHistory(running.endpoint, 'search', { layer, retrievalArtifacts: 'include' });
+    const search = await requestHistory(running.endpoint, 'search', { layer, retrievalArtifacts: 'include', presentation: 'full' });
     assert.ok(search.items.length > 0, layer);
     const item = search.items[0];
     const opened = await requestHistory(running.endpoint, 'open', { refs: [item.ref] });
@@ -193,7 +193,7 @@ test('open revalidates durable evidence after unchanged restart and rejects a re
     assert.equal(rejected.targetVerified, false);
     assert.equal(rejected.viewerReady, false);
     assert.equal(rejected.url, undefined);
-    const freshSearch = await requestHistory(appended.endpoint, 'search', { query: 'THE_EXACT_EVIDENCE_HIT' });
+    const freshSearch = await requestHistory(appended.endpoint, 'search', { query: 'THE_EXACT_EVIDENCE_HIT', presentation: 'full' });
     assert.notEqual(freshSearch.items[0].ref, first.evidenceRef);
     assert.equal((await requestHistory(appended.endpoint, 'open', { refs: [freshSearch.items[0].ref] })).targetVerified, true);
   } finally { await appended.close(); }
@@ -235,7 +235,7 @@ test('history viewer scope and shutdown leave a separately owned ordinary Web in
     // Read-only mode has not spread to the ordinary instance, and changing that
     // instance does not change the independent history retrieval scope.
     assert.equal((await fetch(`${ordinaryUrl}/api/source`, mutation)).status, 200);
-    const read = await requestHistory(running.endpoint, 'read', { refs: [opened.evidenceRef] });
+    const read = await requestHistory(running.endpoint, 'read', { refs: [opened.evidenceRef], presentation: 'full' });
     assert.equal(read.items[0].ref, opened.evidenceRef);
   } finally {
     await new Promise((resolve) => { ordinary.close(resolve); ordinary.closeAllConnections(); });

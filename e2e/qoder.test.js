@@ -84,7 +84,7 @@ for (const width of [1440, 390]) test(`Qoder native labels, command, diff, saved
   page.on('pageerror', (error) => errors.push(error.message));
 
   const openHit = async (query) => {
-    const hits = (await service.execute('search', { query, layer: 'main' })).items;
+    const hits = (await service.execute('search', { query, layer: 'main', presentation: 'full' })).items;
     assert.equal(hits.length, 1, `${query} has one native logical owner`);
     const hit = hits[0];
     await page.goto(`${base}/#ref=${encodeURIComponent(hit.ref)}`);

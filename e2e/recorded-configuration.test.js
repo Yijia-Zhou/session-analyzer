@@ -71,7 +71,7 @@ async function fixture(t, width, locale) {
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, []));
   return { page, url: `http://127.0.0.1:${server.address().port}`,
-    search: async (query) => (await service.execute('search', { query })).items[0] };
+    search: async (query) => (await service.execute('search', { query, presentation: 'full' })).items[0] };
 }
 
 async function openDetail({ page, url, search }, query, width, presentation, locale) {

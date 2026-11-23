@@ -585,7 +585,7 @@ async function main() {
 
     const packagedServer = path.join(smokeRoot, 'node_modules', 'session-analyzer', 'server.js');
     const packageRoot = path.dirname(packagedServer);
-    for (const relative of ['src/history-cli.js', 'src/history-browser-open.js', 'src/history-server.js', 'src/history-service.js', 'src/history-presentation.js', 'src/history-search-groups.js', 'src/history-source-locator.js', 'src/history-source-observation.js', 'src/history-artifacts.js', 'skills/history-retrieval/SKILL.md', 'skills/history-retrieval/references/source-observation.md']) {
+    for (const relative of ['src/history-cli.js', 'src/history-browser-open.js', 'src/history-server.js', 'src/history-service.js', 'src/history-read-budget.js', 'src/history-presentation.js', 'src/history-search-groups.js', 'src/history-source-locator.js', 'src/history-source-observation.js', 'src/history-artifacts.js', 'skills/history-retrieval/SKILL.md', 'skills/history-retrieval/references/source-observation.md']) {
       assert.ok((await fsp.stat(path.join(packageRoot, relative))).isFile(), 'Missing packaged history file: ' + relative);
     }
     verifyPackagedHistorySkill(packageRoot);
@@ -723,8 +723,10 @@ async function main() {
       ]);
       child = launched.child;
       const endpoint = `http://127.0.0.1:${launched.port}`;
-      const history = (operation, input = {}) => {
-        const result = run(process.execPath, [packagedServer, 'history', operation, '--endpoint', endpoint, '--input', JSON.stringify(input), ...(operation === 'open' ? ['--no-browser'] : [])], { cwd: smokeRoot });
+      const history = (operation, input = {}, usePresentationDefault = false) => {
+        // Keep the legacy durable-reference flow explicit, and check the default separately below.
+        const requestInput = operation === 'open' || usePresentationDefault ? input : { presentation: 'full', ...input };
+        const result = run(process.execPath, [packagedServer, 'history', operation, '--endpoint', endpoint, '--input', JSON.stringify(requestInput), ...(operation === 'open' ? ['--no-browser'] : [])], { cwd: smokeRoot });
         const response = JSON.parse(result.stdout);
         assert.equal(response.producer, 'session-analyzer');
         assert.equal(response.operation, `history.${operation}`);
@@ -736,6 +738,14 @@ async function main() {
       assert.equal(status.coverage.repo, projectDir);
       assert.equal(status.coverage.source, fixture.source);
       assert.equal(status.coverage.sessionCount, fixture.count);
+      const defaultSearch = history('search', { query: fixture.text, kind: 'user_message', limit: 1 }, true);
+      assert.equal(defaultSearch.presentation, 'compact');
+      assert.match(defaultSearch.items[0].ref, /^hr1\./u);
+      const defaultRead = history('read', { refs: [defaultSearch.items[0].ref], contextRef: defaultSearch.contextRef,
+        parts: ['projection'] }, true);
+      assert.equal(defaultRead.presentation, 'compact');
+      assert.match(defaultRead.items[0].evidenceRef, /^er2\./u);
+      assert.ok(defaultRead.items[0].parts[0].text.includes(fixture.text));
       const search = history('search', { queries: [fixture.text], kind: 'user_message', limit: 1 });
       assert.equal(search.items.length, 1);
       if (fixture.source === 'codex') {

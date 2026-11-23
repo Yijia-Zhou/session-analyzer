@@ -66,7 +66,7 @@ test('desktop file references preserve human text, metadata, one input and exact
     assert.match(JSON.stringify(detail.inspectorSections), /FILE_CONTEXT/);
     assert.equal((await readIndexedRawRecord(f.index, f.session, event.rawRefs[0].rawId)).raw, f.lines[event.source.line - 1]);
   }
-  const { createHistoryService } = require('../src/history-service');
+  const { createHistoryService } = require('./helpers/full-history-service');
   const service = await createHistoryService({ source: 'workbuddy', repo: f.index.repoRoot, workbuddyHome: f.index.sourceHome });
   t.after(() => service.close());
   assert.equal((await service.execute('search', { query: 'FILE_QUERY', kind: 'user_message' })).items.length, 1);
@@ -231,7 +231,7 @@ test('native image-only envelope has one searchable user event and keeps wrapper
   assert.doesNotMatch(primary(detail), /SYNTHETIC_CONTEXT|image_local_path|nonexistent/);
   assert.match(JSON.stringify(detail.inspectorSections), /SYNTHETIC_CONTEXT/);
   assert.match(JSON.stringify(detail.inspectorSections), /image_local_path/);
-  const { createHistoryService } = require('../src/history-service');
+  const { createHistoryService } = require('./helpers/full-history-service');
   const service = await createHistoryService({ source: 'workbuddy', repo: f.index.repoRoot, workbuddyHome: path.dirname(f.index.sessionsRoot) });
   t.after(() => service.close());
   for (const query of ['SYNTHETIC_IMAGE.png', 'SYNTHETIC_CONTEXT']) {
@@ -292,7 +292,7 @@ test('uploaded image pairs and pasted image queries unwrap only complete native 
   assert.equal(pair.timelineSections.filter((section) => section.title === 'Image attachment').length, 2);
   assert.match(primary(pair), /image\/jpeg/, 'recorded MIME wins over filename extension');
   assert.match(primary(await detailFor(f, events[1])), /LITERAL_TEXT/);
-  const { createHistoryService } = require('../src/history-service');
+  const { createHistoryService } = require('./helpers/full-history-service');
   const service = await createHistoryService({ source: 'workbuddy', repo: f.index.repoRoot, workbuddyHome: f.index.sourceHome });
   t.after(() => service.close());
   for (const [term, event] of [['上传 图片.png', events[0]], ['second.png', events[0]], ['Describe the trees', events[1]]]) {
@@ -514,7 +514,7 @@ test('internal compaction continuation is searchable in Protocol and preserves e
   assert.doesNotMatch(JSON.stringify(detail.inspectorSections), /This is the recorded summary/);
   assert.equal(event.role, 'user', 'preserve the recorded role without counting a human message');
   assert.equal((await readIndexedRawRecord(f.index, f.session, event.rawRefs[0].rawId)).raw, f.lines[0]);
-  const { createHistoryService } = require('../src/history-service');
+  const { createHistoryService } = require('./helpers/full-history-service');
   const service = await createHistoryService({ repo: f.index.repoRoot, source: 'workbuddy', workbuddyHome: f.index.sourceHome });
   t.after(() => service.close());
   const hits = await service.execute('search', { query: 'INTERNAL_CONTINUATION_CONTEXT', layer: 'protocol' });

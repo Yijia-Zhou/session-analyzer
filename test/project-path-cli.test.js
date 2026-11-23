@@ -93,7 +93,7 @@ test('history CLI directly loads scoped UNC configuration and reads both spellin
   assert.equal(status.coverage.sessionCount, 2);
   const search = await requestHistory(running.endpoint, 'search', { queries: ['SYNTHETIC_DIRECT_CLI_'] });
   assert.equal(search.scan.matchedSessions, 2);
-  const read = await requestHistory(running.endpoint, 'read', { refs: search.items.map(item => item.ref) });
+  const read = await requestHistory(running.endpoint, 'read', { refs: search.items.map(item => item.ref), contextRef: search.contextRef });
   assert.equal(read.items.length, 2);
   for (const marker of ['SYNTHETIC_DIRECT_CLI_0', 'SYNTHETIC_DIRECT_CLI_1']) assert.ok(JSON.stringify(read).includes(marker));
   await unchanged(f);

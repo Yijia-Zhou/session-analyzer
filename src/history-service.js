@@ -13,7 +13,9 @@ const { hasIndexResources, retainIndexResources, withIndexResourceBuildScope,
 const { createSourceDiagnostics } = require('./source-diagnostics');
 const { classifyRetrievalArtifact, mayContainRetrievalArtifact, mayContainCodexRetrievalCall } = require('./history-artifacts');
 const { createHistoryPresentation, detailText } = require('./history-presentation');
+const { fitReadText } = require('./history-read-budget');
 const { groupedSearch, validateGroups } = require('./history-search-groups');
+const { MAX_BODY_BYTES, historyError } = require('./history-server');
 const { createHistorySourceLocator } = require('./history-source-locator');
 const { createHistorySourceObservation } = require('./history-source-observation');
 const { matchText, containsText, excerptText } = require('./history-search-text');
@@ -54,6 +56,20 @@ function events(session, layer) {
   return layer === 'raw' ? session.rawEvents : session.logicalEvents.filter((e) => e.layer === layer);
 }
 function eventId(event) { return event.id || event.rawId; }
+
+function checkContinuationSizes(operation, response) {
+  const requests = [response.next, ...(response.groups || []).map((group) => group.next)];
+  if (operation === 'read') for (const item of response.items) {
+    requests.push(item.rawRefsNext, item.logicalRefsNext);
+    for (const part of item.parts) requests.push(part.previous, part.next);
+  }
+  if (requests.some((request) => request && size(request) > MAX_BODY_BYTES)) {
+    const recovery = operation === 'search'
+      ? 'Shorten the query or reduce the number of terms, then start a new search without a cursor.'
+      : 'Use fewer references and start a new request without a cursor.';
+    throw historyError('CONTINUATION_TOO_LARGE', `A continuation would exceed the ${MAX_BODY_BYTES}-byte UTF-8 JSON request limit. ${recovery}`, 413);
+  }
+}
 
 function outputBudgetMessage(operation, input, reason, groupId) {
   const budget = groupId ? `this group's maxBytes (group ${groupId})` : 'maxBytes';
@@ -245,20 +261,41 @@ async function createHistoryService(options = {}) {
       timestamp: event.timestamp, status: event.status || '', tool: event.toolName || '',
       excerpt: excerptText(text, position) };
   }
-  function budgetPage(response, candidates, limit, maxBytes, operation, key, offset, total, continuation, project, input, groupId) {
+  function budgetPage(response, candidates, limit, maxBytes, operation, key, offset, total, continuation, project, input, groupId, finish, fitItem) {
+    const paginate = () => {
+      response.hasMore = offset + response.items.length < total;
+      response.nextCursor = response.hasMore ? (continuation
+        ? continuation(response.items.length) : cursor(operation, key, offset + response.items.length)) : null;
+      response.next = response.hasMore ? { ...input, contextRef, cursor: response.nextCursor } : null;
+      if (operation === 'read') response.contentTruncated = response.items.some((item) =>
+        item.parts.some((part) => part.truncated || part.deferred) || item.rawRefsNextOffset !== null || item.logicalRefsNextOffset != null);
+    };
+    response.next = null;
     if (size(project(response)) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', outputBudgetMessage(operation, input, 'metadata', groupId));
-    for (const candidate of candidates.slice(0, limit)) {
+    const selected = candidates.slice(0, limit);
+    // A final page can be smaller than an incomplete prefix because it needs
+    // no continuation (which may repeat a large query). Try it before cutting.
+    response.items = [...selected];
+    paginate();
+    if (size(project(response)) <= maxBytes) return finish(response);
+    response.items = [];
+    for (const candidate of selected) {
       response.items.push(candidate);
-      // Reserve enough for the cursor and flags before accepting an item.
-      if (size(project(response)) + 512 > maxBytes) { response.items.pop(); response.truncated = true; break; }
+      paginate();
+      // Measure the final envelope, including continuation and content state.
+      if (size(project(response)) > maxBytes) {
+        if (response.items.length === 1 && fitItem) {
+          const fits = () => { paginate(); return size(project(response)) <= maxBytes; };
+          if (fitItem(candidate, fits)) continue;
+        }
+        response.items.pop(); response.truncated = true; paginate(); break;
+      }
     }
     if (!response.items.length && candidates.length) fail('OUTPUT_BUDGET_TOO_SMALL', outputBudgetMessage(operation, input, 'item', groupId));
-    response.hasMore = offset + response.items.length < total;
-    if (response.hasMore) response.nextCursor = continuation
-      ? continuation(response.items.length) : cursor(operation, key, offset + response.items.length);
+    paginate();
     const output = project(response);
     if (size(output) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', outputBudgetMessage(operation, input, response.items.length ? 'item' : 'metadata', groupId));
-    return output;
+    return finish(response);
   }
 
   function prepareSearch(input, groupId) {
@@ -284,7 +321,7 @@ async function createHistoryService(options = {}) {
     return { queries, excluded, layer, policy, order, scopedSessions, key, after };
   }
 
-  async function execute(operation, input = {}, groupId) {
+  async function execute(operation, input = {}, groupId, deferPresentation = false) {
     if (closed) fail('CONTEXT_EXPIRED', 'The retrieval service is closed');
     if (operation === 'open') return resolveEvidence(input, 'open');
     if (!['status', 'observe', 'search', 'context', 'read'].includes(operation)) fail('INVALID_OPERATION', 'Unknown history operation');
@@ -294,7 +331,7 @@ async function createHistoryService(options = {}) {
       observe: ['callerSessionId', 'maxFiles', 'limit'],
       search: ['groups', 'queries', 'query', 'exclude', 'layer', 'kind', 'status', 'tool', 'file', 'from', 'to', 'retrievalArtifacts', 'limit', 'cursor', 'order', 'session'],
       context: ['refs', 'view', 'limit', 'length', 'cursor'],
-      read: ['source', 'refs', 'parts', 'offset', 'length', 'limit', 'cursor', 'textFormat', 'aroundHit'],
+      read: ['source', 'refs', 'parts', 'offset', 'endOffset', 'rawOffset', 'length', 'limit', 'cursor', 'textFormat', 'aroundHit', 'mode'],
     }[operation])]);
     for (const k of Object.keys(input)) if (!allowed.has(k)) fail('INVALID_ARGUMENT', operation === 'observe'
       ? `observe does not accept ${k}. Use callerSessionId, maxFiles, limit, maxBytes, presentation or contextRef. Remove cursor: each observe is a new metadata-only check against the original baseline.`
@@ -302,7 +339,19 @@ async function createHistoryService(options = {}) {
     if (input.contextRef !== undefined && input.contextRef !== contextRef) fail('CONTEXT_EXPIRED', 'Context expired; omit it to revalidate persistent evidence references');
     if (input.presentation !== undefined && !['full', 'compact'].includes(input.presentation)) fail('INVALID_ARGUMENT', 'presentation must be full or compact');
     if (input.textFormat !== undefined && !['structured', 'text'].includes(input.textFormat)) fail('INVALID_ARGUMENT', 'textFormat must be structured or text');
-    const project = (value) => presentation.project(value, input);
+    const project = (value) => presentation.preview(value, input);
+    // No await between the final budget check and handle publication.
+    const finish = (value) => {
+      // Async grouped searches may resume after another request publishes
+      // handles. Recheck the current presentation immediately before commit.
+      const projected = project(value);
+      if (size(projected) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', outputBudgetMessage(operation, input, 'item', groupId));
+      // Grouped search constructs its own request objects from the page.
+      // Check only continuations that will actually be exposed to the client.
+      if (deferPresentation) return value;
+      checkContinuationSizes(operation, projected);
+      return presentation.project(value, input);
+    };
     for (const k of ['query', 'layer', 'kind', 'status', 'tool', 'file', 'from', 'to', 'retrievalArtifacts', 'view', 'order', 'session']) {
       if (input[k] !== undefined && (typeof input[k] !== 'string' || input[k].length > 4096)) fail('INVALID_ARGUMENT', `${k} must be a string of at most 4096 characters`);
     }
@@ -334,7 +383,7 @@ async function createHistoryService(options = {}) {
         output = finalize();
       }
       if (size(output) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', outputBudgetMessage(operation, input, 'metadata'));
-      return output;
+      return finish(response);
     }
     let aroundHit;
     if (operation === 'read' && input.aroundHit !== undefined) {
@@ -347,8 +396,8 @@ async function createHistoryService(options = {}) {
       const before = integer(value.before, undefined, 0, 99999, 'aroundHit.before');
       const after = integer(value.after, undefined, 0, 99999, 'aroundHit.after');
       if (before + after + 1 > 100000) fail('INVALID_ARGUMENT', 'aroundHit window must contain at most 100000 UTF-16 code units');
-      if (['source', 'offset', 'length', 'textFormat'].some((key) => input[key] !== undefined)) {
-        fail('INVALID_ARGUMENT', 'aroundHit cannot be combined with source, offset, length or textFormat');
+      if (['source', 'offset', 'endOffset', 'rawOffset', 'length', 'textFormat'].some((key) => input[key] !== undefined) || input.mode === 'content') {
+        fail('INVALID_ARGUMENT', 'aroundHit cannot be combined with source, offset, endOffset, rawOffset, length, textFormat or mode=content');
       }
       aroundHit = { before, after };
     }
@@ -356,13 +405,20 @@ async function createHistoryService(options = {}) {
     if (readParts && (!readParts.length || readParts.some((part) => !PARTS.includes(part)))) fail('INVALID_ARGUMENT', 'Unsupported read part');
     if (aroundHit && (readParts.length !== 1 || readParts[0] !== 'projection')) fail('INVALID_ARGUMENT', 'aroundHit supports only the projection part');
     const readOffset = operation === 'read' ? integer(input.offset, 0, 0, Number.MAX_SAFE_INTEGER, 'offset') : null;
+    const readEnd = operation === 'read' && input.endOffset !== undefined ? integer(input.endOffset, undefined, 0, Number.MAX_SAFE_INTEGER, 'endOffset') : null;
+    const rawOffset = operation === 'read' ? integer(input.rawOffset, 0, 0, Number.MAX_SAFE_INTEGER, 'rawOffset') : null;
     const readLength = operation === 'read' ? integer(input.length, 2000, 1, 100000, 'length') : null;
+    if (operation === 'read' && input.mode !== undefined && !['auto', 'content'].includes(input.mode)) fail('INVALID_ARGUMENT', 'mode must be auto or content');
+    if (readEnd !== null && input.offset !== undefined) fail('INVALID_ARGUMENT', 'Use offset or endOffset, not both');
+    const autoRead = operation === 'read' && input.mode === 'auto' && !aroundHit
+      && ['parts', 'offset', 'endOffset', 'rawOffset', 'length', 'textFormat', 'source'].every((field) => input[field] === undefined);
     const response = envelope(operation);
     if (operation === 'search' && input.groups !== undefined) {
       for (const key of Object.keys(input)) if (!['groups', 'contextRef', 'presentation', 'maxBytes'].includes(key)) fail('INVALID_ARGUMENT', `Grouped search does not accept top-level ${key}; place query options inside each group`);
       for (const group of validateGroups(input.groups)) prepareSearch(group, group.id);
-      return groupedSearch({ input, response: project(response), maxBytes,
-        search: (query, id) => execute('search', { ...query, presentation: input.presentation, contextRef: input.contextRef }, id) });
+      const grouped = await groupedSearch({ input, response, maxBytes, project,
+        search: (query, id) => execute('search', { ...query, presentation: input.presentation, contextRef: input.contextRef }, id, true) });
+      return finish(grouped);
     }
     const requestSessions = new Map();
     async function materialize(session) {
@@ -384,6 +440,10 @@ async function createHistoryService(options = {}) {
         budget: 'UTF-8 JSON bytes; read offsets are UTF-16 code units',
         retrievalArtifacts: ['exclude', 'include', 'only'], multiSource: false, semanticSearch: false };
       response.capabilities.presentations = ['full', 'compact'];
+      response.capabilities.defaultPresentation = 'compact';
+      response.capabilities.readModes = { default: 'content', supported: ['content', 'auto'],
+        auto: 'explicit opt-in; stored hit uses projection before=500 after=1499, otherwise event content; explicit selectors take precedence' };
+      response.capabilities.readContinuation = 'submit next/previous objects as read input; offset/endOffset are UTF-16 text positions, rawOffset is a Raw-link index';
       response.capabilities.contextViews = ['outline', 'full'];
       response.capabilities.textFormats = ['structured', 'text'];
       response.capabilities.shortHandles = 'context-bound; read returns durable evidenceRef; compact context uses shared events and eventIndexes';
@@ -394,7 +454,7 @@ async function createHistoryService(options = {}) {
       response.capabilities.aroundHit = { representation: 'search_projection', unit: 'UTF-16 code units',
         maxLength: 100000, requiresStoredHitOffset: true, continuation: 'absolute projection read offset/length' };
       if (size(project(response)) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', outputBudgetMessage(operation, input, 'metadata'));
-      return project(response);
+      return finish(response);
     }
     if (operation === 'search') {
       const { queries, excluded, layer, policy, order, scopedSessions, key, after } = prepareSearch(input, groupId);
@@ -476,25 +536,35 @@ async function createHistoryService(options = {}) {
       response.scan = { complete: true, scannedEvents, matchedEvents: total, matchedSessions, scopedSessions: scopedSessions.length, order,
         retrievalArtifacts: { policy, recognized: artifacts, excluded: policy === 'exclude' ? artifacts : 0 } };
       return budgetPage(response, candidates.map((candidate) => candidate.item), limit, maxBytes, operation, key, 0, remaining,
-        (count) => cursor(operation, key, candidates[count - 1].position), project, input, groupId);
+        (count) => cursor(operation, key, count ? candidates[count - 1].position : after || [0, 0]), project, input, groupId, finish);
     }
 
-    let sourceResolution;
+    let sourceMatches;
     if (input.source !== undefined) {
       if (input.refs !== undefined) fail('INVALID_ARGUMENT', 'Use source or refs, not both');
       if (!input.source || typeof input.source !== 'object' || Array.isArray(input.source)) fail('INVALID_ARGUMENT', 'source must be an object');
-      for (const key of Object.keys(input.source)) if (!['sourceRef', 'sourcePath', 'locator', 'logicalOffset'].includes(key)) fail('INVALID_ARGUMENT', `Unknown source field: ${key}`);
+      for (const key of Object.keys(input.source)) if (!['sourceRef', 'sourcePath', 'locator', 'logicalOffset', 'rawRef'].includes(key)) fail('INVALID_ARGUMENT', `Unknown source field: ${key}`);
       integer(input.source.logicalOffset, 0, 0, Number.MAX_SAFE_INTEGER, 'source.logicalOffset');
-      sourceResolution = await createHistorySourceLocator({ index, scope, materialize, makeEvidenceRef: ref }).resolveLocator(sourceInputForCurrentPolicy(input.source));
-      const { matches, ...sourceInfo } = sourceResolution;
+      const { matches, ...sourceInfo } = await createHistorySourceLocator({ index, scope, materialize, makeEvidenceRef: ref })
+        .resolveLocator(sourceInputForCurrentPolicy(input.source));
       response.source = { ...sourceInfo, matchedRawRecords: matches.length };
+      sourceMatches = matches;
+      const { rawRef } = input.source;
+      if (rawRef !== undefined) {
+        if (typeof rawRef !== 'string' || !rawRef.startsWith('er2.')) fail('INVALID_REFERENCE', 'source.rawRef must be a durable Raw event reference');
+        const { r } = resolve(rawRef);
+        if (r.l !== 'raw' || !r.e || r.h !== undefined) fail('INVALID_REFERENCE', 'source.rawRef must identify a Raw event without a hit offset');
+        sourceMatches = matches.filter((match) => match.rawRef === rawRef);
+        if (!sourceMatches.length) fail('INVALID_REFERENCE', 'The Raw reference does not match this indexed source position; submit the original logicalRefsNext');
+        if (sourceMatches.length !== 1) fail('AMBIGUOUS_REFERENCE', 'The Raw reference does not uniquely identify a record at this source position');
+      }
     }
-    const refs = sourceResolution ? sourceResolution.matches.map((match) => match.rawRef)
+    const refs = sourceMatches ? sourceMatches.map((match) => match.rawRef)
       : strings(input.refs, 'refs').map((value) => presentation.resolve(value, input.contextRef));
-    if (sourceResolution && !refs.length) {
+    if (sourceMatches && !refs.length) {
       if (input.cursor) fail('INVALID_CURSOR', 'No matching Raw Records for locator');
       if (size(project(response)) > maxBytes) fail('OUTPUT_BUDGET_TOO_SMALL', outputBudgetMessage(operation, input, 'metadata'));
-      return project(response);
+      return finish(response);
     }
     if (!refs.length) fail('INVALID_ARGUMENT', 'At least one ref is required');
     if (operation === 'context') {
@@ -591,15 +661,17 @@ async function createHistoryService(options = {}) {
           next: last + 1 < sequence.length ? rangeRef(session, r.l, last + 1, r.e ? Math.min(sequence.length - 1, last + limit) : r.b > last ? r.b : Math.min(sequence.length - 1, last + limit)) : null,
           relatedSessions, unavailableRelatedSessions });
       }
-      return budgetPage(response, candidates, limit, maxBytes, operation, key, offset, refs.length, undefined, project, input);
+      return budgetPage(response, candidates, limit, maxBytes, operation, key, offset, refs.length, undefined, project, input, groupId, finish);
     }
 
-    const parts = readParts;
     const start = readOffset;
     const length = readLength;
-    const key = { refs, parts, start, length, ...(aroundHit ? { aroundHit } : {}), ...(sourceResolution ? { source: input.source } : {}), ...(input.textFormat === 'text' ? { textFormat: 'text' } : {}) };
+    const key = { refs, parts: readParts, start, length, endOffset: readEnd, rawOffset, autoRead,
+      ...(aroundHit ? { aroundHit } : {}), ...(sourceMatches ? { source: input.source } : {}), ...(input.textFormat === 'text' ? { textFormat: 'text' } : {}) };
     const offset = cursorPosition(input.cursor, operation, key);
     const candidates = [];
+    const textPieces = new WeakMap();
+    const requestBase = { contextRef, presentation: input.presentation || 'compact', maxBytes, limit };
     for (const value of refs.slice(offset, offset + limit)) {
       const { r, session } = resolve(value);
       if (!r.e) fail('INVALID_REFERENCE', 'Use context to expand a range, then read event refs');
@@ -607,14 +679,24 @@ async function createHistoryService(options = {}) {
       const sequence = events(hydrated, r.l);
       const event = sequence[locate(sequence, r)];
       if (!event) fail('INVALID_REFERENCE', 'Event is not present in the referenced snapshot');
+      const hitWindow = aroundHit || (autoRead && r.h !== undefined ? { before: 500, after: 1499 } : null);
+      const parts = autoRead ? (hitWindow ? ['projection'] : r.l === 'raw' ? ['raw'] : readParts) : readParts;
+      if (r.l === 'raw' && input.rawOffset !== undefined) fail('INVALID_ARGUMENT', 'rawOffset selects logical-event Raw links; use offset or endOffset for Raw-record text');
+      if (r.l !== 'raw' && parts.length === 1 && parts[0] === 'raw'
+          && ['offset', 'endOffset'].some((field) => input[field] !== undefined)) {
+        fail('INVALID_ARGUMENT', 'offset/endOffset select text; use rawOffset for logical-event Raw links');
+      }
       // A logical event can own thousands of Raw Records; paginate those links
       // as well as text so a small response can always reach the omitted ones.
-      const rawStart = r.l !== 'raw' && parts.length === 1 && parts[0] === 'raw' ? start : 0;
+      const rawStart = r.l !== 'raw' ? rawOffset : 0;
       const allRawRefs = r.l === 'raw' ? [event] : event.rawRefs;
       const rawRefs = allRawRefs.slice(rawStart, rawStart + limit).map((raw) => ref(session, 'raw', raw));
       const rawRefsNextOffset = rawStart + limit < allRawRefs.length ? rawStart + limit : null;
       let detail;
       const values = [];
+      const pieces = [];
+      const readRequest = (part, range) => ({ ...requestBase, refs: [value], parts: [part],
+        ...(input.textFormat ? { textFormat: input.textFormat } : {}), ...range });
       for (const part of parts) {
         let text;
         let representation;
@@ -634,34 +716,47 @@ async function createHistoryService(options = {}) {
           text = input.textFormat === 'text' ? detailText(sections) : JSON.stringify(sections);
           representation = input.textFormat === 'text' ? 'detail_text' : 'structured_detail_json';
         }
-        let from = start;
-        let end = start + length;
-        let hitRange;
-        if (aroundHit) {
+        let from = Math.min(start, text.length);
+        let end = Math.min(from + length, text.length);
+        if (readEnd !== null) {
+          end = Math.min(readEnd, text.length);
+          from = Math.max(0, end - length);
+        }
+        if (hitWindow) {
           if (r.h === undefined) fail('HIT_OFFSET_UNAVAILABLE', 'This reference has no stored hit offset; search with a literal query, or use ordinary read/context');
           if (r.h >= text.length) fail('INVALID_REFERENCE', 'Stored hit offset is outside the search projection');
-          from = Math.max(0, r.h - aroundHit.before);
-          end = Math.min(text.length, r.h + aroundHit.after + 1);
-          const pageLength = aroundHit.before + aroundHit.after + 1;
-          hitRange = { hitOffset: r.h, endOffset: end,
-            previous: from > 0 ? { offset: Math.max(0, from - pageLength), length: Math.min(pageLength, from) } : null,
-            next: end < text.length ? { offset: end, length: Math.min(pageLength, text.length - end) } : null };
+          from = Math.max(0, r.h - hitWindow.before);
+          end = Math.min(text.length, r.h + hitWindow.after + 1);
         }
-        values.push({ part, representation, available: true, offset: from,
-          text: text.slice(from, end), totalLength: text.length,
-          nextOffset: end < text.length ? end : null,
-          truncated: from > 0 || end < text.length, ...hitRange });
+        const pageLength = hitWindow ? hitWindow.before + hitWindow.after + 1 : length;
+        const render = (begin, stop) => ({ part, representation, available: true, offset: begin, endOffset: stop,
+          text: text.slice(begin, stop), totalLength: text.length,
+          ...(hitWindow ? { hitOffset: r.h } : {}),
+          nextOffset: stop < text.length ? stop : null, truncated: begin > 0 || stop < text.length,
+          previous: begin > 0 ? readRequest(part, { endOffset: begin, length: Math.min(pageLength, begin) }) : null,
+          next: stop < text.length ? readRequest(part, { offset: stop, length: Math.min(pageLength, text.length - stop) }) : null });
+        pieces.push({ index: values.length, part, from, end, backward: readEnd !== null,
+          ...(hitWindow ? { hit: r.h } : {}), render,
+          request: () => hitWindow ? { ...requestBase, refs: [value], aroundHit: hitWindow }
+            : readRequest(part, readEnd !== null ? { endOffset: end, length } : { offset: from, length }) });
+        values.push(render(from, end));
       }
-      const logical = sourceResolution?.matches.find((match) => match.rawRef === value).logicalRefs;
+      const logical = sourceMatches?.find((match) => match.rawRef === value).logicalRefs;
       const logicalOffset = input.source?.logicalOffset ?? 0;
-      candidates.push({ ref: value, parts: values, rawRefs, rawRefsOffset: rawStart, rawRefsNextOffset,
+      const candidate = { ref: value, parts: values, rawRefs, rawRefsOffset: rawStart, rawRefsNextOffset,
+        rawRefsNext: rawRefsNextOffset === null ? null : { ...requestBase, refs: [value], parts: ['raw'], rawOffset: rawRefsNextOffset },
         ...(logical ? { logicalRefs: logical.slice(logicalOffset, logicalOffset + limit), logicalRefsOffset: logicalOffset,
-          logicalRefsNextOffset: logicalOffset + limit < logical.length ? logicalOffset + limit : null } : {}) });
+          logicalRefsNextOffset: logicalOffset + limit < logical.length ? logicalOffset + limit : null,
+          logicalRefsNext: logicalOffset + limit < logical.length ? { ...requestBase,
+            source: { ...input.source, rawRef: value, logicalOffset: logicalOffset + limit },
+            parts, ...(readEnd === null ? { offset: start } : { endOffset: readEnd }), length,
+            ...(input.textFormat ? { textFormat: input.textFormat } : {}) } : null } : {}) };
+      candidates.push(candidate);
+      textPieces.set(candidate, pieces);
     }
     response.contentTruncated = false;
-    const output = budgetPage(response, candidates, limit, maxBytes, operation, key, offset, refs.length, undefined, project, input);
-    output.contentTruncated = output.items.some((item) => item.parts.some((part) => part.truncated) || item.rawRefsNextOffset !== null || item.logicalRefsNextOffset != null);
-    return output;
+    return budgetPage(response, candidates, limit, maxBytes, operation, key, offset, refs.length, undefined, project, input, groupId, finish,
+      (item, fits) => fitReadText(item, textPieces.get(item), fits));
   }
   async function resolveEvidence(input, operation = 'resolve') {
     if (closed) fail('CONTEXT_EXPIRED', 'The retrieval service is closed');
@@ -677,7 +772,7 @@ async function createHistoryService(options = {}) {
     if (!r.e) fail('INVALID_REFERENCE', 'Opening requires a single event, not a range');
     // Context performs the ordinary selected-source verification, exact identity
     // resolution and bounded hit excerpt construction. Never rebind by ordinal.
-    const context = await execute('context', { refs: [value], maxBytes: 65536 });
+    const context = await execute('context', { refs: [value], maxBytes: 65536, presentation: 'full' });
     const window = context.items[0];
     const anchor = window?.events.find((event) => event.anchor);
     if (!anchor) fail('INVALID_REFERENCE', 'The referenced event is unavailable');
