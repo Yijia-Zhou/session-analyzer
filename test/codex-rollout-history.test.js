@@ -7,6 +7,8 @@ const path = require('node:path');
 const os = require('node:os');
 const { zstdCompressSync } = require('node:zlib');
 const codex = require('../src/codex');
+const { CODEX_ROLLOUT_RECORD_TOO_LARGE, MAX_CODEX_RECORD_BYTES } = require('../src/codex-rollout-storage');
+const { disposeIndexResources } = require('../src/index-resources');
 const { materializeSessionForIndex, validateIndexOwnershipForCommit } = require('../src/source-adapters');
 const { createHistoryService } = require('./helpers/full-history-service');
 const { parseRolloutArtifactIdentity, parseHistoryBase, resolveRolloutHistoryPlans, validateHistorySegmentBoundary } = require('../src/codex-rollout-history');
@@ -115,6 +117,88 @@ async function historyFixture(t) {
   await fs.writeFile(path.join(sessionsRoot, file(ONE)), secondRows.map(JSON.stringify).join('\n') + '\n');
   return { repoRoot, codexHome, sessionsRoot, firstRows, secondRows, options: { repoRoot, codexHome, currentRolloutPathsForTests: new Map([[ROOT, path.join(sessionsRoot, file(ONE))]]) } };
 }
+
+test('oversized history record diagnostics identify the ancestor containing the record', async (t) => {
+  const f = await historyFixture(t);
+  const ancestor = file(ROOT);
+  const header = JSON.stringify(f.firstRows[0]) + '\n';
+  const terminatorOffset = Buffer.byteLength(header) + MAX_CODEX_RECORD_BYTES + 1;
+  const handle = await fs.open(path.join(f.sessionsRoot, ancestor), 'w');
+  try {
+    await handle.writeFile(header);
+    await handle.write(Buffer.from('\n'), 0, 1, terminatorOffset);
+  } finally {
+    await handle.close();
+  }
+  f.secondRows[0].payload.history_base.end_byte_offset = terminatorOffset + 1;
+  await fs.writeFile(path.join(f.sessionsRoot, file(ONE)), f.secondRows.map(JSON.stringify).join('\n') + '\n');
+
+  for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+    const diagnostics = [];
+    const index = await build({ ...f.options, onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) });
+    try {
+      const capacity = diagnostics.filter((diagnostic) => diagnostic.code === CODEX_ROLLOUT_RECORD_TOO_LARGE);
+      assert.deepEqual(capacity.map((diagnostic) => diagnostic.path.replace(/\\/g, '/')), [ancestor]);
+      assert.match(capacity[0].message, /line 2\b/);
+      assert.equal(index.sessions.length, 0);
+    } finally {
+      await disposeIndexResources(index);
+    }
+  }
+});
+
+async function writeOversizedCompressedRollout(physicalPath, firstRow) {
+  const header = Buffer.from(JSON.stringify(firstRow) + '\n');
+  const bytes = Buffer.alloc(header.length + MAX_CODEX_RECORD_BYTES + 2);
+  header.copy(bytes);
+  bytes[bytes.length - 1] = 10;
+  await fs.writeFile(physicalPath, zstdCompressSync(bytes));
+}
+
+test('an unreadable compressed head cannot make either index builder infer a superseded ancestor', async (t) => {
+  const f = await historyFixture(t);
+  const head = path.join(f.sessionsRoot, file(ONE));
+  await writeOversizedCompressedRollout(`${head}.zst`, f.secondRows[0]);
+  await fs.unlink(head);
+  const independent = [
+    { ...f.firstRows[0], payload: { ...f.firstRows[0].payload, id: OTHER } },
+    f.firstRows[1],
+  ];
+  await fs.writeFile(path.join(f.sessionsRoot, file(OTHER, OTHER)), independent.map(JSON.stringify).join('\n') + '\n');
+
+  const ancestor = path.join(f.sessionsRoot, file(ROOT));
+  delete f.firstRows[0].payload.history_mode;
+  for (const row of f.firstRows) delete row.ordinal;
+  await fs.writeFile(ancestor, f.firstRows.map(JSON.stringify).join('\n') + '\n');
+  for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+    const cases = [[new Map([[ROOT, head]]), [OTHER]], [new Map(), [OTHER]], [new Map([[ROOT, ancestor]]), [ROOT, OTHER]]];
+    for (const [pointer, expectedIds] of cases) {
+      const index = await build({ ...f.options, currentRolloutPathsForTests: pointer });
+      try {
+        assert.equal(index.sourceDiagnostics.counts[CODEX_ROLLOUT_RECORD_TOO_LARGE], 1);
+        assert.deepEqual(index.sessions.map((session) => session.id).sort(), expectedIds);
+      } finally {
+        await disposeIndexResources(index);
+      }
+    }
+  }
+});
+
+test('an unreadable duplicate physical rollout still makes a selected dependency ambiguous', async (t) => {
+  const f = await historyFixture(t);
+  const duplicate = path.join(f.sessionsRoot, file(ROOT, ROOT, '2026-10-14T09-00-00'));
+  await writeOversizedCompressedRollout(`${duplicate}.zst`, f.firstRows[0]);
+  for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+    const index = await build(f.options);
+    try {
+      assert.equal(index.sourceDiagnostics.counts[CODEX_ROLLOUT_RECORD_TOO_LARGE], 1);
+      assert.equal(index.sourceDiagnostics.counts.CODEX_HISTORY_ARTIFACT_ID_AMBIGUOUS, 1);
+      assert.equal(index.sessions.length, 0);
+    } finally {
+      await disposeIndexResources(index);
+    }
+  }
+});
 
 test('history observation samples full physical ancestors including compressed and admitted archived dependencies', async (t) => {
   for (const archived of [false, true]) for (const compressed of [false, true]) {

@@ -492,49 +492,71 @@ function cancelProjectJob(job) {
   job.diagnostics?.finish('cancelled', { buildMs: job.buildMs });
 }
 
-async function discoverProjectsForSource(state, mode) {
+async function discoverProjectsForSource(state, mode, { signal } = {}) {
   const revision = state.sourceRevision;
-  const adapter = state.adapter;
-  const sourceConfigs = sourceConfigsFromState(state);
-  const diagnostics = createSourceDiagnostics();
-  const context = {
-    onDiagnostic: diagnostics.add,
-    sourceKind: state.sourceKind,
-    sourceHome: activeSourceHome(state, state.sourceKind, sourceConfigs),
-    sourceConfigs,
-    projectPathContext: activeProjectPathContext(state, sourceConfigs).serialized,
-  };
-  const configuredProjects = await adapter.discoverConfiguredProjects(context);
-  if (revision !== state.sourceRevision) return { stale: true };
-  if (mode === 'summary') {
-    const projects = mergeProjectLists(configuredProjects, state.projectCache?.projects || []);
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal.reason);
+  state.projectDiscoveries ||= new Set();
+  state.projectDiscoveries.add(controller);
+  if (signal?.aborted) abort();
+  else signal?.addEventListener('abort', abort, { once: true });
+  try {
+    controller.signal.throwIfAborted();
+    const adapter = state.adapter;
+    const sourceConfigs = sourceConfigsFromState(state);
+    const diagnostics = createSourceDiagnostics();
+    const context = {
+      signal: controller.signal,
+      onDiagnostic: diagnostics.add,
+      sourceKind: state.sourceKind,
+      sourceHome: activeSourceHome(state, state.sourceKind, sourceConfigs),
+      sourceConfigs,
+      projectPathContext: activeProjectPathContext(state, sourceConfigs).serialized,
+    };
+    const configuredProjects = await adapter.discoverConfiguredProjects(context);
+    if (revision !== state.sourceRevision) return { stale: true };
+    controller.signal.throwIfAborted();
+    if (mode === 'summary') {
+      const projects = mergeProjectLists(configuredProjects, state.projectCache?.projects || []);
+      return {
+        stale: false,
+        payload: {
+          ...sourceConfigurationPayload(state),
+          projects,
+          summary: true,
+          cached: Boolean(state.projectCache),
+          sourceDiagnostics: state.projectCache?.sourceDiagnostics || diagnostics.summary,
+        },
+      };
+    }
+    const scannedProjects = await adapter.discoverProjects(context);
+    if (revision !== state.sourceRevision) return { stale: true };
+    controller.signal.throwIfAborted();
+    const projects = mergeProjectLists(configuredProjects, scannedProjects, { full: true });
+    state.projectCache = {
+      generatedAt: new Date().toISOString(),
+      projects: projectCachePayload(projects),
+      sourceDiagnostics: diagnostics.summary,
+    };
     return {
       stale: false,
       payload: {
         ...sourceConfigurationPayload(state),
         projects,
-        summary: true,
-        cached: Boolean(state.projectCache),
-        sourceDiagnostics: state.projectCache?.sourceDiagnostics || diagnostics.summary,
+        sourceDiagnostics: diagnostics.summary,
       },
     };
+  } catch (error) {
+    if (revision !== state.sourceRevision) return { stale: true };
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', abort);
+    state.projectDiscoveries.delete(controller);
   }
-  const scannedProjects = await adapter.discoverProjects(context);
-  if (revision !== state.sourceRevision) return { stale: true };
-  const projects = mergeProjectLists(configuredProjects, scannedProjects, { full: true });
-  state.projectCache = {
-    generatedAt: new Date().toISOString(),
-    projects: projectCachePayload(projects),
-    sourceDiagnostics: diagnostics.summary,
-  };
-  return {
-    stale: false,
-    payload: {
-      ...sourceConfigurationPayload(state),
-      projects,
-      sourceDiagnostics: diagnostics.summary,
-    },
-  };
+}
+
+function abortProjectDiscoveries(state) {
+  for (const controller of state.projectDiscoveries || []) controller.abort();
 }
 
 function resolveSourceMutation(state, body) {
@@ -648,6 +670,7 @@ function resolveSourceMutation(state, body) {
     }
     state.sourceConfigs = nextSourceConfigs;
     state.sourceRevision += 1;
+    abortProjectDiscoveries(state);
   } else if (!state.sourceConfigs) {
     state.sourceConfigs = currentSourceConfigs;
   }
@@ -940,7 +963,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
       const locale = i18n.resolveLocale(searchParams.get('locale') || req.headers['accept-language']);
       if (pathname === '/api/projects') {
         const mode = searchParams.get('summary') === '1' ? 'summary' : 'full';
-        const result = await discoverProjectsForSource(state, mode);
+        const result = await discoverProjectsForSource(state, mode, { signal: requestAbort.signal });
         if (result.stale) {
           sendError(res, 409, 'Source changed during project discovery');
           return;
@@ -1418,6 +1441,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     }
   });
   server.on('close', () => {
+    abortProjectDiscoveries(state);
     cancelProjectJob(state.activeProjectJob);
     clearIndexRevision(state, { dispose: !state.historyViewer });
   });

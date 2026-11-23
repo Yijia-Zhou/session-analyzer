@@ -18,7 +18,6 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { createProjectPathContext, projectPathFor, projectSelection, projectContextIndexFields, projectPathMatches } = require('./project-path-context');
 const { projectPathContains, sameProjectPath } = require('./shared/project-path');
-const readline = require('node:readline');
 const { performance } = require('node:perf_hooks');
 const { isDeepStrictEqual } = require('node:util');
 const crypto = require('node:crypto');
@@ -1912,18 +1911,21 @@ function parseProjectConfigHeader(line) {
   return parts[1].value;
 }
 
-async function discoverConfiguredProjects({ codexHome, ...options }) {
+async function discoverConfiguredProjects({ codexHome, signal, ...options }) {
+  throwIfAborted(signal);
   const context = createProjectPathContext({ ...options, sourceKind: CODEX_SOURCE_KIND, sourceHome: codexHome });
   const configPath = path.join(path.resolve(codexHome), 'config.toml');
   let text = '';
   try {
-    text = await fsp.readFile(configPath, 'utf8');
+    text = await fsp.readFile(configPath, { encoding: 'utf8', signal });
   } catch (error) {
+    throwIfAborted(signal);
     if (error.code !== 'ENOENT') {
       console.warn(`Unable to read Codex config for project summary: ${error.message}`);
     }
     return [];
   }
+  throwIfAborted(signal);
 
   const projects = new Map();
   for (const line of text.split(/\r?\n/)) {
@@ -1947,12 +1949,14 @@ async function discoverConfiguredProjects({ codexHome, ...options }) {
   }
 
   for (const project of projects.values()) {
+    throwIfAborted(signal);
     try {
       project.exists = (await fsp.stat(project.repoRoot)).isDirectory();
     } catch {
       project.exists = false;
     }
   }
+  throwIfAborted(signal);
   return [...projects.values()];
 }
 
@@ -1962,10 +1966,7 @@ async function inspectSessionFile(filePath, options = {}) {
   throwIfAborted(signal);
   const descriptor = codexRolloutDescriptor(filePath);
   const stat = await codexRolloutStorage.acquireRolloutStat(descriptor);
-  const stream = descriptor.compression === 'none'
-    ? fs.createReadStream(descriptor.physicalPath, { encoding: 'utf8' })
-    : codexRolloutStorage.createLogicalReadStream(descriptor, { signal });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const stream = codexRolloutStorage.createLogicalReadStream(descriptor, { signal });
   const cwdSet = new Set();
   const leadingSessionFacts = createCodexLeadingSessionFacts();
   let historyBase = null;
@@ -1976,42 +1977,32 @@ async function inspectSessionFile(filePath, options = {}) {
       logicalBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk), 'utf8');
     });
   }
-  try {
-    for await (const line of rl) {
-      throwIfAborted(signal);
-      if (!line.trim()) continue;
-      let record = null;
-      if (!leadingSessionFacts.firstRecordSeen) {
-        record = safeJsonParse(line);
-        if (record?.type === 'session_meta' && record.payload?.history_base != null) {
-          const parsedBase = rolloutHistory.parseHistoryBase(record.payload.history_base);
-          historyBase = parsedBase.error ? {} : record.payload.history_base;
-          if (!parsedBase.error) historyBase = { thread_id: parsedBase.base.rolloutId,
-            end_ordinal_exclusive: parsedBase.base.endOrdinalExclusive, end_byte_offset: parsedBase.base.endByteOffset };
-        }
-        observeCodexLeadingSessionRecord(leadingSessionFacts, record);
+  await codexRolloutStorage.visitLogicalLines(stream, (line) => {
+    if (!line.trim()) return;
+    let record = null;
+    if (!leadingSessionFacts.firstRecordSeen) {
+      record = safeJsonParse(line);
+      if (record?.type === 'session_meta' && record.payload?.history_base != null) {
+        const parsedBase = rolloutHistory.parseHistoryBase(record.payload.history_base);
+        historyBase = parsedBase.error ? {} : record.payload.history_base;
+        if (!parsedBase.error) historyBase = { thread_id: parsedBase.base.rolloutId,
+          end_ordinal_exclusive: parsedBase.base.endOrdinalExclusive, end_byte_offset: parsedBase.base.endByteOffset };
       }
-      if (!line.includes('"cwd"')) continue;
-      record ||= safeJsonParse(line);
-      if (!record) continue;
-      const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
-      const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
-      if (typeof cwd === 'string' && cwd) {
-        cwdSet.add(cwd);
-        if (repoRoot && projectPathMatches(cwd, repoRoot, filePath, options.projectPathContext)) {
-          matchedRepo = true;
-          if (descriptor.compression === 'none') {
-            rl.close();
-            stream.destroy();
-            break;
-          }
-        }
+      observeCodexLeadingSessionRecord(leadingSessionFacts, record);
+    }
+    if (!line.includes('"cwd"')) return;
+    record ||= safeJsonParse(line);
+    if (!record) return;
+    const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
+    const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
+    if (typeof cwd === 'string' && cwd) {
+      cwdSet.add(cwd);
+      if (repoRoot && projectPathMatches(cwd, repoRoot, filePath, options.projectPathContext)) {
+        matchedRepo = true;
+        if (descriptor.compression === 'none') return false;
       }
     }
-  } finally {
-    rl.close();
-    stream.destroy();
-  }
+  }, { signal });
 
   if (descriptor.compression === 'zstd') {
     const verified = await codexRolloutStorage.acquireRolloutStat(descriptor);
@@ -2108,6 +2099,7 @@ async function discoverProjects({ codexHome, signal, onDiagnostic, ...options } 
   }
 
   for (const project of projects.values()) {
+    throwIfAborted(signal);
     try {
       project.exists = (await fsp.stat(project.repoRoot)).isDirectory();
     } catch {
@@ -2115,6 +2107,7 @@ async function discoverProjects({ codexHome, signal, onDiagnostic, ...options } 
     }
   }
 
+  throwIfAborted(signal);
   return [...projects.values()].sort((a, b) => (
     String(b.updatedAt).localeCompare(String(a.updatedAt))
     || b.sessionCount - a.sessionCount
@@ -4981,7 +4974,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
     sourceHash.update(chunk);
     if (options.requireCompleteHistoryRows && chunk.length) lastHistoryByte = chunk[chunk.length - 1];
   });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const lines = codexRolloutStorage.readLogicalLines(stream, { signal });
   let lineNumber = 0;
   let terminalSourceGap = false;
   const observeSourcePhases = hasMaterializationObserver();
@@ -4993,7 +4986,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   }
 
   try {
-    for await (const line of rl) {
+    for await (const line of lines) {
       throwIfAborted(signal);
       lineNumber += 1;
       if (!line.trim()) {
@@ -5071,8 +5064,10 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       session.rawEvents.push(raw);
       if (observeSourcePhases) sourceRecordParseMs += performance.now() - recordStartedAt;
     }
+  } catch (error) {
+    if (error?.code === codexRolloutStorage.CODEX_ROLLOUT_RECORD_TOO_LARGE) error.sourceFile = relFile;
+    throw error;
   } finally {
-    rl.close();
     stream.destroy();
     if (observeSourcePhases) {
       const sourceStreamMs = performance.now() - sourceStreamStartedAt;
@@ -5432,9 +5427,9 @@ async function scanCodexRelationshipEvidence(
     sourceBytesRead += chunk.length;
     sourceHash.update(chunk);
   });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const lines = codexRolloutStorage.readLogicalLines(stream, { signal });
   try {
-    for await (const line of rl) {
+    for await (const line of lines) {
       throwIfAborted(signal);
       lineNumber += 1;
       if (!line.trim()) continue;
@@ -5507,7 +5502,6 @@ async function scanCodexRelationshipEvidence(
       if (firstRawFacts.length < 2) firstRawFacts.push(compactCodexForkRawFact(raw));
     }
   } finally {
-    rl.close();
     stream.destroy();
   }
 
@@ -6230,9 +6224,18 @@ async function admitArchivedHistoryDependencies(candidateIds, inspections, sessi
   }
 }
 
-async function prepareCodexHistoryCandidates(candidates, inspections, sessionsRoot, codexHome, signal, onDiagnostic, currentPathsOverride) {
+async function prepareCodexHistoryCandidates(candidates, inspections, discoveredFiles, sessionsRoot, codexHome, signal, onDiagnostic, currentPathsOverride) {
   const initialInspectionCount = inspections.size;
   const candidateIds = new Set(candidates.map((file) => inspections.get(file)?.leadingSessionId || codexSessionIdFromFilePath(file)));
+  const uninspectedThreadIds = new Set();
+  const uninspectedRolloutIds = new Set();
+  for (const file of discoveredFiles) {
+    if (inspections.has(file)) continue;
+    const identity = rolloutHistory.parseRolloutArtifactIdentity(file);
+    if (!identity) continue;
+    uninspectedThreadIds.add(identity.threadId);
+    uninspectedRolloutIds.add(identity.rolloutId);
+  }
   await admitArchivedHistoryDependencies(candidateIds, inspections, sessionsRoot, signal, onDiagnostic);
   const nodes = [...inspections].map(([file, inspection]) => ({ sourceFile: codexRolloutRelativePath(sessionsRoot, file),
     sessionId: inspection.leadingSessionId || codexSessionIdFromFilePath(file), historyBase: inspection.historyBase,
@@ -6243,12 +6246,13 @@ async function prepareCodexHistoryCandidates(candidates, inspections, sessionsRo
     const group = groups.get(node.sessionId) || [];
     group.push(node); groups.set(node.sessionId, group);
   }
-  const affectedIds = [...candidateIds].filter((id) => {
+  const historyCandidateIds = new Set([...candidateIds].filter((id) => {
     const group = groups.get(id) || [];
     return group.length > 1 || group.some((node) => node.historyBase != null
       || rolloutHistory.parseRolloutArtifactIdentity(node.sourceFile)?.rolloutId !== id
         && rolloutHistory.parseRolloutArtifactIdentity(node.sourceFile));
-  });
+  }));
+  const affectedIds = [...candidateIds].filter((id) => historyCandidateIds.has(id) || uninspectedThreadIds.has(id.toLowerCase()));
   if (!affectedIds.length) return new Map();
   const pointer = currentPathsOverride ? { currentPaths: currentPathsOverride, diagnostics: [], evidence: {
     kind: 'codex-current-rollout-v1', status: 'test-override', entries: affectedIds.map((sessionId) => ({ sessionId,
@@ -6257,18 +6261,35 @@ async function prepareCodexHistoryCandidates(candidates, inspections, sessionsRo
   for (const diagnostic of pointer.diagnostics) onDiagnostic(diagnostic);
   const resolved = rolloutHistory.resolveRolloutHistoryPlans(nodes, { currentPaths: pointer.currentPaths, sessionsRoot });
   const plans = new Map();
+  const confirmedSingleFiles = new Set();
   plans.archivedDependencyFileCount = inspections.size - initialInspectionCount;
   const invalidHints = new Set(pointer.evidence.entries.filter((entry) => entry.status === 'invalid').map((entry) => entry.sessionId));
   for (const diagnostic of resolved.diagnostics) if (affectedIds.includes(diagnostic.sessionId)) onDiagnostic({
     code: diagnostic.code, path: diagnostic.sourceFile, message: 'The explicit Codex rollout history could not be resolved completely.' });
   for (const plan of resolved.plans) {
     if (!affectedIds.includes(plan.sessionId) || invalidHints.has(plan.sessionId)) continue;
+    // A failed inspection leaves the filesystem graph incomplete for this thread.
+    if (plan.headSelection === 'filesystem-inferred' && uninspectedThreadIds.has(plan.sessionId.toLowerCase())) continue;
+    const ambiguousSegment = uninspectedRolloutIds.size
+      ? plan.segments.find((segment) => uninspectedRolloutIds.has(segment.rolloutId))
+      : undefined;
+    if (ambiguousSegment) {
+      onDiagnostic({ code: 'CODEX_HISTORY_ARTIFACT_ID_AMBIGUOUS', path: ambiguousSegment.sourceFile,
+        message: 'An unreadable Codex artifact shares the rollout identity of the selected history segment.' });
+      continue;
+    }
     // Archives are source dependencies, never standalone current-session heads.
     // Keep the same artifact available to another valid child's prefix chain.
     const headFile = physicalFiles.get(plan.headSourceFile);
     if (!headFile || !isPathInsideOrSame(headFile, sessionsRoot)) {
       onDiagnostic({ code: 'CODEX_HISTORY_STANDALONE_HEAD_UNAVAILABLE', path: plan.headSourceFile,
         message: 'The inferred current history head is archived; its logical session is excluded while explicit dependent histories remain available.' });
+      continue;
+    }
+    // A pointer can confirm an ordinary single-file Session after a sibling
+    // failed inspection. Keep that file on the ordinary parser path.
+    if (!historyCandidateIds.has(plan.sessionId)) {
+      confirmedSingleFiles.add(headFile);
       continue;
     }
     plan.currentPointer = { kind: pointer.evidence.kind, status: pointer.evidence.status,
@@ -6279,7 +6300,9 @@ async function prepareCodexHistoryCandidates(candidates, inspections, sessionsRo
       message: 'A unique filesystem history head was inferred; the current rollout database pointer is unavailable.' });
   }
   const affectedSet = new Set(affectedIds);
-  candidates.splice(0, candidates.length, ...candidates.filter((file) => !affectedSet.has(inspections.get(file)?.leadingSessionId || codexSessionIdFromFilePath(file))), ...plans.keys());
+  const remainingCandidates = candidates.filter((file) => confirmedSingleFiles.has(file)
+    || !affectedSet.has(inspections.get(file)?.leadingSessionId || codexSessionIdFromFilePath(file)));
+  candidates.splice(0, candidates.length, ...remainingCandidates, ...plans.keys());
   return plans;
 }
 
@@ -6382,7 +6405,7 @@ async function buildIndex({
   }
 
   const sessions = [];
-  const historyPlans = await prepareCodexHistoryCandidates(candidates, candidateInspections, sessionsRoot,
+  const historyPlans = await prepareCodexHistoryCandidates(candidates, candidateInspections, files, sessionsRoot,
     resolvedCodex, signal, onDiagnostic, currentRolloutPathsForTests);
   const selectedPhysicalFileCount = codexSelectedPhysicalFiles(candidates, historyPlans, sessionsRoot).size;
   const discoveredPhysicalFileCount = files.length + (historyPlans.archivedDependencyFileCount || 0);
@@ -6470,8 +6493,9 @@ async function buildIndex({
         captureCacheObservationSeeds: cacheObservationForTests,
       });
       } catch (error) {
-        if (!historyPlans.has(filePath) || !String(error.code || '').startsWith('CODEX_HISTORY_')) throw error;
-        onDiagnostic({ code: error.code, path: relFile, message: error.message });
+        if (error.code !== codexRolloutStorage.CODEX_ROLLOUT_RECORD_TOO_LARGE
+            && (!historyPlans.has(filePath) || !String(error.code || '').startsWith('CODEX_HISTORY_'))) throw error;
+        onDiagnostic({ code: error.code, path: error.sourceFile ?? relFile, message: error.message });
         unknownFileCount += 1;
         continue;
       }
@@ -6675,7 +6699,7 @@ async function buildSourceBackedIndex({
     });
   }
 
-  const historyPlans = await prepareCodexHistoryCandidates(candidates, candidateInspections, sessionsRoot,
+  const historyPlans = await prepareCodexHistoryCandidates(candidates, candidateInspections, files, sessionsRoot,
     resolvedCodex, signal, onDiagnostic, currentRolloutPathsForTests);
   let selectedPhysicalFileCount = codexSelectedPhysicalFiles(candidates, historyPlans, sessionsRoot).size;
   const discoveredPhysicalFileCount = files.length + (historyPlans.archivedDependencyFileCount || 0);
@@ -6826,48 +6850,46 @@ async function buildSourceBackedIndex({
     const relFile = codexRolloutRelativePath(sessionsRoot, filePath);
     const initiallyDeep = initialDeepFilePaths.has(filePath);
     let result;
-    if (forceFullRelationshipPassForTests === true || initiallyDeep || historyPlans.has(filePath)) {
-      try {
-      result = await parseFullRelationshipCandidate(
-        filePath,
-        relFile,
-        initiallyDeep,
-      );
-      } catch (error) {
-        if (!historyPlans.has(filePath) || !String(error.code || '').startsWith('CODEX_HISTORY_')) throw error;
-        onDiagnostic({ code: error.code, path: relFile, message: error.message });
-        unknownFileCount += 1;
-        continue;
-      }
-    } else {
-      const scanned = await scanCodexRelationshipEvidence(
-        filePath,
-        relFile,
-        resolvedRepo,
-        signal,
-        {
-          projectPathContext: context.serialized,
-          beforeSourceSnapshotVerificationForTests,
-          acceptedLogicalBytes: codexRolloutStorage.compressionForArtifact(filePath) === 'zstd'
-            ? candidateInspections.get(filePath)?.bytes
-            : undefined,
-        },
-      );
-      if (scanned.requiresFullParse) {
+    let scanned;
+    try {
+      if (forceFullRelationshipPassForTests === true || initiallyDeep || historyPlans.has(filePath)) {
         result = await parseFullRelationshipCandidate(
           filePath,
           relFile,
-          false,
-          scanned.evidence,
+          initiallyDeep,
         );
       } else {
-        result = {
+        scanned = await scanCodexRelationshipEvidence(
+          filePath,
+          relFile,
+          resolvedRepo,
+          signal,
+          {
+            projectPathContext: context.serialized,
+            beforeSourceSnapshotVerificationForTests,
+            acceptedLogicalBytes: codexRolloutStorage.compressionForArtifact(filePath) === 'zstd'
+              ? candidateInspections.get(filePath)?.bytes
+              : undefined,
+          },
+        );
+      }
+    } catch (error) {
+      if (error.code !== codexRolloutStorage.CODEX_ROLLOUT_RECORD_TOO_LARGE
+            && (!historyPlans.has(filePath) || !String(error.code || '').startsWith('CODEX_HISTORY_'))) throw error;
+      onDiagnostic({ code: error.code, path: error.sourceFile ?? relFile, message: error.message });
+      unknownFileCount += 1;
+      continue;
+    }
+    if (scanned) {
+      // The light scan verified this prefix. A failed replay rejects the build.
+      result = scanned.requiresFullParse
+        ? await parseFullRelationshipCandidate(filePath, relFile, false, scanned.evidence)
+        : {
           evidence: scanned.evidence,
           planningProjection: scanned.planningProjection,
           retainForkEvidence: false,
           mode: 'light',
         };
-      }
     }
     relationshipResultsByFile.set(filePath, result);
     acceptedPrefixInspections.set(filePath, result.planningProjection);
@@ -7804,15 +7826,14 @@ async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, opt
       sourceBytesRead += chunk.length;
       sourceHash.update(chunk);
     });
-    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    const lines = codexRolloutStorage.readLogicalLines(stream, { signal });
     const abortScan = () => {
-      rl.close();
       stream.destroy();
     };
     signal?.addEventListener('abort', abortScan, { once: true });
     let current = 0;
     try {
-      for await (const line of rl) {
+      for await (const line of lines) {
         throwIfAborted(signal);
         current += 1;
         options.onSourceLine?.(relFile, current);
@@ -7857,7 +7878,6 @@ async function readIndexedCodexSourceRowsUncoordinated(index, session, raws, opt
       throw error;
     } finally {
       signal?.removeEventListener('abort', abortScan);
-      rl.close();
       stream.destroy();
     }
   }
