@@ -6,6 +6,7 @@
 // physical representation.
 
 const crypto = require('node:crypto');
+const { isUtf8 } = require('node:buffer');
 const fsp = require('node:fs/promises');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -140,6 +141,7 @@ function normalizeStat(stat, descriptor) {
   return {
     fileIdentity: physicalIdentity(stat, descriptor),
     sizeBigInt: stat.size,
+    mtimeNs: stat.mtimeNs,
     mtimeMs,
     mtime: new Date(Math.round(mtimeMs)),
     physicalBytes: stat.size <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(stat.size) : null,
@@ -147,14 +149,15 @@ function normalizeStat(stat, descriptor) {
   };
 }
 
-async function acquireRolloutStat(descriptorOrPath) {
+async function acquireRolloutStat(descriptorOrPath, fileHandle) {
   const descriptor = typeof descriptorOrPath === 'string'
     ? normalizeArtifactDescriptor(descriptorOrPath)
     : normalizeArtifactDescriptor(
       descriptorOrPath?.physicalPath,
       descriptorOrPath,
     );
-  return normalizeStat(await fsp.stat(descriptor.physicalPath, { bigint: true }), descriptor);
+  const stat = fileHandle ? await fileHandle.stat({ bigint: true }) : await fsp.stat(descriptor.physicalPath, { bigint: true });
+  return normalizeStat(stat, descriptor);
 }
 
 function descriptorForRelativePath(sessionsRoot, relativePath, options = {}) {
@@ -266,6 +269,7 @@ async function collectCodexRolloutFiles(root, options = {}) {
   const signal = options.signal;
   const onDiagnostic = options.onDiagnostic;
   const byLogicalPath = new Map();
+  const witnessedDirectories = new Map();
   const report = (error, target, rootFailure = false) => {
     if (!onDiagnostic) return;
     const code = rootFailure
@@ -278,17 +282,20 @@ async function collectCodexRolloutFiles(root, options = {}) {
   async function walk(dir) {
     throwIfAborted(signal);
     let entries;
+    let before;
     try {
+      if (options.verifyCwdCoverage) before = await fsp.stat(dir, { bigint: true });
       entries = await fsp.readdir(dir, { withFileTypes: true });
     } catch (error) {
       throwIfAborted(signal);
       if (!['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EIO'].includes(error?.code)) throw error;
       // A fresh Codex home need not contain a sessions directory yet. Preserve
       // the existing empty-source onboarding contract for absent directories.
-      if (error.code === 'ENOENT') return;
+      if (error.code === 'ENOENT' && (dir === resolvedRoot || !options.verifyCwdCoverage)) return;
       report(error, dir, dir === resolvedRoot);
       return;
     }
+    if (before) witnessedDirectories.set(dir, before);
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
       throwIfAborted(signal);
@@ -310,6 +317,20 @@ async function collectCodexRolloutFiles(root, options = {}) {
     }
   }
   await walk(resolvedRoot);
+  for (const [dir, before] of witnessedDirectories) {
+    throwIfAborted(signal);
+    try {
+      const after = await fsp.stat(dir, { bigint: true });
+      if (!after.isDirectory() || before.dev !== after.dev || before.ino !== after.ino || before.mtimeNs !== after.mtimeNs) {
+        onDiagnostic?.({ code: 'CODEX_ROLLOUT_ENUMERATION_CHANGED', path: dir,
+          message: 'The Codex rollout directory changed while enumerating working-directory evidence.' });
+      }
+    } catch (error) {
+      throwIfAborted(signal);
+      if (!isStorageFailure(error)) throw error;
+      report(error, dir, dir === resolvedRoot);
+    }
+  }
   throwIfAborted(signal);
   return [...byLogicalPath.values()].sort((left, right) => left.logicalPath.localeCompare(right.logicalPath));
 }
@@ -589,6 +610,7 @@ function openDecodedStream(descriptorOrPath, options = {}) {
   requireBuiltInZstd(descriptor.physicalPath);
   const input = fs.createReadStream(descriptor.physicalPath, options.streamOptions || {});
   const decoder = new ZstdFrameTransform(descriptor, signal);
+  if (options.onCompressedChunk) input.on('data', options.onCompressedChunk);
   input.on('error', (error) => decoder.destroy(mapDecoderError(error, descriptor)));
   decoder.once('close', () => input.destroy());
   input.pipe(decoder);
@@ -611,9 +633,16 @@ function createLogicalReadStream(descriptorOrPath, options = {}) {
       throwIfAborted(signal);
       // Do not open a source until a consumer is attached. Cancellation may
       // happen between stream construction and the first iterator request.
-      decoded = descriptor.compression === 'zstd'
-        ? createSnapshotReadStream(descriptor, { ...options, decode: () => openDecodedStream(descriptor, options) })
-        : openDecodedStream(descriptor, options);
+      if (descriptor.compression === 'zstd') {
+        decoded = createSnapshotReadStream(descriptor, {
+          ...options,
+          decode: (onCompressedChunk) => openDecodedStream(descriptor, { ...options, onCompressedChunk }),
+        });
+      } else {
+        // The verification caller owns the handle and checks it after reading.
+        decoded = options.fileHandle ? Readable.fromWeb(options.fileHandle.readableWebStream({ type: 'bytes' }), { signal })
+          : openDecodedStream(descriptor, options);
+      }
       for await (const chunk of decoded) {
         throwIfAborted(signal);
         const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -656,12 +685,19 @@ async function hashLogicalPrefix(descriptorOrPath, byteLength, signal, options =
 }
 
 function createLogicalLineScanner(yieldLines) {
-  return async function* scanLogicalLines(input, { signal, maxLineBytes = MAX_CODEX_RECORD_BYTES } = {}, visitLine) {
+  return async function* scanLogicalLines(input, { signal, maxLineBytes = MAX_CODEX_RECORD_BYTES, onInvalidUtf8 } = {}, visitLine) {
     let pieces = [];
     let bytes = 0;
     let lineNumber = 1;
     let skipLf = false;
     const abort = () => input.destroy(abortError(signal));
+    function decodeLine(buffer, start = 0, end = buffer.length) {
+      if (onInvalidUtf8 && !isUtf8(buffer.subarray(start, end))) {
+        onInvalidUtf8(lineNumber);
+        return null;
+      }
+      return buffer.toString('utf8', start, end);
+    }
     try {
       if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes < 1 || maxLineBytes > MAX_CODEX_RECORD_BYTES) {
         throw new RangeError('Invalid Codex record byte limit');
@@ -697,10 +733,10 @@ function createLogicalLineScanner(yieldLines) {
           }
           let line;
           if (pieces.length === 0) {
-            line = buffer.toString('utf8', start, end);
+            line = decodeLine(buffer, start, end);
           } else {
             if (end > start) pieces.push(buffer.subarray(start, end));
-            line = (pieces.length === 1 ? pieces[0] : Buffer.concat(pieces, bytes)).toString('utf8');
+            line = decodeLine(pieces.length === 1 ? pieces[0] : Buffer.concat(pieces, bytes));
             pieces = [];
           }
           bytes = 0;
@@ -710,17 +746,21 @@ function createLogicalLineScanner(yieldLines) {
             if (start === buffer.length) skipLf = true;
             else if (buffer[start] === 10) start += 1;
           }
-          if (yieldLines) yield line;
-          else if (visitLine(line) === false) return;
+          if (line !== null) {
+            if (yieldLines) yield line;
+            else if (visitLine(line) === false) return;
+          }
           if (lf >= 0 && lf < start) lf = buffer.indexOf(10, start);
           if (cr >= 0 && cr < start) cr = buffer.indexOf(13, start);
         }
       }
       throwIfAborted(signal);
       if (bytes) {
-        const line = (pieces.length === 1 ? pieces[0] : Buffer.concat(pieces, bytes)).toString('utf8');
-        if (yieldLines) yield line;
-        else visitLine(line);
+        const line = decodeLine(pieces.length === 1 ? pieces[0] : Buffer.concat(pieces, bytes));
+        if (line !== null) {
+          if (yieldLines) yield line;
+          else visitLine(line);
+        }
       }
     } finally {
       signal?.removeEventListener('abort', abort);
@@ -734,6 +774,7 @@ const readLogicalLines = createLogicalLineScanner(true);
 const scanVisitedLines = createLogicalLineScanner(false);
 
 // Visit each line synchronously. Returning false stops after the current line.
+// With onInvalidUtf8, report the logical line number and skip malformed bytes.
 async function visitLogicalLines(input, visitLine, options) {
   const scan = scanVisitedLines(input, options, visitLine);
   if (!(await scan.next()).done) {

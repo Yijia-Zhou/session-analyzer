@@ -38,21 +38,34 @@ function sameStat(left, right) {
     && left.mtimeNs === right.mtimeNs;
 }
 
-async function physicalFingerprint(file, signal) {
+async function physicalFingerprint(file, signal, expected) {
   throwIfAborted(signal);
-  const before = await fsp.stat(file, { bigint: true });
-  const hash = crypto.createHash('sha256');
-  const stream = fs.createReadStream(file, { signal });
-  let bytes = 0n;
-  for await (const chunk of stream) {
+  const handle = await fsp.open(file, 'r');
+  try {
     throwIfAborted(signal);
-    hash.update(chunk);
-    bytes += BigInt(chunk.length);
+    const before = await handle.stat({ bigint: true });
+    if (expected && (expected.fileIdentity.device !== String(before.dev)
+        || expected.fileIdentity.inode !== String(before.ino)
+        || expected.sizeBigInt !== before.size || expected.mtimeNs !== before.mtimeNs)) throw changedSource();
+    const hash = crypto.createHash('sha256');
+    const stream = Readable.fromWeb(handle.readableWebStream({ type: 'bytes' }), { signal });
+    let bytes = 0n;
+    for await (const chunk of stream) {
+      throwIfAborted(signal);
+      hash.update(chunk);
+      bytes += BigInt(chunk.length);
+    }
+    const pathname = await fsp.stat(file, { bigint: true });
+    const after = await handle.stat({ bigint: true });
+    if (!sameStat(before, after) || !sameStat(after, pathname) || bytes !== before.size) throw changedSource();
+    const digest = hash.digest('base64url');
+    return {
+      key: JSON.stringify([file, String(after.dev), String(after.ino), String(after.size), String(after.mtimeNs), digest]),
+      digest,
+    };
+  } finally {
+    await handle.close();
   }
-  const after = await fsp.stat(file, { bigint: true });
-  if (!sameStat(before, after) || bytes !== before.size) throw changedSource();
-  return JSON.stringify([file, String(after.dev), String(after.ino), String(after.size),
-    String(after.mtimeNs), hash.digest('base64url')]);
 }
 
 async function removeSnapshot(entry) {
@@ -104,7 +117,8 @@ async function releaseEntry(entry, discard = false) {
 async function acquireSnapshot(descriptor, options) {
   const { signal } = options;
   const file = descriptor.physicalPath;
-  const key = await physicalFingerprint(file, signal);
+  const fingerprint = await physicalFingerprint(file, signal, options.expectedSourceStat);
+  const { key } = fingerprint;
   throwIfAborted(signal);
   const cached = snapshots.get(key);
   if (cached && !cached.removing) return acquireEntry(cached);
@@ -121,7 +135,7 @@ async function acquireSnapshot(descriptor, options) {
     // source fingerprint before reusing or retrying its construction.
     return acquireSnapshot(descriptor, options);
   }
-  const work = buildSnapshot(descriptor, options, key);
+  const work = buildSnapshot(descriptor, options, fingerprint);
   const settled = work.then(() => {}, () => {});
   constructions.set(key, settled);
   try {
@@ -131,7 +145,7 @@ async function acquireSnapshot(descriptor, options) {
   }
 }
 
-async function buildSnapshot(descriptor, options, key) {
+async function buildSnapshot(descriptor, options, { key, digest }) {
   const { signal, decode } = options;
   const file = descriptor.physicalPath;
   const directory = await fsp.mkdtemp(path.join(os.tmpdir(), 'session-analyzer-codex-decoded-'));
@@ -145,9 +159,14 @@ async function buildSnapshot(descriptor, options, key) {
       bytes += chunk.length;
       callback(null, chunk);
     } });
+    const compressed = crypto.createHash('sha256');
     decodeCount += 1;
-    await pipeline(decode(), counter, fs.createWriteStream(target, { flags: 'wx', mode: 0o600 }), { signal });
-    if (await physicalFingerprint(file, signal) !== key) throw changedSource();
+    await pipeline(decode((chunk) => compressed.update(chunk)), counter,
+      fs.createWriteStream(target, { flags: 'wx', mode: 0o600 }), { signal });
+    if (compressed.digest('base64url') !== digest
+        || (await physicalFingerprint(file, signal, options.expectedSourceStat)).key !== key) {
+      throw changedSource();
+    }
     throwIfAborted(signal);
     // Concurrent cold readers can finish independently; publish only one copy.
     const concurrent = snapshots.get(key);

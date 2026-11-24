@@ -7,10 +7,13 @@ const childProcess = require('node:child_process');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { Readable } = require('node:stream');
+const { zstdCompressSync } = require('node:zlib');
 const { __testOnly, buildCodexLegacyRawOwnerIndex, buildIndex: buildCompactIndex, buildEventDetail, buildHydratedEventDetail, decodeImagePreviewDataUrl, discoverConfiguredProjects, discoverProjects, fileSuggestions, filterSessions, getTimeline, matchTerms, readImagePreview, readRawLine, isPathInsideOrSame } = require('../src/codex');
-const { createServer, parseArgs, resolveStaticAssetPath } = require('../server');
+const { createServer, discoverProjectsForSource, parseArgs, resolveStaticAssetPath } = require('../server');
 const { DISPLAY_STATES, EDITABLE_EVENT_KINDS, foldingProfiles } = require('../src/folding');
 const { getSourceAdapter, resolveLegacyRawOwnerForIndex } = require('../src/source-adapters');
+const rolloutStorage = require('../src/codex-rollout-storage');
 
 const fixtureCodexHome = path.join(__dirname, 'fixtures', 'codex-home');
 const primaryFixtureSessionId = '11111111-1111-1111-1111-111111111111';
@@ -224,6 +227,32 @@ test('discoverConfiguredProjects reads Codex config project headers', async (t) 
 test('discoverConfiguredProjects returns empty list when config is absent', async (t) => {
   const codexHome = await makeTempCodexHome(t);
   assert.deepEqual(await discoverConfiguredProjects({ codexHome }), []);
+});
+
+test('Codex project declarations parse quoted keys outside TOML multiline values', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const project = path.join(codexHome, 'unicode-é');
+  const phantom = path.join(codexHome, 'phantom');
+  await fsp.mkdir(project);
+  const key = JSON.stringify(project).replace('é', '\\u00e9');
+  const config = [
+    '# """ in a comment',
+    'developer_instructions = """',
+    '[projects."example',
+    "[projects.'" + phantom + "']",
+    '"""',
+    'examples = [',
+    "  ['''",
+    "[projects.'" + phantom + "']",
+    "  ''''],",
+    ']',
+    '["pr\\u006fjects".' + key + '] # an actual project',
+  ].join('\n');
+  await fsp.writeFile(path.join(codexHome, 'config.toml'), config);
+  const diagnostics = [];
+  const configured = await discoverConfiguredProjects({ codexHome, onDiagnostic: (entry) => diagnostics.push(entry) });
+  assert.deepEqual(diagnostics, []);
+  assert.deepEqual(configured.map(({ repoRoot }) => repoRoot), [project]);
 });
 
 test('discoverConfiguredProjects propagates cancellation from the config read', async (t) => {
@@ -4585,6 +4614,408 @@ test('project summary endpoint returns fast config rows and later cached activit
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
+});
+
+test('Codex chooser hides only confirmed empty extended-drive duplicates on Windows', async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const windows = process.platform === 'win32';
+  const basePath = windows ? await fsp.realpath(codexHome) : path.win32.join('C:\\synthetic', path.basename(codexHome));
+  const driveBacked = windows && /^[A-Za-z]:\\/.test(basePath);
+  const ordinary = path.win32.join(basePath, 'ordinary');
+  const parent = path.win32.join(basePath, 'parent');
+  const missing = path.win32.join(basePath, 'missing');
+  const configOnly = path.win32.join(basePath, 'config-only');
+  const extended = path.win32.toNamespacedPath;
+  if (windows) {
+    await fsp.mkdir(ordinary);
+    await fsp.mkdir(path.win32.join(parent, 'src'), { recursive: true });
+    await fsp.mkdir(configOnly);
+  }
+  const configured = [ordinary, ...[ordinary, parent, missing, configOnly].map(extended), 'relative-project'];
+  const configFile = path.join(codexHome, 'config.toml');
+  const writeConfig = (roots) => fsp.writeFile(configFile, roots.map((root) => `[projects.'${root}']`).join('\n'));
+  await writeConfig(configured);
+  const transcriptDirs = [ordinary, parent, extended(path.win32.join(parent, 'src')), missing];
+  for (const [i, cwd] of transcriptDirs.entries()) {
+    const file = await writeFixtureTranscript(codexHome, cwd, `cccccccc-cccc-cccc-cccc-ccccccccccc${i}`);
+    if (i === 2) {
+      const sessionMeta = await fsp.readFile(file, 'utf8');
+      await fsp.writeFile(file, sessionMeta.replace('"cwd"', '"\\u0063wd"'));
+    }
+  }
+
+  const server = createServer(null, 0, { codexHome });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))));
+  const endpoint = `http://127.0.0.1:${server.address().port}/api/projects`;
+  async function discover(query = '') {
+    const response = await fetch(endpoint + query);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    return { ...body, byRoot: new Map(body.projects.map((project) => [project.repoRoot, project])) };
+  }
+
+  const cold = await discover('?summary=1');
+  assert.equal(cold.cached, false);
+  assert.equal(cold.byRoot.get(extended(ordinary)).statsPending, true);
+  assert.equal(cold.sourceDiagnostics.counts.PROJECT_PATH_UNSUPPORTED, 1);
+  for (const query of ['', '?summary=1']) {
+    const { byRoot, hiddenProjects = [], sourceDiagnostics } = await discover(query);
+    assert.equal(sourceDiagnostics.counts.PROJECT_PATH_UNSUPPORTED, 1);
+    assert.equal(byRoot.has(extended(ordinary)), !driveBacked);
+    assert.deepEqual(hiddenProjects.map((project) => project.repoRoot), driveBacked ? [extended(ordinary)] : []);
+    assert.equal(byRoot.get(ordinary).sessionCount, 1);
+    assert.equal(byRoot.get(extended(parent)).sessionCount, 0);
+    assert.equal(byRoot.get(extended(path.win32.join(parent, 'src'))).sessionCount, 1);
+    assert.equal(byRoot.get(extended(missing)).exists, false);
+    assert.equal(byRoot.get(extended(configOnly)).source, 'config');
+  }
+
+  if (driveBacked) {
+    let releaseStat;
+    let enterStat;
+    const gate = new Promise((resolve) => { releaseStat = resolve; });
+    const entered = new Promise((resolve) => { enterStat = resolve; });
+    const stat = fsp.stat;
+    let blocked = false;
+    const statMock = t.mock.method(fsp, 'stat', async (file, options) => {
+      if (!blocked && file === extended(ordinary) && options?.bigint) {
+        blocked = true;
+        enterStat();
+        await gate;
+      }
+      return stat(file, options);
+    });
+    try {
+      const running = discover();
+      await entered;
+      assert.equal((await discover('?summary=1')).hiddenProjects[0].repoRoot, extended(ordinary));
+      releaseStat();
+      assert.equal((await running).hiddenProjects[0].repoRoot, extended(ordinary));
+    } finally {
+      releaseStat();
+      statMock.mock.restore();
+    }
+  }
+
+  const savedConfig = path.join(codexHome, 'config.saved');
+  await fsp.rename(configFile, savedConfig);
+  await fsp.mkdir(configFile);
+  for (const query of ['?summary=1', '', '?summary=1']) {
+    const { byRoot, hiddenProjects = [], sourceDiagnostics } = await discover(query);
+    const candidate = byRoot.get(extended(ordinary));
+    assert.equal(candidate.configurationUnverified, true);
+    assert.equal(candidate.statsPending, true);
+    assert.equal(candidate.sessionCount, null);
+    assert.equal(hiddenProjects.length, 0);
+    assert.equal(byRoot.get(ordinary).sessionCount, 1);
+    assert.equal(sourceDiagnostics.counts.CODEX_PROJECT_CONFIG_UNREADABLE, 1);
+    assert.equal(sourceDiagnostics.counts.PROJECT_PATH_UNSUPPORTED, undefined);
+  }
+  await fsp.rmdir(configFile);
+  await fsp.rename(savedConfig, configFile);
+  const recoveredConfig = await discover();
+  assert.equal(recoveredConfig.sourceDiagnostics.counts.CODEX_PROJECT_CONFIG_UNREADABLE, undefined);
+  assert.equal(recoveredConfig.byRoot.has(extended(ordinary)), !driveBacked);
+
+  const sibling = extended(path.win32.join(basePath, 'sibling'));
+  const truncatedHeader = `[projects.'${extended(ordinary)}'`;
+  await fsp.writeFile(configFile, [truncatedHeader, `['projects'.'${sibling}']`].join('\n'));
+  const malformedConfig = await discover('?summary=1');
+  assert.equal(malformedConfig.sourceDiagnostics.counts.CODEX_PROJECT_CONFIG_MALFORMED, 1);
+  assert.equal(malformedConfig.byRoot.get(extended(ordinary)).configurationUnverified, true);
+  assert.equal(malformedConfig.byRoot.get(sibling).configurationUnverified, true);
+  assert.equal(malformedConfig.hiddenProjects, undefined);
+  await fsp.writeFile(configFile, Buffer.from([0xff]));
+  const invalidConfigBytes = await discover();
+  assert.equal(invalidConfigBytes.sourceDiagnostics.counts.CODEX_PROJECT_CONFIG_UNREADABLE, 1);
+  assert.equal(invalidConfigBytes.byRoot.get(extended(ordinary)).configurationUnverified, true);
+  assert.equal(invalidConfigBytes.byRoot.get(sibling).configurationUnverified, true);
+  await writeConfig(configured);
+  const afterRepair = await discover();
+  assert.equal(afterRepair.sourceDiagnostics.counts.CODEX_PROJECT_CONFIG_MALFORMED, undefined);
+  assert.equal(afterRepair.byRoot.has(extended(ordinary)), !driveBacked);
+  assert.equal(afterRepair.byRoot.has(sibling), false);
+  const projectHeader = `[projects.'${extended(ordinary)}']`;
+  for (const malformedHeader of [
+    '["projects', '["pr\\u006fjects', '[projects."/synthetic/bad\\q"]',
+    '[' + projectHeader, projectHeader.replace('projects.', 'projects\u00a0.'), projectHeader + '\n' + projectHeader,
+  ]) {
+    await fsp.writeFile(configFile, malformedHeader + '\n' + `[projects.'${sibling}']`);
+    const result = await discover('?summary=1');
+    assert.equal(result.sourceDiagnostics.counts.CODEX_PROJECT_CONFIG_MALFORMED, 1);
+    assert.equal(result.byRoot.get(extended(ordinary)).configurationUnverified, true);
+    assert.equal(result.byRoot.get(sibling).configurationUnverified, true);
+  }
+
+  const added = extended(path.win32.join(basePath, 'added'));
+  await writeConfig([...configured.filter((root) => root !== extended(ordinary)), added]);
+  const afterRemoval = await discover('?summary=1');
+  assert.equal(afterRemoval.byRoot.has(extended(ordinary)), false);
+  assert.equal(afterRemoval.hiddenProjects?.some((project) => project.repoRoot === extended(ordinary)) ?? false, false);
+  assert.equal(afterRemoval.byRoot.get(added).statsPending, true);
+  await fsp.unlink(configFile);
+  await fsp.mkdir(configFile);
+  const unreadableAfterUpdate = await discover();
+  assert.equal(unreadableAfterUpdate.byRoot.has(extended(ordinary)), false);
+  assert.equal(unreadableAfterUpdate.byRoot.get(added).configurationUnverified, true);
+  assert.equal(unreadableAfterUpdate.byRoot.get(added).sessionCount, null);
+  await fsp.rmdir(configFile);
+  const absent = await discover('?summary=1');
+  assert.equal(absent.projects.some((project) => project.source === 'config'), false);
+  await fsp.mkdir(configFile);
+  const unreadableAfterAbsence = await discover();
+  assert.equal(unreadableAfterAbsence.sourceDiagnostics.counts.CODEX_PROJECT_CONFIG_UNREADABLE, 1);
+  assert.equal(unreadableAfterAbsence.projects.some((project) => project.source === 'config'), false);
+  assert.equal(unreadableAfterAbsence.byRoot.get(ordinary).sessionCount, 1);
+  await fsp.rmdir(configFile);
+  await writeConfig(configured);
+
+  const corruptRollout = path.join(codexHome, 'sessions', 'rollout-invalid.jsonl.zst');
+  await fsp.writeFile(corruptRollout, 'invalid compressed rollout');
+  const partial = await discover();
+  assert.ok(partial.sourceDiagnostics.counts.CODEX_ROLLOUT_STORAGE_INVALID);
+  assert.equal(partial.byRoot.get(extended(ordinary)).source, 'config');
+  assert.equal((await discover('?summary=1')).byRoot.get(extended(ordinary)).source, 'config');
+  await fsp.unlink(corruptRollout);
+
+  const unknownCwd = await writeFixtureTranscript(codexHome, 'relative-cwd', 'cccccccc-cccc-cccc-cccc-ccccccccccc5');
+  const incomplete = await discover();
+  assert.equal(incomplete.sourceDiagnostics.counts.PROJECT_PATH_UNSUPPORTED, 2);
+  assert.equal(incomplete.byRoot.get(extended(ordinary)).source, 'config');
+  await fsp.unlink(unknownCwd);
+
+  const truncated = path.join(codexHome, 'sessions', 'rollout-truncated.jsonl');
+  const malformed = path.join(codexHome, 'sessions', 'rollout-malformed.jsonl');
+  await fsp.writeFile(truncated, '{"type":"session_meta","payload":{"id":"partial"');
+  await fsp.writeFile(malformed, [
+    JSON.stringify({ type: 'session_meta', payload: { id: 'malformed-configured', cwd: ordinary } }),
+    '{"type":"event_msg","payload":{"type":"session_configured",}}',
+  ].join('\n'));
+  for (const query of ['', '?summary=1']) {
+    const { byRoot, sourceDiagnostics } = await discover(query);
+    assert.equal(sourceDiagnostics.counts.CODEX_ROLLOUT_CWD_UNREADABLE, 2);
+    assert.equal(byRoot.get(extended(ordinary)).source, 'config');
+    assert.equal(byRoot.get(ordinary).sessionCount, 2);
+  }
+  await fsp.unlink(truncated);
+  await fsp.unlink(malformed);
+
+  const damagedTail = path.join(codexHome, 'sessions', 'rollout-damaged-tail.jsonl');
+  await fsp.writeFile(damagedTail, [
+    JSON.stringify({ type: 'session_meta', payload: { id: 'damaged-tail', cwd: ordinary } }),
+    '{"payload":{,}}',
+  ].join('\n'));
+  assert.equal((await discover()).sourceDiagnostics.counts.CODEX_ROLLOUT_CWD_UNREADABLE, driveBacked ? 1 : undefined);
+  if (driveBacked) {
+    assert.equal((await discover('?summary=1')).byRoot.get(extended(ordinary)).statsPending, true);
+  }
+  await fsp.unlink(damagedTail);
+
+  if (driveBacked) {
+    const record = (id, cwd) => JSON.stringify({ type: 'session_meta', payload: { id, cwd } });
+    const damaged = Buffer.from(record('damaged-cwd', extended(ordinary)));
+    const offset = damaged.lastIndexOf('ordinary');
+    assert.notEqual(offset, -1);
+    damaged[offset] = 0xff;
+    const lossyCwd = JSON.parse(damaged.toString('utf8')).payload.cwd;
+    const validReplacementCwd = path.win32.join(basePath, 'valid-\uFFFD');
+    const rollout = Buffer.concat([
+      Buffer.from(record('readable-sibling', ordinary) + '\n'), damaged,
+      Buffer.from('\n' + record('valid-replacement-character', validReplacementCwd)),
+    ]);
+    for (const compressed of [false, true]) {
+      const file = path.join(codexHome, 'sessions', compressed ? 'rollout-encoding.jsonl.zst' : 'rollout-encoding.jsonl');
+      await fsp.writeFile(file, compressed ? zstdCompressSync(rollout) : rollout);
+      for (const query of ['', '?summary=1']) {
+        const { byRoot, sourceDiagnostics } = await discover(query);
+        assert.equal(sourceDiagnostics.counts.CODEX_ROLLOUT_CWD_UNREADABLE, 1);
+        assert.equal(byRoot.get(ordinary).sessionCount, 2);
+        assert.equal(byRoot.get(validReplacementCwd).sessionCount, 1);
+        assert.equal(byRoot.get(extended(ordinary)).statsPending, true);
+        assert.equal(byRoot.has(lossyCwd), false);
+      }
+      await fsp.unlink(file);
+    }
+
+    const rewrittenFile = path.join(codexHome, 'sessions', 'rollout-rewritten.jsonl');
+    const ordinaryLine = record('ordinary-cwd', ordinary) + '\n';
+    const extendedLine = record('extended-cwd', extended(ordinary)) + '\n';
+    await fsp.writeFile(rewrittenFile, ordinaryLine + extendedLine);
+    const createStream = rolloutStorage.createLogicalReadStream;
+    let rewrittenMtime = Date.now();
+    const streamMock = t.mock.method(rolloutStorage, 'createLogicalReadStream', (descriptor, options) => {
+      if (descriptor.physicalPath !== rewrittenFile) return createStream(descriptor, options);
+      return Readable.from((async function* () {
+        yield Buffer.from(ordinaryLine);
+        await fsp.writeFile(rewrittenFile, extendedLine + ordinaryLine);
+        rewrittenMtime += 2000;
+        await fsp.utimes(rewrittenFile, new Date(), new Date(rewrittenMtime));
+        yield Buffer.from(ordinaryLine);
+      })());
+    });
+    try {
+      await discover();
+      for (const query of ['?summary=1', '']) {
+        const { byRoot, sourceDiagnostics } = await discover(query);
+        assert.equal(sourceDiagnostics.counts.CODEX_ROLLOUT_CWD_UNREADABLE, 1);
+        assert.equal(byRoot.get(ordinary).sessionCount, 1);
+        assert.equal(byRoot.get(extended(ordinary)).statsPending, true);
+      }
+    } finally {
+      streamMock.mock.restore();
+    }
+    const stable = await discover();
+    assert.equal(stable.byRoot.get(extended(ordinary)).sessionCount, 1);
+    await fsp.unlink(rewrittenFile);
+  }
+
+  const badCwds = [[], {}, null, '', 42];
+  for (const [i, cwd] of badCwds.entries()) {
+    const file = path.join(codexHome, 'sessions', `rollout-bad-cwd-${i}.jsonl`);
+    const sibling = JSON.stringify({ type: 'session_meta', payload: { id: `bad-cwd-${i}`, cwd: ordinary } });
+    const invalid = i === 0 ? { type: 'session_meta', payload: { cwd } }
+      : { type: 'event_msg', payload: { type: 'session_configured', cwd } };
+    await fsp.writeFile(file, [sibling, JSON.stringify(invalid)].join('\n'));
+  }
+  for (const query of ['', '?summary=1']) {
+    const { byRoot, sourceDiagnostics } = await discover(query);
+    assert.equal(sourceDiagnostics.counts.CODEX_ROLLOUT_CWD_UNREADABLE, badCwds.length);
+    assert.equal(byRoot.get(extended(ordinary)).statsPending, driveBacked);
+    assert.equal(byRoot.get(ordinary).sessionCount, 1 + badCwds.length);
+  }
+  for (const i of badCwds.keys()) {
+    await fsp.unlink(path.join(codexHome, 'sessions', `rollout-bad-cwd-${i}.jsonl`));
+  }
+
+  const id = 'cccccccc-cccc-cccc-cccc-ccccccccccc4';
+  const file = await writeFixtureTranscript(codexHome, undefined, id);
+  const configuredCwd = JSON.stringify({ type: 'event_msg', payload: { type: 'session_configured', cwd: extended(ordinary) } })
+    .replaceAll('"type"', '"\\u0074ype"').replace('"payload"', '"\\u0070ayload"')
+    .replace('"session_configured"', '"session_\\u0063onfigured"').replace('"cwd"', '"\\u0063wd"');
+  await fsp.appendFile(file, configuredCwd + '\n');
+  for (const query of ['', '?summary=1']) {
+    const { byRoot } = await discover(query);
+    assert.equal(byRoot.get(extended(ordinary)).sessionCount, 1);
+    assert.equal(byRoot.get(ordinary).sessionCount, 1);
+  }
+  const legacy = await buildIndex({ repoRoot: extended(ordinary), codexHome });
+  assert.deepEqual(legacy.sessions.map((session) => session.id), [id]);
+  const strict = await getSourceAdapter('codex').buildIndex({ repoRoot: extended(ordinary), sourceHome: codexHome });
+  assert.deepEqual(strict.sessions.map((session) => session.id), [id]);
+});
+
+test('Windows chooser uses stable enumeration, opened rollout identity, and eligible cached activity', {
+  skip: process.platform !== 'win32',
+}, async (t) => {
+  const codexHome = await makeTempCodexHome(t);
+  const root = await fsp.realpath(codexHome);
+  if (!/^[A-Za-z]:\\/.test(root)) return t.skip('The temporary directory is not drive-backed');
+  const ordinary = path.join(root, 'repo');
+  const extended = path.toNamespacedPath(ordinary);
+  const sessions = path.join(root, 'sessions');
+  const primaryRollout = path.join(sessions, 'rollout-ordinary.jsonl');
+  const row = (cwd) => JSON.stringify({ type: 'session_meta', payload: { cwd } }) + '\n';
+  await fsp.mkdir(sessions);
+  await fsp.writeFile(path.join(root, 'config.toml'), `[projects.'${extended}']`);
+  await fsp.writeFile(primaryRollout, row(ordinary) + '{"other":}\n');
+  const adapter = getSourceAdapter('codex');
+  const state = { sourceRevision: 0, sourceKind: 'codex', sourceConfigs: { codex: { home: root } }, adapter, projectCache: null };
+  async function discover(mode = 'full') {
+    return (await discoverProjectsForSource(state, mode)).payload;
+  }
+  const choice = ({ projects }) => projects.find((candidate) => candidate.repoRoot === extended);
+
+  assert.equal(choice(await discover()).sessionCount, 0);
+  await fsp.mkdir(ordinary);
+  const newlyEligible = choice(await discover('summary'));
+  assert.equal(newlyEligible.exists, true);
+  assert.equal(newlyEligible.statsPending, true);
+  assert.equal(newlyEligible.sessionCount, null);
+  assert.equal(choice(await discover()).statsPending, true);
+  await fsp.writeFile(primaryRollout, row(ordinary));
+
+  const oldDirectory = path.join(sessions, 'old-container');
+  const newDirectory = path.join(sessions, 'new-container');
+  await fsp.mkdir(oldDirectory);
+  await fsp.writeFile(path.join(oldDirectory, 'rollout-extended.jsonl'), row(extended));
+  const readdir = fsp.readdir;
+  for (const replace of [false, true]) {
+    const readdirMock = t.mock.method(fsp, 'readdir', async (directory, options) => {
+      if (directory === oldDirectory) {
+        await fsp.rename(oldDirectory, newDirectory);
+        if (replace) await fsp.mkdir(oldDirectory);
+      }
+      return readdir(directory, options);
+    });
+    try {
+      const incomplete = await discover();
+      assert.equal(choice(incomplete).statsPending, true);
+      const code = replace ? 'CODEX_ROLLOUT_ENUMERATION_CHANGED' : 'ENOENT';
+      assert.ok(incomplete.sourceDiagnostics.counts[code] > 0);
+      assert.equal(choice(await discover('summary')).statsPending, true);
+    } finally {
+      readdirMock.mock.restore();
+    }
+    assert.equal(choice(await discover()).sessionCount, 1);
+    if (!replace) await fsp.rename(newDirectory, oldDirectory);
+  }
+  await fsp.unlink(path.join(newDirectory, 'rollout-extended.jsonl'));
+
+  const parked = path.join(root, 'parked');
+  const substitute = path.join(root, 'substitute');
+  await fsp.writeFile(primaryRollout, row(ordinary) + row(extended));
+  await fsp.writeFile(substitute, row(ordinary));
+  const createStream = rolloutStorage.createLogicalReadStream;
+  const streamMock = t.mock.method(rolloutStorage, 'createLogicalReadStream', (descriptor, options) => {
+    if (descriptor.physicalPath !== primaryRollout) return createStream(descriptor, options);
+    return Readable.from((async function* () {
+      await fsp.rename(primaryRollout, parked);
+      await fsp.rename(substitute, primaryRollout);
+      try {
+        yield* createStream(descriptor, options);
+      } finally {
+        await fsp.rename(primaryRollout, substitute);
+        await fsp.rename(parked, primaryRollout);
+      }
+    })());
+  });
+  try {
+    const verified = await discover();
+    assert.equal(choice(verified).source, 'transcripts');
+    assert.equal(choice(verified).sessionCount, 1);
+    assert.equal(choice(await discover('summary')).sessionCount, 1);
+  } finally {
+    streamMock.mock.restore();
+  }
+
+  await fsp.writeFile(primaryRollout, row(ordinary));
+  const compressed = path.join(sessions, 'rollout-original.jsonl.zst');
+  await fsp.writeFile(compressed, zstdCompressSync(Buffer.from(row(extended))));
+  await fsp.writeFile(substitute, zstdCompressSync(Buffer.from(row(ordinary))));
+  const compressedMock = t.mock.method(rolloutStorage, 'createLogicalReadStream', (descriptor, options) => {
+    if (descriptor.physicalPath !== compressed) return createStream(descriptor, options);
+    return Readable.from((async function* () {
+      await fsp.rename(compressed, parked);
+      await fsp.rename(substitute, compressed);
+      try {
+        yield* createStream(descriptor, options);
+      } finally {
+        await fsp.rename(compressed, substitute);
+        await fsp.rename(parked, compressed);
+      }
+    })());
+  });
+  try {
+    const incomplete = await discover();
+    assert.equal(incomplete.sourceDiagnostics.counts.CODEX_ROLLOUT_SOURCE_BUSY, 1);
+    assert.equal(choice(incomplete).statsPending, true);
+    assert.equal(incomplete.projects.find((project) => project.repoRoot === ordinary).sessionCount, 1);
+    assert.equal(choice(await discover('summary')).statsPending, true);
+  } finally {
+    compressedMock.mock.restore();
+  }
+  assert.equal(choice(await discover()).sessionCount, 1);
 });
 
 test('state reports active project job even when an old index exists', async () => {

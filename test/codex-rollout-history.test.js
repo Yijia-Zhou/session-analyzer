@@ -270,6 +270,35 @@ test('source-backed history materializes the same chain with strict source depen
   }
 });
 
+test('a leading array counts as the first decoded record for single-file indexing', async (t) => {
+  const f = await historyFixture(t);
+  const laterMeta = { type: 'session_meta', timestamp: f.firstRows[0].timestamp, payload: {
+    id: ROOT, cwd: f.repoRoot, history_base: base(OTHER, 2, 100),
+  } };
+  await fs.unlink(path.join(f.sessionsRoot, file(ONE)));
+  await fs.writeFile(path.join(f.sessionsRoot, file(ROOT)),
+    [[], laterMeta, f.firstRows[1]].map((row) => JSON.stringify(row)).join('\n') + '\n');
+
+  const diagnostics = [];
+  const discovered = await codex.discoverProjects({
+    codexHome: f.codexHome, verifyCwdCoverage: true, onDiagnostic: (entry) => diagnostics.push(entry),
+  });
+  assert.equal(discovered.find((project) => project.repoRoot === f.repoRoot).sessionCount, 1);
+  assert.equal(diagnostics.filter(({ code }) => code === 'CODEX_ROLLOUT_CWD_UNREADABLE').length, 1);
+  for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+    const index = await build({ ...f.options, currentRolloutPathsForTests: new Map() });
+    try {
+      assert.deepEqual(index.sessions.map((session) => session.id), [ROOT]);
+      assert.equal(index.sourceDiagnostics.counts.CODEX_HISTORY_BASE_MISSING, undefined);
+      const session = build === codex.buildSourceBackedIndex
+        ? await materializeSessionForIndex(index, index.sessions[0]) : index.sessions[0];
+      assert.equal(codex.query.getTimeline(index, session, { layer: 'main', q: 'kept-ancestor' }).searchEventCount, 1);
+    } finally {
+      await disposeIndexResources(index);
+    }
+  }
+});
+
 test('invalid cutoffs report source diagnostics while unrelated logical threads remain readable', async (t) => {
   const f = await historyFixture(t);
   f.secondRows[0].payload.history_base.end_ordinal_exclusive = 999;

@@ -39,6 +39,21 @@ test('bounded Codex lines retain UTF-8, empty lines and split CRLF at exact byte
   assert.deepEqual(await collect(Readable.from([Buffer.from('\n\n')])), ['', '']);
 });
 
+test('verified rollout lines reject damaged UTF-8 and keep valid records across chunks', async () => {
+  const chunks = [
+    Buffer.from([0xc3]), Buffer.from([0xa9, 13]), Buffer.from([10, 0xff, 10, 0xef]),
+    Buffer.from([0xbf, 0xbd, 10, 0xe2]),
+  ];
+  const invalid = [];
+  const visited = [];
+  await storage.visitLogicalLines(Readable.from(chunks), (line) => { visited.push(line); }, {
+    onInvalidUtf8(lineNumber) { invalid.push(lineNumber); },
+  });
+  assert.deepEqual(visited, ['\u00e9', '\uFFFD']);
+  assert.deepEqual(invalid, [2, 4]);
+  assert.deepEqual(await collect(Readable.from(chunks)), ['\u00e9', '\uFFFD', '\uFFFD', '\uFFFD']);
+});
+
 test('oversized Codex lines reject before consuming the remainder and identify the physical line', async () => {
   let reads = 0;
   const input = Readable.from((async function* () {

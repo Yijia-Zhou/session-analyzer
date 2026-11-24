@@ -8,6 +8,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { parseArgs, formatHelp, loadPathConfig } = require('./src/cli');
 const url = require('node:url');
+const { isDeepStrictEqual } = require('node:util');
 const {
   SOURCE_KIND,
   buildEventDetailForSession,
@@ -39,7 +40,7 @@ const {
 const { SESSION_LIFECYCLE } = require('./src/source-adapter-contract');
 const { scheduleBoundedSessionPrewarm } = require('./src/session-prewarm');
 const { isPathInsideOrSame, normalizeFsPath } = require('./src/shared/fs-path');
-const { interpretProjectPath, PROJECT_PATH_VERSION } = require('./src/shared/project-path');
+const { interpretProjectPath, projectPathContains, PROJECT_PATH_VERSION } = require('./src/shared/project-path');
 const { createProjectPathContext, normalizeProjectPathRules, projectSelection, nativeScopePath } = require('./src/project-path-context');
 const { foldingProfiles } = require('./src/folding');
 const i18n = require('./src/shared/i18n');
@@ -229,6 +230,13 @@ function activeProjectJob(state) {
   return job && ['queued', 'running'].includes(job.status) ? job : null;
 }
 
+function activeFailedProjectJob(state) {
+  const job = state.activeProjectJob;
+  return job?.status === 'failed' && job.activeSourceRevision === state.activeSourceRevision
+    && job.sourceKind === state.sourceKind
+    && normalizeFsPath(job.sourceHome) === normalizeFsPath(activeSourceHome(state)) ? job : null;
+}
+
 function requireIndex(state, res) {
   if (state.index) return state.index;
   sendError(res, 409, 'Project not selected', {
@@ -300,6 +308,27 @@ function projectCachePayload(projects) {
   return (projects || []).map((project) => ({ ...project }));
 }
 
+function unverifiedProjectActivity(project) {
+  return { ...project, statsPending: true, sessionCount: null, updatedAt: '' };
+}
+
+function configuredProjectsForDiscovery(state) {
+  const known = state.projectConfigSnapshot?.projects || [];
+  const read = state.projectConfigRead;
+  if (read.verified) return known;
+
+  // A partial read can surface valid sibling declarations without proving removals.
+  const partial = state.projectConfigPartial?.discoveryId > (state.projectConfigSnapshot?.discoveryId || 0)
+    ? state.projectConfigPartial.projects : [];
+  const projects = new Map();
+  for (const project of [...known, ...partial]) {
+    projects.set(project.projectPath?.key || project.repoRoot, {
+      ...unverifiedProjectActivity(project), configurationUnverified: true,
+    });
+  }
+  return [...projects.values()];
+}
+
 function mergeProjectLists(configProjects = [], scannedProjects = [], options = {}) {
   const map = new Map();
   const order = [];
@@ -324,14 +353,27 @@ function mergeProjectLists(configProjects = [], scannedProjects = [], options = 
     for (const project of scannedProjects) putScanned(project);
     for (const project of configProjects) put(project, false);
   } else {
-    for (const project of configProjects) put(project);
-    for (const project of scannedProjects) putScanned(project);
+    if (!options.transcriptsFirst) for (const project of configProjects) put(project);
+    for (const project of scannedProjects) {
+      if (project.source !== 'config') putScanned(project);
+    }
+    if (options.transcriptsFirst) for (const project of configProjects) put(project, false);
+    for (const project of scannedProjects) {
+      if (project.source !== 'config') continue;
+      const configured = map.get(project.projectPath.key);
+      if (configured && !configured.configurationUnverified && configured.projectPath.raw === project.projectPath.raw
+          && !(options.unverifiedExtendedDriveStats && isExtendedDriveConfig(configured))) {
+        put({ ...configured, statsPending: project.statsPending,
+          sessionCount: project.sessionCount, updatedAt: project.updatedAt });
+      }
+    }
   }
 
   if (options.full) {
     for (const key of order) {
       const project = map.get(key);
-      if (project.statsPending) {
+      if (project.statsPending && !project.configurationUnverified
+          && !(options.unverifiedExtendedDriveStats && isExtendedDriveConfig(project))) {
         map.set(key, {
           ...project,
           sessionCount: 0,
@@ -343,6 +385,41 @@ function mergeProjectLists(configProjects = [], scannedProjects = [], options = 
   }
 
   return order.map((key) => map.get(key));
+}
+
+function isExtendedDriveConfig(project) {
+  return project.source === 'config' && project.exists && project.projectPath?.namespace === 'windows-extended'
+    && /^\\\\\?\\[A-Za-z]:\\$/.test(project.projectPath.root);
+}
+
+async function hideDuplicateCodexDriveProjects(projects, { sourceKind, signal }, scanCoverageComplete) {
+  if (process.platform !== 'win32' || sourceKind !== SOURCE_KIND.CODEX || !scanCoverageComplete) return { projects };
+
+  const recorded = projects.filter((project) => project.source === 'transcripts' && project.sessionCount > 0);
+  const recordedByKey = new Map(recorded.map((project) => [project.projectPath.key, project]));
+  const recordedExtendedPaths = recorded.filter((project) => project.projectPath.namespace === 'windows-extended')
+    .map((project) => project.projectPath);
+  const hidden = new Set();
+  for (const project of projects) {
+    if (!isExtendedDriveConfig(project) || project.statsPending) continue;
+    const descriptor = project.projectPath;
+    const ordinary = recordedByKey.get(interpretProjectPath(project.repoRoot.slice(4)).key);
+    // Discovery groups exact cwd values, but selecting the root also indexes descendants.
+    if (!ordinary?.exists || recordedExtendedPaths.some((cwd) => projectPathContains(cwd, descriptor))) continue;
+
+    signal.throwIfAborted();
+    const [extendedStat, ordinaryStat] = await Promise.all([
+      fsp.stat(descriptor.raw, { bigint: true }),
+      fsp.stat(ordinary.repoRoot, { bigint: true }),
+    ]).catch(() => []);
+    signal.throwIfAborted();
+    if (extendedStat?.isDirectory() && ordinaryStat?.isDirectory()
+        && extendedStat.dev !== 0n && extendedStat.ino !== 0n
+        && extendedStat.dev === ordinaryStat.dev && extendedStat.ino === ordinaryStat.ino) {
+      hidden.add(project);
+    }
+  }
+  return hidden.size ? { projects: projects.filter((project) => !hidden.has(project)), hiddenProjects: [...hidden] } : { projects };
 }
 
 function sourceConfigHome(config) {
@@ -482,6 +559,17 @@ function sourceConfigurationPayload(state) {
   };
 }
 
+function projectDiscoverySourcePayload(state) {
+  const repoRoot = state.index?.repoRoot;
+  const failedJob = activeFailedProjectJob(state);
+  return {
+    ...sourceConfigurationPayload(state),
+    projectSelected: Boolean(repoRoot),
+    ...(repoRoot ? { repoRoot } : {}),
+    failedProjectJob: failedJob ? { id: failedJob.id, startedAt: failedJob.startedAt } : null,
+  };
+}
+
 function cancelProjectJob(job) {
   if (!job || !['queued', 'running'].includes(job.status)) return;
   job.controller.abort();
@@ -493,7 +581,11 @@ function cancelProjectJob(job) {
 }
 
 async function discoverProjectsForSource(state, mode, { signal } = {}) {
-  const revision = state.sourceRevision;
+  const scopeRevision = () => state.projectDiscoveryRevision ?? state.activeSourceRevision ?? state.sourceRevision;
+  const revision = scopeRevision();
+  const summary = mode === 'summary';
+  const discoveryId = (state.projectDiscoveryId || 0) + 1;
+  state.projectDiscoveryId = discoveryId;
   const controller = new AbortController();
   const abort = () => controller.abort(signal.reason);
   state.projectDiscoveries ||= new Set();
@@ -504,50 +596,122 @@ async function discoverProjectsForSource(state, mode, { signal } = {}) {
     controller.signal.throwIfAborted();
     const adapter = state.adapter;
     const sourceConfigs = sourceConfigsFromState(state);
-    const diagnostics = createSourceDiagnostics();
+    const configDiagnostics = createSourceDiagnostics();
+    const transcriptDiagnostics = createSourceDiagnostics();
     const context = {
       signal: controller.signal,
-      onDiagnostic: diagnostics.add,
+      onDiagnostic: configDiagnostics.add,
       sourceKind: state.sourceKind,
       sourceHome: activeSourceHome(state, state.sourceKind, sourceConfigs),
       sourceConfigs,
       projectPathContext: activeProjectPathContext(state, sourceConfigs).serialized,
     };
-    const configuredProjects = await adapter.discoverConfiguredProjects(context);
-    if (revision !== state.sourceRevision) return { stale: true };
+    const readConfigProjects = await adapter.discoverConfiguredProjects(context);
+    if (revision !== scopeRevision()) return { stale: true };
     controller.signal.throwIfAborted();
-    if (mode === 'summary') {
-      const projects = mergeProjectLists(configuredProjects, state.projectCache?.projects || []);
+    const configReadable = !configDiagnostics.summary.counts.CODEX_PROJECT_CONFIG_UNREADABLE;
+    const configVerified = configReadable && !configDiagnostics.summary.counts.CODEX_PROJECT_CONFIG_MALFORMED;
+    if (configVerified && discoveryId > (state.projectConfigSnapshot?.discoveryId || 0)) {
+      state.projectConfigSnapshot = { discoveryId, projects: readConfigProjects };
+    }
+    if (configReadable && !configVerified && discoveryId > (state.projectConfigPartial?.discoveryId || 0)) {
+      state.projectConfigPartial = { discoveryId, projects: readConfigProjects };
+    }
+    if (discoveryId > (state.projectConfigRead?.discoveryId || 0)) {
+      state.projectConfigRead = { discoveryId, verified: configVerified, diagnostics: configDiagnostics.summary };
+    }
+    const canHideExtendedDrive = process.platform === 'win32' && context.sourceKind === SOURCE_KIND.CODEX;
+    const verifyCwdCoverage = !summary && canHideExtendedDrive && state.projectConfigRead.verified
+      && configuredProjectsForDiscovery(state).some(isExtendedDriveConfig);
+    let scanCoverageComplete = verifyCwdCoverage;
+    let scannedProjects;
+    if (!summary) {
+      try {
+        scannedProjects = await adapter.discoverProjects({
+          ...context,
+          verifyCwdCoverage,
+          onDiagnostic(entry) {
+            transcriptDiagnostics.add(entry);
+            // Compatibility notices describe transcripts that still participated in discovery.
+            if (entry.code !== 'PROJECT_PATH_NAMESPACE_COMPATIBILITY' && entry.code !== 'PROJECT_PATH_LEGACY_ASSUMPTION') {
+              scanCoverageComplete = false;
+            }
+          },
+        });
+      } catch (error) {
+        if (controller.signal.aborted || error?.name === 'AbortError'
+            || discoveryId >= (state.settledProjectScan?.discoveryId || 0)) throw error;
+        // The newer scan supplies the result even when this scan fails.
+      }
+    }
+    for (;;) {
+      if (revision !== scopeRevision()) return { stale: true };
+      controller.signal.throwIfAborted();
+      const settled = state.settledProjectScan;
+      const superseded = !summary && discoveryId < (settled?.discoveryId || 0);
+      if (superseded && settled.error) throw settled.error;
+      const useCache = summary || superseded;
+      const cache = state.projectCache;
+      const coverage = useCache ? cache?.scanCoverageComplete === true : scanCoverageComplete;
+      const configRead = state.projectConfigRead;
+      const configSnapshot = state.projectConfigSnapshot;
+      const configPartial = state.projectConfigPartial;
+      const configured = configuredProjectsForDiscovery(state);
+      const merged = mergeProjectLists(configured, useCache ? cache?.projects : scannedProjects, {
+        full: !useCache,
+        transcriptsFirst: superseded,
+        unverifiedExtendedDriveStats: canHideExtendedDrive && !coverage,
+      });
+      const chooserLists = await hideDuplicateCodexDriveProjects(merged, context, coverage && configRead.verified);
+      if (revision !== scopeRevision()) return { stale: true };
+      controller.signal.throwIfAborted();
+
+      // Directory checks can yield to another request. Reuse results for an equivalent configuration.
+      const latestConfig = state.projectConfigRead;
+      if (useCache && cache !== state.projectCache) continue;
+      if (superseded && settled !== state.settledProjectScan) continue;
+      if (!useCache && discoveryId < (state.settledProjectScan?.discoveryId || 0)) continue;
+      const observationsChanged = configRead !== latestConfig || configSnapshot !== state.projectConfigSnapshot
+        || configPartial !== state.projectConfigPartial;
+      if (configRead.verified !== latestConfig.verified
+          || (observationsChanged && !isDeepStrictEqual(configured, configuredProjectsForDiscovery(state)))) continue;
+
+      if (!useCache) {
+        state.settledProjectScan = { discoveryId };
+        state.projectCache = {
+          generatedAt: new Date().toISOString(),
+          projects: projectCachePayload(merged),
+          scanCoverageComplete,
+          transcriptDiagnostics: transcriptDiagnostics.summary,
+        };
+      }
+      const diagnostics = createSourceDiagnostics();
+      diagnostics.merge(latestConfig.diagnostics);
+      diagnostics.merge(useCache ? cache?.transcriptDiagnostics : transcriptDiagnostics.summary);
       return {
         stale: false,
         payload: {
-          ...sourceConfigurationPayload(state),
-          projects,
-          summary: true,
-          cached: Boolean(state.projectCache),
-          sourceDiagnostics: state.projectCache?.sourceDiagnostics || diagnostics.summary,
+          ...projectDiscoverySourcePayload(state),
+          ...chooserLists,
+          ...(summary ? { summary: true, cached: Boolean(cache) } : {}),
+          sourceDiagnostics: diagnostics.summary,
         },
       };
     }
-    const scannedProjects = await adapter.discoverProjects(context);
-    if (revision !== state.sourceRevision) return { stale: true };
-    controller.signal.throwIfAborted();
-    const projects = mergeProjectLists(configuredProjects, scannedProjects, { full: true });
-    state.projectCache = {
-      generatedAt: new Date().toISOString(),
-      projects: projectCachePayload(projects),
-      sourceDiagnostics: diagnostics.summary,
-    };
-    return {
-      stale: false,
-      payload: {
-        ...sourceConfigurationPayload(state),
-        projects,
-        sourceDiagnostics: diagnostics.summary,
-      },
-    };
   } catch (error) {
-    if (revision !== state.sourceRevision) return { stale: true };
+    if (revision !== scopeRevision()) return { stale: true };
+    if (!summary && discoveryId >= (state.settledProjectScan?.discoveryId || 0)
+        && !controller.signal.aborted && error?.name !== 'AbortError') {
+      state.settledProjectScan = { discoveryId, error };
+      const cache = state.projectCache;
+      if (cache?.scanCoverageComplete) {
+        state.projectCache = {
+          ...cache,
+          scanCoverageComplete: false,
+          projects: cache.projects.map((project) => project.source === 'config' ? unverifiedProjectActivity(project) : project),
+        };
+      }
+    }
     throw error;
   } finally {
     signal?.removeEventListener('abort', abort);
@@ -654,23 +818,33 @@ function resolveSourceMutation(state, body) {
     ));
   if (configChanged) {
     const nextActiveHome = activeSourceHome(state, nextSourceKind, nextSourceConfigs);
+    const discoveryRevision = state.projectDiscoveryRevision ?? state.activeSourceRevision ?? state.sourceRevision;
     const activeIdentityChanged = nextSourceKind !== state.sourceKind
       || (nextSourceKind === 'qoder' && desktopTitlesChanged)
       || normalizeFsPath(nextActiveHome) !== normalizeFsPath(activeSourceHome(state, state.sourceKind, currentSourceConfigs))
       || activeProjectPathContext(state, nextSourceConfigs, nextSourceKind).digest
         !== activeProjectPathContext(state, currentSourceConfigs).digest;
+    const activeRuleAuthorityChanged = Object.hasOwn(nextSourceConfigs[nextSourceKind], 'projectPathRules')
+      !== Object.hasOwn(currentSourceConfigs[nextSourceKind], 'projectPathRules');
     if (activeIdentityChanged) {
       state.activeSourceRevision = (state.activeSourceRevision || 0) + 1;
       cancelProjectJob(state.activeProjectJob);
       clearIndexRevision(state);
       state.projectCache = null;
+      state.settledProjectScan = null;
+      state.projectConfigSnapshot = null;
+      state.projectConfigRead = null;
+      state.projectConfigPartial = null;
       state.buildMs = 0;
       state.sourceKind = nextSourceKind;
       state.adapter = requireSourceAdapter(nextSourceKind);
     }
     state.sourceConfigs = nextSourceConfigs;
     state.sourceRevision += 1;
-    abortProjectDiscoveries(state);
+    if (activeIdentityChanged || activeRuleAuthorityChanged) {
+      state.projectDiscoveryRevision = (discoveryRevision || 0) + 1;
+      abortProjectDiscoveries(state);
+    }
   } else if (!state.sourceConfigs) {
     state.sourceConfigs = currentSourceConfigs;
   }
@@ -900,6 +1074,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     adapter,
     sourceRevision: 0,
     activeSourceRevision: 0,
+    projectDiscoveryRevision: 0,
     localInputBase: process.cwd(),
     buildIndexOverride: options.buildIndex || null,
     onProjectJobSettled: options.onProjectJobSettled || null,
@@ -913,6 +1088,10 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
     nextProjectJobId: 1,
     activeProjectJob: null,
     projectCache: null,
+    settledProjectScan: null,
+    projectConfigSnapshot: null,
+    projectConfigRead: null,
+    projectConfigPartial: null,
     logDir: options.logDir ? path.resolve(options.logDir) : '',
     warn: options.warn || console.warn,
     historyViewer: options.historyViewer || null,
@@ -965,7 +1144,7 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
         const mode = searchParams.get('summary') === '1' ? 'summary' : 'full';
         const result = await discoverProjectsForSource(state, mode, { signal: requestAbort.signal });
         if (result.stale) {
-          sendError(res, 409, 'Source changed during project discovery');
+          sendError(res, 409, 'Source changed during project discovery', projectDiscoverySourcePayload(state));
           return;
         }
         sendJson(res, 200, result.payload);
@@ -1054,13 +1233,11 @@ function createServer(initialIndex = null, buildMs = 0, options = {}) {
           sendJson(res, 202, payload);
           return;
         }
-        if (!state.index && state.activeProjectJob?.status === 'failed'
-            && state.activeProjectJob.activeSourceRevision === state.activeSourceRevision
-            && state.activeProjectJob.sourceKind === state.sourceKind
-            && normalizeFsPath(state.activeProjectJob.sourceHome) === normalizeFsPath(activeSourceHome(state))) {
+        const failedJob = !state.index && activeFailedProjectJob(state);
+        if (failedJob) {
           sendJson(res, 200, {
             ...sourceConfigurationPayload(state), projectSelected: false,
-            job: projectJobPayload(state.activeProjectJob),
+            job: projectJobPayload(failedJob),
           });
           return;
         }

@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
@@ -67,6 +68,43 @@ test('failed and cancelled snapshot construction cleans private resources', asyn
   await assert.rejects(async () => { for await (const chunk of cancelled) void chunk; }, { name: 'AbortError' });
   assert.equal(snapshots.snapshotStatsForTests().privateDirectories, baseline);
   assert.equal(snapshots.snapshotStatsForTests().activeReaders, 0);
+});
+
+test('compressed snapshots reject bytes substituted only during decompression', async (t) => {
+  const { directory, file, descriptor } = await fixture(t);
+  const parked = path.join(directory, 'original');
+  const substitute = path.join(directory, 'substitute');
+  const original = zstdCompressSync(Buffer.from('original\n'));
+  await fsp.writeFile(file, original);
+  await fsp.writeFile(substitute, zstdCompressSync(Buffer.from('substitute\n')));
+  const originalOpen = fs.createReadStream;
+  let replaced = false;
+  const mock = t.mock.method(fs, 'createReadStream', (pathname, options) => {
+    if (pathname !== file || Object.hasOwn(options, 'signal')) return originalOpen(pathname, options);
+    replaced = true;
+    fs.renameSync(file, parked);
+    fs.renameSync(substitute, file);
+    const stream = originalOpen(pathname, options);
+    const restore = () => {
+      if (!fs.existsSync(parked)) return;
+      fs.renameSync(file, substitute);
+      fs.renameSync(parked, file);
+    };
+    stream.once('end', restore);
+    stream.once('close', restore);
+    return stream;
+  });
+  try {
+    const before = snapshots.snapshotStatsForTests().entries;
+    await assert.rejects(read(descriptor), { code: 'CODEX_ROLLOUT_SOURCE_BUSY' });
+    assert.equal(replaced, true);
+    assert.equal(snapshots.snapshotStatsForTests().entries, before);
+    assert.deepEqual(await fsp.readFile(file), original);
+  } finally {
+    mock.mock.restore();
+  }
+  assert.equal(await read(descriptor), 'original\n');
+  assert.equal(await read(descriptor), 'original\n');
 });
 
 test('idle snapshot eviction and explicit cleanup keep resource ownership bounded', async (t) => {

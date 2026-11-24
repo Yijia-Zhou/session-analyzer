@@ -204,6 +204,7 @@ const state = {
   revisionRecoveryRequested: false,
   repoRoot: '',
   projects: [],
+  projectChoices: null,
   projectSelected: false,
   selectingProject: false,
   analyzerDisabled: false,
@@ -1177,7 +1178,7 @@ function applyAuthoritativeSourceMutationState(payload) {
   applySourceConfig(result);
   if (result?.projectSelected === false) {
     resetReturnableProject();
-    state.projects = [];
+    setProjectChoices();
     resetProjectViewState();
     updateProjectChrome({ displayRoot: '', returnRoot: '' });
     renderProjects();
@@ -1264,21 +1265,68 @@ function resetReturnableProject() {
   state.projectReturning = false;
 }
 
-async function refreshProjectList() {
+function setProjectChoices(discovery = null, provisional = false) {
+  const previous = state.projectChoices;
+  const policyId = discovery?.projectPathPolicyId;
+  const pendingKeys = new Set(policyId && previous?.discovery.projectPathPolicyId === policyId
+    ? previous.unverifiedProjects.map((project) => projectDescriptor(project).key) : []);
+  const visible = discovery?.projects || [];
+  const reexposed = provisional ? (discovery.hiddenProjects || []).map((project) => ({
+    ...project, statsPending: true, sessionCount: null, updatedAt: '',
+  })) : [];
+  state.projectChoices = discovery ? {
+    discovery, provisional,
+    unverifiedProjects: [...visible.filter((project) => project.configurationUnverified
+      || (project.statsPending && pendingKeys.has(projectDescriptor(project).key))), ...reexposed],
+  } : null;
+  state.projects = [...visible, ...reexposed];
+}
+
+function applyProjectDiscoveryScope(payload) {
+  const previousKind = state.sourceKind;
+  const previousHome = state.sourceHome;
+  const previousPolicy = state.projectPathPolicyId;
+  applySourceConfig(payload);
+  clearRetiredSourceContext(previousKind, previousHome, payload, previousPolicy);
+  const failedJob = state.failedProjectJob;
+  if (failedJob && Object.hasOwn(payload, 'failedProjectJob')
+      && (payload.failedProjectJob?.id !== failedJob.id || payload.failedProjectJob?.startedAt !== failedJob.startedAt)) {
+    state.failedProjectJob = null;
+    renderProjectFailure();
+  }
+  if (payload.projectSelected === false) resetReturnableProject();
+  else if (payload.projectSelected === true && payload.repoRoot) state.repoRoot = payload.repoRoot;
+  updateProjectChrome({ displayRoot: '', returnRoot: state.repoRoot });
+}
+
+async function reconcileProjectDiscoveryScope(scope, requestId, retryScope) {
+  clearProjectDiscoveryLoading(requestId);
+  setProjectChoices();
+  const hasScope = typeof scope?.projectPathPolicyId === 'string' && scope.projectPathPolicyId
+    && scope.sourceKind && typeof scope.sourceHome === 'string';
+  if (hasScope) applyProjectDiscoveryScope(scope);
+  if (hasScope && retryScope) {
+    await refreshProjectList({ retryScope: false });
+  } else {
+    renderProjects();
+    if (el.projectStatus) el.projectStatus.textContent = t('projectDiscoveryScopeChanged');
+  }
+  return false;
+}
+
+async function refreshProjectList({ retryScope = true } = {}) {
   const requestId = state.projectChooserRequestId + 1;
   state.projectChooserRequestId = requestId;
   let policyId = state.projectPathPolicyId;
   state.projectDiscoveryLoading = true;
-  if (state.projects.length === 0) renderProjects();
-  else renderSourceSwitch();
+  renderProjects();
   let summary = null;
   try {
     summary = await api('/api/projects?summary=1');
   } catch (error) {
     if (error.status === 409) {
-      if (isActiveProjectChooserRequest(requestId)) {
-        clearProjectDiscoveryLoading(requestId);
-        renderProjects();
+      if (isActiveProjectChooserRequest(requestId) && policyId === state.projectPathPolicyId) {
+        return reconcileProjectDiscoveryScope(error.details, requestId, retryScope);
       }
       return false;
     }
@@ -1287,12 +1335,13 @@ async function refreshProjectList() {
   if (!isActiveProjectChooserRequest(requestId) || policyId !== state.projectPathPolicyId) return false;
   if (summary) {
     if (!projectPolicyMatches(summary, policyId)) {
-      clearProjectDiscoveryLoading(requestId);
-      return false;
+      return reconcileProjectDiscoveryScope(summary, requestId, retryScope);
     }
-    applySourceConfig(summary);
+    applyProjectDiscoveryScope(summary);
     policyId = state.projectPathPolicyId;
-    state.projects = summary.projects;
+    const previousChoices = state.projectChoices;
+    const provisional = previousChoices?.provisional && previousChoices.discovery.projectPathPolicyId === policyId;
+    setProjectChoices(summary, provisional);
     renderProjects();
     if (el.projectStatus) {
       el.projectStatus.textContent = state.projects.length
@@ -1304,25 +1353,25 @@ async function refreshProjectList() {
   try {
     data = await api('/api/projects');
   } catch (error) {
-    if (!isActiveProjectChooserRequest(requestId)) return false;
+    if (!isActiveProjectChooserRequest(requestId) || policyId !== state.projectPathPolicyId) return false;
     if (error.status === 409) {
-      clearProjectDiscoveryLoading(requestId);
-      renderProjects();
-      return false;
+      return reconcileProjectDiscoveryScope(error.details, requestId, retryScope);
     }
     clearProjectDiscoveryLoading(requestId);
+    const previousDiscovery = state.projectChoices?.discovery;
+    if (policyId && previousDiscovery?.projectPathPolicyId === policyId) {
+      setProjectChoices(previousDiscovery, true);
+    }
     renderProjects();
     throw error;
   }
   if (!isActiveProjectChooserRequest(requestId) || policyId !== state.projectPathPolicyId) return false;
   if (!projectPolicyMatches(data, policyId)) {
-    clearProjectDiscoveryLoading(requestId);
-    renderProjects();
-    return false;
+    return reconcileProjectDiscoveryScope(data, requestId, retryScope);
   }
-  applySourceConfig(data);
+  applyProjectDiscoveryScope(data);
   state.projectDiscoveryLoading = false;
-  state.projects = data.projects;
+  setProjectChoices(data);
   renderProjects();
   renderSourceSwitch();
   if (el.projectStatus) {
@@ -1330,7 +1379,7 @@ async function refreshProjectList() {
       ? t('projectCandidates', { count: state.projects.length, sourceHome: data.sourceHome })
       : t('noProjectCandidates', { sourceHome: data.sourceHome });
   }
-  return true;
+  return data;
 }
 
 async function performPendingSourceAction() {
@@ -1355,7 +1404,7 @@ async function performPendingSourceAction() {
     clearSubmittedHomeDraft(homes);
     if (result.projectSelected === false) {
       resetReturnableProject();
-      state.projects = [];
+      setProjectChoices();
       resetProjectViewState();
       updateProjectChrome({ displayRoot: '', returnRoot: '' });
       await refreshProjectList();
@@ -1377,7 +1426,7 @@ async function performHomeChange(homes) {
   clearSubmittedHomeDraft(homes);
   if (result.projectSelected === false) {
     resetReturnableProject();
-    state.projects = [];
+    setProjectChoices();
     resetProjectViewState();
     updateProjectChrome({ displayRoot: '', returnRoot: '' });
   } else {
@@ -3493,10 +3542,11 @@ function projectPolicyMatches(payload, policy = state.projectPathPolicyId) {
   return !policy || payload?.projectPathPolicyId === policy;
 }
 
-function restorableSavedProject(saved) {
+function matchingSavedProject(saved, { projects, hiddenProjects = [] }) {
   const metadata = readJsonStorage(projectPathStorageKey(state.sourceKind), null);
   const descriptor = metadata?.projectPath || interpretProjectPath(saved, { legacyNamespace: true });
-  const project = state.projects.find((item) => sameProjectRoot(projectDescriptor(item), descriptor));
+  const matches = (project) => sameProjectRoot(projectDescriptor(project), descriptor);
+  const project = projects.find(matches) || hiddenProjects.find(matches);
   if (!project || projectHasLegacyAssumption(project)) return null;
   if (metadata) {
     return metadata.version === PROJECT_PATH_VERSION && metadata.repoRoot === saved
@@ -3581,7 +3631,7 @@ function applySourceConfig(payload) {
     state.projectRefreshJobId = '';
     clearProjectRefreshPollTimer();
     state.projectLoadingRoot = '';
-    state.projects = [];
+    setProjectChoices();
     state.projectPathRestorePaused = Boolean(readLastSelectedRepo(state.sourceKind));
     setProjectMode(true);
   }
@@ -4818,7 +4868,7 @@ function renderProjects() {
     ].join('');
     const action = isLoading ? `<span class="projectSpinner" aria-hidden="true"></span><span>${escapeHtml(t('indexing'))}</span>` : `<span>${escapeHtml(t('open'))}</span>`;
     const facts = statsPending
-      ? `<span>${escapeHtml(t('activityLoading'))}</span>`
+      ? `<span>${escapeHtml(t(state.projectDiscoveryLoading ? 'activityLoading' : 'activityUnverified'))}</span>`
       : `<span>${escapeHtml(sessionCountLabel(sessionCount))}</span><span>${escapeHtml(project.updatedAt ? fmtDate(project.updatedAt) : t('noTranscriptActivity'))}</span>`;
     return `<button class="${classes}" type="button" data-project-root="${escapeHtml(project.repoRoot)}" data-project-key="${escapeHtml(projectDescriptor(project).key)}"${selectionLocked ? ' disabled' : ''}>
       <span class="projectMain">
@@ -4882,12 +4932,13 @@ async function showProjectChooser(options = {}) {
   if (el.projectStatus) el.projectStatus.textContent = t('loadingProjectList');
   if (el.projectProgress) el.projectProgress.hidden = true;
   if (el.projectCancelBtn) el.projectCancelBtn.hidden = true;
-  if (el.projectList) el.projectList.innerHTML = '';
+  state.projects = state.projectChoices?.unverifiedProjects || [];
   const discovered = await refreshProjectList();
   if (!discovered) return;
   const saved = readLastSelectedRepo(state.sourceKind);
-  if (options.autoRestore && saved) {
-    const project = restorableSavedProject(saved);
+  if (options.autoRestore && saved && !state.repoRoot) {
+    const project = matchingSavedProject(saved, discovered);
+    if (project?.configurationUnverified) return;
     if (project) await selectProject(project.repoRoot, { restore: true, projectPath: projectDescriptor(project) });
     else {
       state.projectPathRestorePaused = true;
