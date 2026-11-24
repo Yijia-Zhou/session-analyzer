@@ -4,6 +4,19 @@
 
 The [pinned audit and decision matrix](codex-0163-0172-audit.md) compares 0.162.1 with 0.172.0 and includes actual local writer and synthetic reader controls. At the candidate, `tool_calls_complete` can remain true when arguments are truncated. It describes the ordered call inventory; each argument needs its own truncation evidence. The implementation proposals have separate acceptance units. / [固定版本审计与决策矩阵](codex-0163-0172-audit.md)比较两个端点，并提供实际本地 writer 与合成 reader 对照。在候选版本，参数截断时 tool_calls_complete 仍可为真；它描述有序调用清单，参数完整性需另查。适配提案分别验收。
 
+### Implemented reader decisions / 已实施的读取决策
+
+| Durable evidence / 持久化依据 | Reader decision / 读取行为 |
+| --- | --- |
+| Code Mode pending receipt and wait / 等待回执与调用 | Match the entire native cell ID within the existing execution scope, including the generation after recovery. Preserve ambiguous or unmatched waits as separate evidence. / 在既有执行作用域匹配完整 cell ID，恢复后保留代次。歧义及未匹配 wait 仍有独立依据。 |
+| Submitted input and user-role injections / 提交输入及用户角色注入 | Aligned native text attribution and compatible physical mirrors support one user event. Explicit heartbeat evidence takes precedence. The TUI side boundary requires the owned attached fork and the contiguous pre-turn policy and injection. / 逐项对齐的文本来源与相容物理镜像支持单一用户事件。明确的 heartbeat 依据优先。TUI 旁聊边界要求自有附属分叉及回合前连续的策略与注入记录。 |
+| Archived ancestor / 归档祖先 | Resolve the referenced physical rollout at the child's exclusive byte and ordinal boundary. Compare viable copies at that boundary and retain snapshot-bound Raw references. / 按子工件指定的排他字节及序号边界解析物理 rollout，在该边界比较可用副本，Raw 引用绑定来源快照。 |
+| Generated image / 生成图片 | Completed typed image evidence may carry an attachment-store file ID. Exact compatible call evidence shares its operation. A file ID takes precedence over stale inline bytes. / 带类型的完成记录可携带附件存储文件 ID。相容的调用依据共用操作；文件 ID 优先于过时的内嵌内容。 |
+| Environment-scoped MCP / 环境限定 MCP | The typed terminal can join its unique call when the recorded namespace agrees with the upstream environment digest, server and tool. Raw retains the environment identity. / 命名空间与上游环境摘要、server 及工具名一致时，带类型的终态可并入唯一调用，Raw 保留环境身份。 |
+| Realtime / 实时历史 | A sealed voice frame with a unique identity contributes one message in its recorded role. The recorded observation time and optional final frame sequence remain provenance. Standalone input receipts retain their Protocol and Raw evidence. / 唯一身份的已封存语音帧按记录角色贡献一条消息，观测时间及可选末帧序号保留为来源依据，独立输入回执保留在 Protocol 和 Raw。 |
+
+The audit describes the pre-fix reader. The implementation record distinguishes native writer, natural local samples and synthetic reader verification for each change. / 原审计描述修复前的读取行为。实施记录按主题区分原生 writer、自然实样和合成读取验证。[Implementation record / 实施记录](../exec-plans/active/2026-11-24-codex-0172-followups.md)
+
 ## Codex 2B recorded configuration / Codex 2B 已记录配置
 
 The [configuration design and matrix](codex-configuration-intervals.md) supports bounded adapter facts for pinned `rust-v0.162.1` thread snapshots, frozen initial turn-context settings and trusted effort-update instructions. An optional strict `recorded_configuration` detail section exposes separate observations with physical Raw evidence, without adding Main events or changing accounting. Active step settings and transport-effort pins are separate; command model context is skipped by serde and normal persistence drops reroute/session-configured events. Eight bounded real artifacts confirm context/snapshot field presence only; dynamic updates and client entry coverage remain open. / 所列设计与矩阵支撑固定版本线程快照、冻结初始 turn 上下文及可信 effort 更新指令的有界 adapter 事实；严格可选 section 分别呈现观测及物理 Raw 依据，不增加 Main 事件或改变核算。运行中 step 设置与传输 effort 固定值分开；命令模型上下文被 serde 排除，常规落盘不保留重路由／会话配置事件。八个有界真实工件仅证实上下文／快照字段存在，动态更新及客户端入口覆盖仍开放。

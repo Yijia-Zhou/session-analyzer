@@ -1,5 +1,11 @@
 # Session Transcript Analyzer / 会话转录分析器
 
+### Reading Codex 0.172 sessions / 阅读 Codex 0.172 会话
+
+A submitted question may contain protocol-looking markup. When the native input and its mirrors establish authorship, Main, user counts and History search include the question once. A marked heartbeat and a verified TUI Side Chat bootstrap are inspectable in Protocol and Raw. Source attribution describes how Codex recorded the input. / 提交的问题可以包含形似协议标签的正文。原生输入与镜像能够确认来源时，主层、用户计数和 History 检索均只计一次。带标记的 heartbeat 及经验证的 TUI 旁聊引导可在 Protocol 和 Raw 中检查。来源归属描述 Codex 记录输入的方式。
+
+Code Mode waits can identify a cell by generation and number. Their batches are searchable under the original execution when that identity resolves uniquely. A recorded generated-image file can establish completion independently of preview availability. A matching environment-scoped MCP completion supplies the tool outcome. A uniquely identified sealed realtime frame with a valid voice transcript appears under its recorded speaker role, with its own physical evidence. / Code Mode 等待可用代次和编号标识 cell；唯一匹配时，各批输出可从原执行检索。已记录的生成图片文件可独立证明完成，预览取决于可读内容。匹配的环境限定 MCP 完成记录可确定工具终态。已封存的实时帧具有唯一身份及有效语音转录时，按记录的说话角色呈现，并保留独立物理依据。
+
 ### Codex recorded configuration inspection / Codex 已记录配置检查
 
 Codex Main/Protocol details include compact recorded-configuration inspection in both locales and Main Presentations. The disclosure is collapsed by default, with a short model/effort summary; expansion reveals separately labeled turn-context snapshots, thread defaults and trusted effort instructions, observation boundaries and Raw evidence. Mixed observations never choose one model arbitrarily. Missing, null and invalid values remain distinct. Evidence links use existing reading return. This inspection does not establish actual per-request consumption, infer missing defaults or aggregate tokens; see [evidence, interval rules and validation](../design-docs/codex-configuration-intervals.md). / Codex Main／Protocol 详情包含紧凑已记录配置检查，覆盖双语与双呈现；默认折叠，仅显示简短模型／effort 摘要，展开后分别标注 turn 上下文快照、线程默认值及可信 effort 指令，并显示观测边界及 Raw 依据。混合观测不任取一个模型；缺失、null、无效值保持区别，依据链接复用阅读返回。本检查不证明实际逐请求消费，不补缺失默认值，不汇总 token；依据、区间规则及验证见所列设计。
