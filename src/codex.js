@@ -399,6 +399,7 @@ const PROTOCOL_LABELS = Object.freeze({
   goal_context: 'Goal context',
   image_wrapper: 'Image attachment wrapper',
   meta_block: 'Protocol metadata block',
+  side_conversation_boundary: 'Side conversation boundary',
   session_meta: 'Session metadata',
   skill_injection: 'Skill instructions',
   token_count: 'Token count',
@@ -5305,11 +5306,13 @@ async function parseSessionHistory(plan, sessionsRoot, repoRoot, signal, options
   const session = { ...head, id: plan.sessionId, sourceSessionId: plan.sessionId, rawEvents: [],
     cwdSet: new Set(), startedAt: '', updatedAt: '', bytes: 0, lineCount: 0,
     _historyPlan: structuredClone(plan), _historySnapshots: snapshots };
+  let initialOwnedHeader = null;
   for (const [index, part] of parts.entries()) {
     const segment = snapshots[index];
     session.bytes += part.bytes;
     session.lineCount += part.lineCount;
     for (const cwd of part.cwdSet) session.cwdSet.add(cwd);
+    const firstRawIndex = session.rawEvents.length;
     for (const original of part.rawEvents) {
       const physicalLine = original.source.line;
       const raw = makeRawEvent(original.parsed, segment.startOrdinal + physicalLine,
@@ -5327,6 +5330,9 @@ async function parseSessionHistory(plan, sessionsRoot, repoRoot, signal, options
       updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
       session.rawEvents.push(raw);
     }
+    if (segment.sessionId === plan.sessionId && segment.rolloutId === plan.sessionId.toLowerCase()) {
+      initialOwnedHeader = session.rawEvents[firstRawIndex] ?? null;
+    }
   }
   const canonicalMetadata = session.rawEvents.find((raw) => raw.source.file === plan.headSourceFile
     && raw.source.line === 1);
@@ -5335,7 +5341,7 @@ async function parseSessionHistory(plan, sessionsRoot, repoRoot, signal, options
   // Head metadata is authoritative for replay, while Raw retains all headers.
   const replay = [canonicalMetadata, ...session.rawEvents.filter((raw) => raw.recordType !== 'session_meta'
     && raw.subagentInherited !== true)].filter(Boolean);
-  session._logicalEvents = codexLogicalBuilder.buildLogicalEvents(replay);
+  session._logicalEvents = codexLogicalBuilder.buildLogicalEvents(replay, initialOwnedHeader);
   session.shell = recordedSessionShell(session);
   const historyEventIds = new Map(session._logicalEvents.map((event) => {
     const suffix = event.rawRefs[0]?.rawId?.split(':rollout:')[1];

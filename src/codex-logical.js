@@ -1,5 +1,7 @@
 'use strict';
 
+const { parseRolloutArtifactIdentity } = require('./codex-rollout-history');
+
 function hasExternalizedImage(value) {
   return typeof value === 'string' && value.includes('[embedded image payload externalized; open raw refs for source]');
 }
@@ -1092,7 +1094,66 @@ function createCodexLogicalBuilder(deps) {
     });
   }
 
-  function buildLogicalEvents(rawEvents) {
+  function sideChatBoundary(raws, initialOwnedHeader) {
+    function isSideHeader(raw) {
+      const meta = raw?.parsed?.payload;
+      return raw?.recordType === 'session_meta' && raw.source.line === 1 && meta?.id === raw.sessionId
+        && meta.history_mode === 'paginated' && meta.attached_thread === true
+        && meta.thread_source === 'tui_side_chat' && typeof meta.forked_from_id === 'string'
+        && meta.forked_from_id.trim() && meta.forked_from_id !== meta.id;
+    }
+    const head = raws[0];
+    if (!isSideHeader(head) || !isSideHeader(initialOwnedHeader)
+        || initialOwnedHeader.sessionId !== head.sessionId
+        || initialOwnedHeader.parsed.payload.forked_from_id !== head.parsed.payload.forked_from_id
+        || !Number.isSafeInteger(initialOwnedHeader.parsed.ordinal) || initialOwnedHeader.parsed.ordinal < 0) return null;
+    const physical = parseRolloutArtifactIdentity(initialOwnedHeader.source.file);
+    if (!physical || physical.threadId !== initialOwnedHeader.sessionId.toLowerCase()
+        || physical.rolloutId !== physical.threadId) return null;
+    // The TUI injects two response items together before its first child turn.
+    // Only inspect owned rows. The effective header can be in a later revert artifact.
+    function textPart(row, role) {
+      const p = row?.parsed?.payload;
+      return row?.recordType === 'response_item' && p?.type === 'message' && p.role === role
+        && Array.isArray(p.content) && p.content.length === 1 && p.content[0]?.type === 'input_text'
+        && typeof p.content[0].text === 'string' ? p.content[0].text : '';
+    }
+    function follows(row, previous) {
+      return row?.source.file === previous.source.file && row.source.line === previous.source.line + 1
+        && Number.isSafeInteger(row.parsed?.ordinal) && row.parsed.ordinal === previous.parsed.ordinal + 1;
+    }
+    let previous = initialOwnedHeader;
+    for (let i = 1; i < raws.length; i++) {
+      const policy = raws[i];
+      if (!follows(policy, previous)) return null;
+      if (policy.recordType === 'event_msg' && policy.payloadType === 'thread_settings_applied') {
+        previous = policy;
+        continue;
+      }
+      const text = textPart(policy, 'developer');
+      if (!text.startsWith('<side_conversation>') || !text.endsWith('</side_conversation>')) return null;
+      const source = policy.parsed.payload.internal_chat_message_metadata_passthrough;
+      if (!Array.isArray(source?.content_item_kinds) || source.content_item_kinds.length !== 1
+          || source.content_item_kinds[0] !== 'side_conversation.policy'
+          || !Array.isArray(source.content_item_metadata) || source.content_item_metadata.length !== 1
+          || source.content_item_metadata[0]?.provenance?.type !== 'harness'
+          || source.content_item_metadata[0].provenance.hook) return null;
+      const next = raws[i + 1];
+      if (!follows(next, policy) || !textPart(next, 'user').startsWith('Side conversation boundary.\n\n')) return null;
+      const attribution = next.parsed.payload.internal_chat_message_metadata_passthrough;
+      const kinds = attribution?.content_item_kinds;
+      const following = raws[i + 2];
+      if (following?.recordType === 'event_msg' && (following.payloadType === 'user_message'
+          || following.parsed?.payload?.item?.type === 'UserMessage')) return null;
+      // The native writer fills an unannotated injected text part with "unknown".
+      return attribution?.content_item_metadata == null && (kinds == null
+        || (Array.isArray(kinds) && kinds.length === 1 && kinds[0] === 'unknown')) ? next : null;
+    }
+    return null;
+  }
+
+  function buildLogicalEvents(rawEvents, initialOwnedHeader = rawEvents[0]) {
+    const sideBoundary = sideChatBoundary(rawEvents, initialOwnedHeader);
     rawEvents = semanticRawEvents(rawEvents);
     const typedMirrors = new Map();
     const omittedTyped = new Set();
@@ -1311,6 +1372,11 @@ function createCodexLogicalBuilder(deps) {
       }
 
       if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'user') {
+        if (raw === sideBoundary) {
+          logicalEvents.push(buildProtocolEvent(raw, 'side_conversation_boundary'));
+          consumed.add(raw.rawId);
+          continue;
+        }
         const mirror = typedMirrors.get(raw.rawId);
         const origin = recordedUserTextOrigin(raw, mirror);
         const protocolSubtype = origin === 'submitted' ? ''

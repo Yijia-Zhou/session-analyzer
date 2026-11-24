@@ -126,7 +126,14 @@ def investigate(binary, root, endpoint):
                          for role, message in [
                              ("developer", "<side_conversation>fixture policy</side_conversation>"),
                              ("user", "Side conversation boundary.\n\nfixture inherited history")]]
+                # TUI SideConversationPolicy supplies aligned harness attribution.
+                items[0]["internal_chat_message_metadata_passthrough"] = {
+                    "content_item_kinds": ["side_conversation.policy"],
+                    "content_item_metadata": [{"provenance": {"type": "harness", "hook": False}}],
+                }
                 rpc("thread/inject_items", threadId=side, items=items)
+                # Same roles, markers and positions in a generic attached child.
+                rpc("thread/inject_items", threadId=results[mode]["attached"], items=items)
                 rpc("turn/start", threadId=side, input=[{"type": "text", "text": "fixture child question",
                                                          "text_elements": []}])
                 done = wait_for(lambda row: row.get("method") == "turn/completed"
@@ -172,7 +179,9 @@ def investigate(binary, root, endpoint):
             proc.kill()
             proc.wait()
     script = Path(__file__).with_name("audit-codex-0172-relations.js")
-    subprocess.run(["node", str(script.resolve()), str(home), str(repo), json.dumps(results)], check=True)
+    worker = subprocess.run(["node", str(script.resolve()), str(home), str(repo), json.dumps(results)])
+    if worker.returncode:
+        raise SystemExit("Synthetic relation reader failed")
 
 
 if __name__ == "__main__":

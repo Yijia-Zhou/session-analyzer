@@ -32,6 +32,13 @@ async function main() {
     for (const [mode, cases] of Object.entries(threads)) {
       for (const [kind, id] of Object.entries(cases)) {
         if (id !== meta.id) continue;
+        if (kind === 'side' || kind === 'attached') {
+          assert.ok(Number.isSafeInteger(records[0].ordinal) && records[0].ordinal > 0);
+          assert.deepEqual(records.slice(0, 4).map(r => r.ordinal), [0, 1, 2, 3].map(i => records[0].ordinal + i));
+          assert.equal(records[1].payload.type, 'thread_settings_applied');
+          assert.deepEqual(records[2].payload.internal_chat_message_metadata_passthrough.content_item_kinds, ['side_conversation.policy']);
+          assert.deepEqual(records[3].payload.internal_chat_message_metadata_passthrough.content_item_kinds, ['unknown']);
+        }
         const row = { mode, kind, attached: meta.attached_thread === true,
           sourceClass: meta.thread_source === 'tui_side_chat' ? 'tui_side_chat' : 'other',
           forkMatches: meta.forked_from_id === cases.source, hasBase: Boolean(meta.history_base),
@@ -45,6 +52,19 @@ async function main() {
           }
           const session = indexed.logicalEvents ? indexed : await materializeSessionForIndex(index, indexed);
           const boundary = codex.query.getTimeline(index, session, { layer: 'main', q: 'Side conversation boundary.' });
+          let bootstrap;
+          if (kind === 'side' || kind === 'attached') {
+            const event = session.logicalEvents.find(e => e.subtype === 'side_conversation_boundary');
+            bootstrap = { kind: event?.subtype || null,
+              protocolHits: codex.query.getTimeline(index, session, { layer: 'protocol', q: 'fixture inherited history' }).searchEventCount,
+              rawHits: codex.query.getTimeline(index, session, { layer: 'raw', q: 'fixture inherited history' }).searchEventCount };
+            if (event) {
+              assert.equal(event.rawRefs.length, 1);
+              const raw = session.rawEvents.find(r => r.rawId === event.rawRefs[0].rawId);
+              const exact = await codex.readIndexedCodexRawRecord(index, session, raw);
+              assert.equal(exact.parsed.payload.content[0].text, 'Side conversation boundary.\n\nfixture inherited history');
+            }
+          }
           const audio = {};
           if (kind === 'audio') {
             for (const layer of ['main', 'protocol', 'raw']) audio[layer] = codex.query.getTimeline(
@@ -52,7 +72,7 @@ async function main() {
           }
           row.paths[name] = { admitted: true, main: session.logicalEvents.filter(e => e.layer === 'main').length,
             ...(kind === 'audio' ? { captionHits: audio } : {}),
-            mainBoundaryHits: boundary.searchEventCount, users: indexed.counts?.userMessages,
+            mainBoundaryHits: boundary.searchEventCount, users: indexed.counts?.userMessages, bootstrap,
             fork: indexed.forkedFromSessionId === cases.source, parent: indexed.parentSessionId === cases.source,
             relation: indexed.derivedRelationship || null,
             revertedHits: codex.query.getTimeline(index, session, {
@@ -68,8 +88,15 @@ async function main() {
   assert.equal(rows.filter(row => row.mode === 'paginated' && row.kind === 'ordinary').length, 2);
   const side = rows.find(row => row.kind === 'side');
   for (const result of Object.values(side.paths)) {
+    assert.equal(result.mainBoundaryHits, 0);
+    assert.equal(result.users, 1);
+    assert.deepEqual(result.bootstrap, { kind: 'side_conversation_boundary', protocolHits: 1, rawHits: 1 });
+  }
+  const generic = rows.find(row => row.kind === 'attached');
+  for (const result of Object.values(generic.paths)) {
     assert.equal(result.mainBoundaryHits, 1);
-    assert.equal(result.users, 2);
+    assert.equal(result.users, 1);
+    assert.deepEqual(result.bootstrap, { kind: null, protocolHits: 0, rawHits: 1 });
   }
   for (const row of rows) for (const result of Object.values(row.paths)) {
     assert.equal(result.admitted, true);
