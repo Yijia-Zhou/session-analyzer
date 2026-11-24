@@ -5255,17 +5255,19 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
 async function parseSessionHistory(plan, sessionsRoot, repoRoot, signal, options = {}) {
   const parts = [];
   const snapshots = [];
-  for (const segment of plan.segments) {
+  for (const [position, segment] of plan.segments.entries()) {
     throwIfAborted(signal);
     const expected = options.historySnapshots?.find((entry) => entry.sourceFile === segment.sourceFile);
+    const selectedPrefix = options.frozenPrefixes?.get(plan.segments[position + 1]?.sourceFile);
     let descriptor;
     try {
       descriptor = await codexRolloutStorage.resolveRolloutArtifact(sessionsRoot, segment.sourceFile, {
-        compression: expected?.compression,
+        compression: expected?.compression || selectedPrefix?.compression,
         allowArchivedHistory: true,
       });
     } catch (error) {
       if (expected && (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')) throw indexedSourceStaleError();
+      if (selectedPrefix && (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')) throw sourceSnapshotChangedError();
       throw error;
     }
     if (!codexRolloutStorage.isHistoryRelativePath(sessionsRoot, segment.sourceFile)) throw indexedSourceStaleError();
@@ -5280,6 +5282,8 @@ async function parseSessionHistory(plan, sessionsRoot, repoRoot, signal, options
       retainFullSourceRecordsForTests: true,
       canonicalRawDigests: true,
     });
+    if (selectedPrefix && (selectedPrefix.digest !== part.sourceFingerprint
+        || !codexRolloutIdentityMatches(selectedPrefix.fileIdentity, part._sourceIdentity))) throw sourceSnapshotChangedError();
     rolloutHistory.validateHistorySegmentBoundary(segment, part.rawEvents.length, part.bytes);
     if (part.rawEvents[0]?.recordType !== 'session_meta' || part.rawEvents[0].sessionMetaId !== segment.sessionId) {
       throw Object.assign(new Error('Codex rollout header does not match history plan'), { code: 'CODEX_HISTORY_OWNER_CONFLICT' });
@@ -6268,80 +6272,215 @@ function codexSelectedPhysicalFiles(candidates, historyPlans, sessionsRoot) {
   return files;
 }
 
-async function admitArchivedHistoryDependencies(candidateIds, inspections, sessionsRoot, signal, onDiagnostic) {
-  const known = new Map([...inspections].map(([file, inspection]) => [rolloutHistory.parseRolloutArtifactIdentity(file)?.rolloutId, inspection]).filter(([id]) => id));
-  // Selection is by logical owner, so every discovered artifact of a candidate
-  // thread may supply its current head even when its cwd differs from the repo.
-  const pending = [];
-  for (const [file, inspection] of inspections) {
-    if (!candidateIds.has(inspection.leadingSessionId || codexSessionIdFromFilePath(file))) continue;
-    const parent = rolloutHistory.parseHistoryBase(inspection.historyBase).base?.rolloutId;
-    if (parent) pending.push(parent);
+// Only explicitly referenced ancestors take this path. A comparison against
+// an already proven live prefix avoids building a snapshot of an unused copy.
+async function inspectFrozenPrefix(file, inspection, end, sessionsRoot, signal, onDiagnostic, liveDigest) {
+  const start = rolloutHistory.parseHistoryBase(inspection.historyBase);
+  if (start.error) return null;
+  const startOrdinal = start.base?.endOrdinalExclusive || 0;
+  const sourceFile = codexRolloutRelativePath(sessionsRoot, file);
+  const descriptor = await codexRolloutStorage.resolveRolloutArtifact(sessionsRoot, sourceFile, {
+    compression: inspection.compression, allowArchivedHistory: true,
+  });
+  const initial = await codexRolloutStorage.acquireRolloutStat(descriptor);
+  if (!codexRolloutIdentityMatches(initial.fileIdentity, inspection.sourceIdentity)) throw sourceSnapshotChangedError();
+  const hash = crypto.createHash('sha256');
+  let bytes = 0, rows = 0, lastByte = -1, valid = true;
+  const stream = liveDigest && descriptor.compression === 'zstd'
+    ? codexRolloutStorage.createReplicaComparisonStream(descriptor, end.endByteOffset, initial.sizeBigInt, liveDigest, signal)
+    : codexRolloutStorage.createLogicalReadStream(descriptor, { signal, maxBytes: end.endByteOffset });
+  stream.on('data', chunk => {
+    hash.update(chunk);
+    bytes += chunk.length;
+    lastByte = chunk[chunk.length - 1];
+  });
+  try {
+    await codexRolloutStorage.visitLogicalLines(stream, line => {
+      const row = safeJsonParse(line);
+      if (!row || row.ordinal !== startOrdinal + rows
+          || (rows === 0 && (row.type !== 'session_meta' || row.payload?.history_mode !== 'paginated'
+            || row.payload.id !== inspection.leadingSessionId
+            || !isDeepStrictEqual(rolloutHistory.parseHistoryBase(row.payload.history_base), start)))) {
+        valid = false;
+        return false;
+      }
+      rows++;
+    }, { signal, onInvalidUtf8() { valid = false; } });
+  } catch (error) {
+    if (error.code !== codexRolloutStorage.CODEX_ROLLOUT_STORAGE_INVALID
+        || descriptor.compression !== 'zstd') throw error;
+    onDiagnostic({ code: error.code, path: sourceFile, message: error.message });
+    valid = false;
   }
-  const expanded = new Set();
-  for (let cursor = 0; cursor < pending.length && expanded.size < rolloutHistory.MAX_ARTIFACTS_PER_HISTORY; cursor += 1) {
-    const id = pending[cursor];
-    if (!known.has(id) || expanded.has(id)) continue;
-    expanded.add(id);
-    const parent = rolloutHistory.parseHistoryBase(known.get(id).historyBase).base?.rolloutId;
-    if (parent) pending.push(parent);
-  }
-  if (!pending.some((id) => !known.has(id))) return;
-  const archivedRoot = path.resolve(sessionsRoot, '..', 'archived_sessions');
-  const archivedFiles = await collectJsonlFiles(archivedRoot, { signal, onDiagnostic });
-  const byId = new Map();
-  for (const file of archivedFiles) {
+  const after = await codexRolloutStorage.acquireRolloutStat(descriptor);
+  if (initial.mtimeNs !== after.mtimeNs || initial.sizeBigInt !== after.sizeBigInt
+      || !codexRolloutIdentityMatches(initial.fileIdentity, after.fileIdentity)) throw sourceSnapshotChangedError();
+  if (!valid || !rows || bytes !== end.endByteOffset || lastByte !== 10
+      || startOrdinal + rows !== end.endOrdinalExclusive) return null;
+  return { sourceFile, base: start.base, acceptedBytes: bytes, digest: hash.digest('base64url'),
+    fileIdentity: initial.fileIdentity, compression: descriptor.compression };
+}
+
+async function inspectReplicaHeader(file, sessionsRoot, signal) {
+  const sourceFile = codexRolloutRelativePath(sessionsRoot, file);
+  const compression = codexRolloutStorage.compressionForArtifact(file);
+  const descriptor = await codexRolloutStorage.resolveRolloutArtifact(sessionsRoot, sourceFile,
+    { allowArchivedHistory: true, compression });
+  const before = await codexRolloutStorage.acquireRolloutStat(descriptor);
+  const line = await codexRolloutStorage.readReplicaHeader(descriptor, signal);
+  const after = await codexRolloutStorage.acquireRolloutStat(descriptor);
+  if (!codexRolloutIdentityMatches(before.fileIdentity, after.fileIdentity)
+      || before.sizeBigInt !== after.sizeBigInt || before.mtimeNs !== after.mtimeNs) throw sourceSnapshotChangedError();
+  const row = line && safeJsonParse(line);
+  const expectedOwner = rolloutHistory.parseRolloutArtifactIdentity(file).threadId;
+  const owner = row?.type === 'session_meta' ? row.payload?.id : null;
+  if (typeof owner !== 'string' || owner.length !== expectedOwner.length || owner.toLowerCase() !== expectedOwner) return null;
+  const { base, error } = rolloutHistory.parseHistoryBase(row.payload.history_base);
+  return { leadingSessionId: owner, compression, sourceIdentity: before.fileIdentity,
+    historyBase: error ? {} : base && { thread_id: base.rolloutId, end_byte_offset: base.endByteOffset,
+      end_ordinal_exclusive: base.endOrdinalExclusive } };
+}
+
+async function admitArchivedHistoryDependencies(candidateIds, inspections, discoveredFiles, sessionsRoot, signal, onDiagnostic) {
+  const active = new Map();
+  for (const file of discoveredFiles) {
     const id = rolloutHistory.parseRolloutArtifactIdentity(file)?.rolloutId;
-    if (!id) continue;
-    const matches = byId.get(id) || []; matches.push(file); byId.set(id, matches);
+    if (id) active.set(id, active.has(id) ? null : file);
   }
-  const attempted = new Set();
-  for (let cursor = 0; cursor < pending.length && attempted.size < rolloutHistory.MAX_ARTIFACTS_PER_HISTORY; cursor += 1) {
-    const id = pending[cursor];
-    if (attempted.has(id)) continue;
-    attempted.add(id);
-    if (known.has(id)) {
-      const parent = rolloutHistory.parseHistoryBase(known.get(id).historyBase).base?.rolloutId;
-      if (parent) pending.push(parent);
+  const roots = [...inspections].filter(([file, inspected]) => inspected.historyBase
+    && candidateIds.has(inspected.leadingSessionId || codexSessionIdFromFilePath(file))).map(([file]) => file);
+  const choices = new Map();
+  const dependencyOnly = new Set();
+  let inspectedArchiveCount = 0;
+  if (!roots.length) return { choices, dependencyOnly, inspectedArchiveCount };
+  const archived = new Map();
+  const archivedRoot = path.resolve(sessionsRoot, '..', 'archived_sessions');
+  for (const file of await collectJsonlFiles(archivedRoot, { signal, onDiagnostic })) {
+    const id = rolloutHistory.parseRolloutArtifactIdentity(file)?.rolloutId;
+    if (id) archived.set(id, archived.has(id) ? null : file);
+  }
+  const headers = new Map();
+  async function readHeader(file) {
+    if (!headers.has(file)) {
+      try {
+        headers.set(file, await inspectReplicaHeader(file, sessionsRoot, signal));
+        if (headers.get(file) && isPathInsideOrSame(file, archivedRoot)) inspectedArchiveCount++;
+      } catch (error) {
+        if (!codexRolloutStorage.isStorageFailure(error)) throw error;
+        onDiagnostic({ code: error.code, path: file, message: error.message });
+        headers.set(file, null);
+      }
+    }
+    return headers.get(file);
+  }
+  const byBoundary = new Map();
+  const visited = new Set();
+  // Multi-source BFS processes each file at its shortest reachable depth.
+  // Independent heads retain their own depth budget.
+  const pending = roots.map(file => ({ file, depth: 1 }));
+  for (let cursor = 0; cursor < pending.length; cursor++) {
+    throwIfAborted(signal);
+    const { file: childFile, depth } = pending[cursor];
+    if (visited.has(childFile)) continue;
+    visited.add(childFile);
+    const child = inspections.get(childFile) || headers.get(childFile);
+    const end = rolloutHistory.parseHistoryBase(child?.historyBase).base;
+    if (!end) continue;
+    const id = end.rolloutId;
+    const live = active.get(id);
+    const copy = archived.get(id);
+    const childSource = codexRolloutRelativePath(sessionsRoot, childFile);
+    if (depth >= rolloutHistory.MAX_ARTIFACTS_PER_HISTORY) {
+      choices.set(childSource, { error: 'CODEX_HISTORY_CHAIN_CAPACITY_EXCEEDED' });
       continue;
     }
-    const matches = byId.get(id);
-    if (matches?.length !== 1) continue;
-    const file = matches[0];
-    try {
-      const relative = codexRolloutRelativePath(sessionsRoot, file);
-      const descriptor = await codexRolloutStorage.resolveRolloutArtifact(sessionsRoot, relative, { allowArchivedHistory: true });
-      const inspected = await inspectSessionFile(descriptor.physicalPath, { signal });
-      inspections.set(descriptor.physicalPath, inspected); known.set(id, inspected);
-      const parent = rolloutHistory.parseHistoryBase(inspected.historyBase).base?.rolloutId;
-      if (parent) pending.push(parent);
-    } catch (error) {
-      if (error?.name === 'AbortError') throw error;
-      if (!codexRolloutStorage.isStorageFailure(error)) throw error;
-      onDiagnostic({ code: error.code || 'SOURCE_ARTIFACT_UNREADABLE', path: file, message: error.message });
+    if (copy === null || live === null) {
+      choices.set(childSource, { error: 'CODEX_HISTORY_ARTIFACT_ID_AMBIGUOUS' });
+      continue;
+    }
+    if (!copy) {
+      if (live) pending.push({ file: live, depth: depth + 1 });
+      continue;
+    }
+    const archiveHeader = await readHeader(copy);
+    if (!archiveHeader) {
+      choices.set(childSource, { error: 'CODEX_HISTORY_OWNER_CONFLICT' });
+      continue;
+    }
+    if (!live) inspections.set(copy, archiveHeader);
+    const inspected = inspections.get(live);
+    const liveHeader = live && (inspected || await readHeader(live));
+    if (live && (!liveHeader || liveHeader.leadingSessionId?.toLowerCase() !== rolloutHistory.parseRolloutArtifactIdentity(live).threadId
+        || archiveHeader.leadingSessionId !== liveHeader.leadingSessionId)) {
+      choices.set(childSource, { error: 'CODEX_HISTORY_OWNER_CONFLICT' });
+      continue;
+    }
+    const key = [id, end.endByteOffset, end.endOrdinalExclusive].join('/');
+    if (!byBoundary.has(key)) {
+      try {
+        const liveProof = inspected && await inspectFrozenPrefix(live, inspected, end, sessionsRoot, signal, onDiagnostic);
+        const archiveProof = await inspectFrozenPrefix(copy, archiveHeader, end, sessionsRoot, signal, onDiagnostic, liveProof?.digest);
+        const choice = liveProof && archiveProof && liveProof.digest !== archiveProof.digest
+          ? { error: 'CODEX_HISTORY_BASE_AMBIGUOUS' }
+          : liveProof || archiveProof || { error: 'CODEX_HISTORY_BOUNDARY_INVALID' };
+        if (live && !inspected && archiveProof) {
+          // The failed live file contributes only independently verified owner
+          // evidence. Only this edge can clear its unreadable-identity guard.
+          inspections.set(copy, archiveHeader);
+          choice.replacesUnreadableLive = true;
+        }
+        byBoundary.set(key, choice);
+      } catch (error) {
+        if (error.code !== 'CODEX_HISTORY_BASE_AMBIGUOUS') {
+          if (!codexRolloutStorage.isStorageFailure(error)) throw error;
+          onDiagnostic({ code: error.code, path: childSource, message: error.message });
+        }
+        byBoundary.set(key, { error: 'CODEX_HISTORY_BASE_AMBIGUOUS' });
+      }
+    }
+    const choice = byBoundary.get(key);
+    choices.set(childSource, choice);
+    if (!choice.error) {
+      const selected = live && choice.sourceFile === codexRolloutRelativePath(sessionsRoot, live) ? live : copy;
+      pending.push({ file: selected, depth: depth + 1 });
     }
   }
+  // Archived ancestors reached exclusively through a replacement's own base
+  // belong to that prefix. They must not create independent filesystem heads
+  // or disconnect the owner's original active graph.
+  const nominal = new Set(roots);
+  for (const file of nominal) {
+    const parent = rolloutHistory.parseHistoryBase(inspections.get(file)?.historyBase).base?.rolloutId;
+    const next = active.has(parent) ? active.get(parent) : archived.get(parent);
+    if (next && inspections.has(next)) nominal.add(next);
+  }
+  for (const copy of headers.keys()) {
+    if (inspections.has(copy) && isPathInsideOrSame(copy, archivedRoot) && !nominal.has(copy)) dependencyOnly.add(copy);
+  }
+  return { choices, dependencyOnly, inspectedArchiveCount };
 }
 
 async function prepareCodexHistoryCandidates(candidates, inspections, discoveredFiles, sessionsRoot, codexHome, signal, onDiagnostic, currentPathsOverride) {
-  const initialInspectionCount = inspections.size;
   const candidateIds = new Set(candidates.map((file) => inspections.get(file)?.leadingSessionId || codexSessionIdFromFilePath(file)));
-  const uninspectedThreadIds = new Set();
+  const unreadableByOwner = new Map();
   const uninspectedRolloutIds = new Set();
   for (const file of discoveredFiles) {
     if (inspections.has(file)) continue;
     const identity = rolloutHistory.parseRolloutArtifactIdentity(file);
     if (!identity) continue;
-    uninspectedThreadIds.add(identity.threadId);
+    if (!unreadableByOwner.has(identity.threadId)) unreadableByOwner.set(identity.threadId, new Set());
+    unreadableByOwner.get(identity.threadId).add(identity.rolloutId);
     uninspectedRolloutIds.add(identity.rolloutId);
   }
-  await admitArchivedHistoryDependencies(candidateIds, inspections, sessionsRoot, signal, onDiagnostic);
+  const { choices: frozenPrefixes, dependencyOnly, inspectedArchiveCount } = await admitArchivedHistoryDependencies(
+    candidateIds, inspections, discoveredFiles, sessionsRoot, signal, onDiagnostic);
   const nodes = [...inspections].map(([file, inspection]) => ({ sourceFile: codexRolloutRelativePath(sessionsRoot, file),
     sessionId: inspection.leadingSessionId || codexSessionIdFromFilePath(file), historyBase: inspection.historyBase,
-    bytes: inspection.bytes }));
+    bytes: inspection.bytes, dependencyOnly: dependencyOnly.has(file) }));
   const physicalFiles = new Map([...inspections.keys()].map((file) => [codexRolloutRelativePath(sessionsRoot, file), file]));
   const groups = new Map();
   for (const node of nodes) {
+    if (node.dependencyOnly) continue;
     const group = groups.get(node.sessionId) || [];
     group.push(node); groups.set(node.sessionId, group);
   }
@@ -6351,26 +6490,35 @@ async function prepareCodexHistoryCandidates(candidates, inspections, discovered
       || rolloutHistory.parseRolloutArtifactIdentity(node.sourceFile)?.rolloutId !== id
         && rolloutHistory.parseRolloutArtifactIdentity(node.sourceFile));
   }));
-  const affectedIds = [...candidateIds].filter((id) => historyCandidateIds.has(id) || uninspectedThreadIds.has(id.toLowerCase()));
+  const affectedIds = [...candidateIds].filter((id) => historyCandidateIds.has(id) || unreadableByOwner.has(id.toLowerCase()));
   if (!affectedIds.length) return new Map();
   const pointer = currentPathsOverride ? { currentPaths: currentPathsOverride, diagnostics: [], evidence: {
     kind: 'codex-current-rollout-v1', status: 'test-override', entries: affectedIds.map((sessionId) => ({ sessionId,
       rolloutPath: currentPathsOverride.get(sessionId) || null, status: currentPathsOverride.has(sessionId) ? 'valid' : 'absent' })) } }
     : await readCurrentRolloutPaths({ codexHome, sessionsRoot, signal, sessionIds: affectedIds });
   for (const diagnostic of pointer.diagnostics) onDiagnostic(diagnostic);
-  const resolved = rolloutHistory.resolveRolloutHistoryPlans(nodes, { currentPaths: pointer.currentPaths, sessionsRoot });
+  const resolved = rolloutHistory.resolveRolloutHistoryPlans(nodes, { currentPaths: pointer.currentPaths, sessionsRoot, frozenPrefixes });
   const plans = new Map();
+  plans.frozenPrefixes = frozenPrefixes;
   const confirmedSingleFiles = new Set();
-  plans.archivedDependencyFileCount = inspections.size - initialInspectionCount;
+  plans.archivedDependencyFileCount = inspectedArchiveCount;
   const invalidHints = new Set(pointer.evidence.entries.filter((entry) => entry.status === 'invalid').map((entry) => entry.sessionId));
   for (const diagnostic of resolved.diagnostics) if (affectedIds.includes(diagnostic.sessionId)) onDiagnostic({
     code: diagnostic.code, path: diagnostic.sourceFile, message: 'The explicit Codex rollout history could not be resolved completely.' });
   for (const plan of resolved.plans) {
     if (!affectedIds.includes(plan.sessionId) || invalidHints.has(plan.sessionId)) continue;
-    // A failed inspection leaves the filesystem graph incomplete for this thread.
-    if (plan.headSelection === 'filesystem-inferred' && uninspectedThreadIds.has(plan.sessionId.toLowerCase())) continue;
+    // Only a proven same-owner replacement for a particular frozen edge can
+    // account for its failed live file. Other unreadable heads stay unresolved.
+    const recovered = new Set();
+    for (let i = 1; i < plan.segments.length; i++) {
+      const choice = frozenPrefixes.get(plan.segments[i].sourceFile);
+      const parent = plan.segments[i - 1];
+      if (choice?.replacesUnreadableLive && choice.sourceFile === parent.sourceFile) recovered.add(parent.rolloutId);
+    }
+    const unreadable = unreadableByOwner.get(plan.sessionId.toLowerCase());
+    if (plan.headSelection === 'filesystem-inferred' && unreadable && [...unreadable].some(id => !recovered.has(id))) continue;
     const ambiguousSegment = uninspectedRolloutIds.size
-      ? plan.segments.find((segment) => uninspectedRolloutIds.has(segment.rolloutId))
+      ? plan.segments.find((segment) => uninspectedRolloutIds.has(segment.rolloutId) && !recovered.has(segment.rolloutId))
       : undefined;
     if (ambiguousSegment) {
       onDiagnostic({ code: 'CODEX_HISTORY_ARTIFACT_ID_AMBIGUOUS', path: ambiguousSegment.sourceFile,
@@ -6578,7 +6726,7 @@ async function buildIndex({
       reusedFileCount += 1;
     } else {
       const parse = historyPlans.has(filePath)
-        ? (file, relative, repo, abort, opts) => parseSessionHistory(historyPlans.get(file), sessionsRoot, repo, abort, opts)
+        ? (file, relative, repo, abort, opts) => parseSessionHistory(historyPlans.get(file), sessionsRoot, repo, abort, { ...opts, frozenPrefixes: historyPlans.frozenPrefixes })
         : parseSessionFile;
       try {
       session = await parse(filePath, relFile, resolvedRepo, signal, {
@@ -6927,7 +7075,7 @@ async function buildSourceBackedIndex({
     let session;
     try {
       session = historyPlans.has(filePath)
-        ? await parseSessionHistory(historyPlans.get(filePath), sessionsRoot, resolvedRepo, signal, parseOptions)
+        ? await parseSessionHistory(historyPlans.get(filePath), sessionsRoot, resolvedRepo, signal, { ...parseOptions, frozenPrefixes: historyPlans.frozenPrefixes })
         : await parseSessionFile(filePath, relFile, resolvedRepo, signal, parseOptions);
     } catch (error) {
       if (acceptedEvidence && error?.code === 'INDEXED_SOURCE_STALE') {

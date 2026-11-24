@@ -359,7 +359,7 @@ function zstdDecoderOptions() {
 }
 
 class ZstdFrameTransform extends Transform {
-  constructor(descriptor, signal) {
+  constructor(descriptor, signal, stopAfterFrameAt = Infinity) {
     super();
     this.descriptor = descriptor;
     this.signal = signal;
@@ -380,6 +380,8 @@ class ZstdFrameTransform extends Transform {
     this.lastBlock = false;
     this.checksumRemaining = 0;
     this.pausedDecoder = null;
+    this.bytesToCover = stopAfterFrameAt;
+    this.coveringFrameComplete = false;
     this.abort = () => this.destroy(abortError(signal));
     signal?.addEventListener('abort', this.abort, { once: true });
     this.once('close', () => signal?.removeEventListener('abort', this.abort));
@@ -392,6 +394,7 @@ class ZstdFrameTransform extends Transform {
       this.decoderError ||= error;
     });
     decoder.on('data', (chunk) => {
+      this.bytesToCover -= chunk.length;
       if (!this.push(chunk) && this.pausedDecoder === null) {
         this.pausedDecoder = decoder;
         decoder.pause();
@@ -463,11 +466,15 @@ class ZstdFrameTransform extends Transform {
       this.decoderError = null;
     }
     this._resetFrameState();
+    if (this.bytesToCover <= 0) {
+      this.coveringFrameComplete = true;
+      this.push(null);
+    }
   }
 
   async _consume(chunk) {
     let offset = 0;
-    while (offset < chunk.length) {
+    while (offset < chunk.length && !this.coveringFrameComplete) {
       if (this.state === 'magic') {
         const take = Math.min(4 - this.magicBytes, chunk.length - offset);
         chunk.copy(this.magicBuffer, this.magicBytes, offset, offset + take);
@@ -581,7 +588,7 @@ class ZstdFrameTransform extends Transform {
   _flush(callback) {
     const incomplete = this.state !== 'magic' || this.magicBytes !== 0 || this.decoder;
     if (incomplete) {
-      callback(storageError('corrupt Codex Zstandard rollout: truncated frame'));
+      callback(Object.assign(storageError('corrupt Codex Zstandard rollout: truncated frame'), { incompleteAtEof: true }));
       return;
     }
     callback();
@@ -609,7 +616,7 @@ function openDecodedStream(descriptorOrPath, options = {}) {
   }
   requireBuiltInZstd(descriptor.physicalPath);
   const input = fs.createReadStream(descriptor.physicalPath, options.streamOptions || {});
-  const decoder = new ZstdFrameTransform(descriptor, signal);
+  const decoder = new ZstdFrameTransform(descriptor, signal, options.stopAfterFrameAt);
   if (options.onCompressedChunk) input.on('data', options.onCompressedChunk);
   input.on('error', (error) => decoder.destroy(mapDecoderError(error, descriptor)));
   decoder.once('close', () => input.destroy());
@@ -659,6 +666,46 @@ function createLogicalReadStream(descriptorOrPath, options = {}) {
     }
   };
   return Readable.from(generator());
+}
+
+// Comparison with an already verified live prefix never creates a decoded
+// snapshot of the alternate. Bound compressed input as well as decoded output:
+// skippable or empty blocks need not produce any logical bytes.
+function createReplicaComparisonStream(descriptor, maxBytes, physicalSize, liveDigest, signal) {
+  const outputLimit = Math.min(Number.MAX_SAFE_INTEGER, maxBytes + 256 * 1024);
+  const inputLimit = Math.min(Number.MAX_SAFE_INTEGER, outputLimit + Math.ceil(maxBytes / 128));
+  const limited = physicalSize > BigInt(inputLimit);
+  return Readable.from((async function* () {
+    const stream = openDecodedStream(descriptor, { signal, stopAfterFrameAt: maxBytes,
+      streamOptions: { end: inputLimit - 1 } });
+    const hash = crypto.createHash('sha256');
+    let remaining = maxBytes;
+    let decodedBytes = 0;
+    try {
+      for await (const chunk of stream) {
+        decodedBytes += chunk.length;
+        if (remaining > 0) {
+          const part = chunk.subarray(0, remaining);
+          remaining -= part.length;
+          hash.update(part);
+          yield part;
+          if (!remaining && hash.digest('base64url') === liveDigest) return;
+        }
+        // Different bytes only contradict the live copy once the frame that
+        // contains them has passed its final block and checksum.
+        if (decodedBytes > outputLimit) throw storageError('Compressed prefix comparison reached its decoded limit',
+          'CODEX_HISTORY_BASE_AMBIGUOUS');
+      }
+    } catch (error) {
+      // Preserve corruption discovered before our artificial EOF, even if the
+      // file has a long unread tail. Only the artificial truncation is unknown.
+      if (!limited || !error.incompleteAtEof) throw error;
+    } finally {
+      stream.destroy();
+    }
+    if (limited && !stream.coveringFrameComplete) throw storageError('Compressed prefix comparison reached its physical input limit',
+      'CODEX_HISTORY_BASE_AMBIGUOUS');
+  })());
 }
 
 async function hashLogicalPrefix(descriptorOrPath, byteLength, signal, options = {}) {
@@ -799,6 +846,42 @@ async function readLogicalLine(descriptorOrPath, lineNumber, options = {}) {
   return null;
 }
 
+// Only identity discovery may use the first complete line of a flushed,
+// unfinished frame. All accepted content still goes through strict snapshots.
+async function readReplicaHeader(descriptor, signal) {
+  throwIfAborted(signal);
+  if (descriptor.compression === 'zstd') requireBuiltInZstd();
+  const input = fs.createReadStream(descriptor.physicalPath, { signal, end: MAX_CODEX_RECORD_BYTES * 2 });
+  const decoded = descriptor.compression === 'zstd' ? createZstdDecompress(zstdDecoderOptions()) : input;
+  if (decoded !== input) {
+    input.on('error', error => decoded.destroy(error));
+    input.pipe(decoded);
+  }
+  const parts = [];
+  let size = 0;
+  try {
+    for await (const chunk of decoded) {
+      throwIfAborted(signal);
+      const end = chunk.indexOf(10);
+      const part = end < 0 ? chunk : chunk.subarray(0, end);
+      size += part.length;
+      if (size > MAX_CODEX_RECORD_BYTES) throw storageError('Codex rollout header exceeds record limit', CODEX_ROLLOUT_RECORD_TOO_LARGE);
+      parts.push(part);
+      if (end >= 0) {
+        const line = Buffer.concat(parts, size);
+        return isUtf8(line) ? line.toString('utf8') : null;
+      }
+    }
+    return null;
+  } catch (error) {
+    if (descriptor.compression === 'zstd' && error.code !== CODEX_ROLLOUT_RECORD_TOO_LARGE) throw mapDecoderError(error, descriptor);
+    throw error;
+  } finally {
+    input.destroy();
+    if (decoded !== input) decoded.destroy();
+  }
+}
+
 function logicalRelativePath(sessionsRoot, descriptorOrPath) {
   const descriptor = typeof descriptorOrPath === 'string'
     ? normalizeArtifactDescriptor(descriptorOrPath)
@@ -829,6 +912,7 @@ module.exports = {
   compressionForArtifact,
   collectCodexRolloutFiles,
   createLogicalReadStream,
+  createReplicaComparisonStream,
   descriptorForRelativePath,
   hasBuiltInZstd,
   hashLogicalPrefix,
@@ -841,6 +925,7 @@ module.exports = {
   openDecodedStream,
   readLogicalLine,
   readLogicalLines,
+  readReplicaHeader,
   requireBuiltInZstd,
   resolveRolloutArtifact,
   samePhysicalIdentity,

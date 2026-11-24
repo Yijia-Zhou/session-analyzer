@@ -77,9 +77,10 @@ function resolveRolloutHistoryPlans(artifacts, options = {}) {
     }
     const { base, error } = parseHistoryBase(artifact.historyBase);
     const node = { ...artifact, identity, base, error };
-    if (!bySessionId.has(sessionId)) bySessionId.set(sessionId, []);
-    bySessionId.get(sessionId).push(node);
-    if (error) diagnose(error, sessionId, artifact.sourceFile);
+    if (!artifact.dependencyOnly) {
+      if (!bySessionId.has(sessionId)) bySessionId.set(sessionId, []);
+      bySessionId.get(sessionId).push(node);
+    }
     // Legacy ad hoc filenames stay eligible for ordinary single-file parsing.
     // They cannot supply authoritative physical IDs for history-base resolution.
     if (!identity) {
@@ -115,6 +116,7 @@ function resolveRolloutHistoryPlans(artifacts, options = {}) {
       ? nodes.filter((node) => comparable(node.sourceFile) === comparable(relativeHint))
       : nodes.filter((node) => !node.identity || !referenced.has(node.identity.rolloutId));
     if (heads.length !== 1) {
+      for (const node of nodes) if (node.error === 'CODEX_HISTORY_BASE_INVALID') diagnose(node.error, sessionId, node.sourceFile);
       diagnose(currentPath ? 'CODEX_HISTORY_CURRENT_PATH_UNRESOLVED' : heads.length ? 'CODEX_HISTORY_HEAD_AMBIGUOUS' : 'CODEX_HISTORY_CYCLE', sessionId, nodes[0].sourceFile);
       continue;
     }
@@ -124,6 +126,7 @@ function resolveRolloutHistoryPlans(artifacts, options = {}) {
     if (currentPath) invalidSessions.delete(sessionId);
     const chain = [];
     const seen = new Set();
+    let physical = head;
     let current = head;
     let limit = null;
     while (current) {
@@ -131,11 +134,11 @@ function resolveRolloutHistoryPlans(artifacts, options = {}) {
         diagnose(current.error, sessionId, current.sourceFile);
         break;
       }
-      if (chain.length >= MAX_ARTIFACTS_PER_HISTORY || seen.has(current)) {
-        diagnose(seen.has(current) ? 'CODEX_HISTORY_CYCLE' : 'CODEX_HISTORY_CHAIN_CAPACITY_EXCEEDED', sessionId, current.sourceFile);
+      if (chain.length >= MAX_ARTIFACTS_PER_HISTORY || seen.has(physical)) {
+        diagnose(seen.has(physical) ? 'CODEX_HISTORY_CYCLE' : 'CODEX_HISTORY_CHAIN_CAPACITY_EXCEEDED', sessionId, current.sourceFile);
         break;
       }
-      seen.add(current);
+      seen.add(physical);
       const startOrdinal = current.base?.endOrdinalExclusive || 0;
       if (limit && (limit.endOrdinalExclusive < startOrdinal
           || (Number.isSafeInteger(current.bytes) && limit.endByteOffset > current.bytes))) {
@@ -148,13 +151,20 @@ function resolveRolloutHistoryPlans(artifacts, options = {}) {
         endOrdinalExclusive: limit?.endOrdinalExclusive ?? null,
         acceptedBytes: limit?.endByteOffset ?? current.bytes ?? null });
       if (!current.base) break;
+      const choice = options.frozenPrefixes?.get(current.sourceFile);
+      if (choice?.error) {
+        diagnose(choice.error, sessionId, current.sourceFile);
+        break;
+      }
       const peers = byRolloutId.get(current.base.rolloutId) || [];
       if (peers.length !== 1) {
         diagnose(peers.length ? 'CODEX_HISTORY_BASE_AMBIGUOUS' : 'CODEX_HISTORY_BASE_MISSING', sessionId, current.sourceFile);
         break;
       }
       limit = current.base;
-      current = peers[0];
+      physical = peers[0];
+      current = choice ? { identity: physical.identity, sessionId: physical.sessionId,
+        sourceFile: choice.sourceFile, bytes: choice.acceptedBytes, base: choice.base } : physical;
     }
     // A disconnected artifact cannot be silently called superseded history.
     if (!currentPath && nodes.some((node) => !seen.has(node))) diagnose('CODEX_HISTORY_DISCONNECTED', sessionId, head.sourceFile);
