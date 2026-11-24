@@ -14,8 +14,8 @@ const EVIDENCE_STATES = Object.freeze({
   OUTPUT_OBSERVED: 'output_observed',
 });
 
-const PENDING_FIRST_LINE = /^Script running with cell ID ([0-9]+)$/;
-const PENDING_LIKE_FIRST_LINE = /^Script running with cell ID\b/;
+const PENDING_PREFIX = 'Script running with cell ID ';
+const U64_MAX = 18446744073709551615n;
 const TERMINAL_FIRST_LINES = new Set([
   'Script completed',
   'Script failed',
@@ -83,9 +83,25 @@ function codeModeOutputText(raw) {
   return textFromValue(parseJsonContainer(raw?.output));
 }
 
+function publicCellId(value) {
+  if (typeof value !== 'string') return '';
+  // Preserve the historical reader's exact decimal spelling.
+  if (/^[0-9]+$/.test(value)) return value;
+  const qualified = /^g([1-9][0-9]{0,19}):([1-9][0-9]{0,19})$/.exec(value);
+  if (!qualified) return '';
+  // Binding 1 is unprefixed. The runtime returns the old cell counter only
+  // after its checked u64 increment succeeds. Keep the full public identity.
+  const generation = BigInt(qualified[1]);
+  return generation >= 2n && generation <= U64_MAX && BigInt(qualified[2]) < U64_MAX ? value : '';
+}
+
+function pendingCellId(line) {
+  return line.startsWith(PENDING_PREFIX) ? publicCellId(line.slice(PENDING_PREFIX.length)) : '';
+}
+
 function isOuterStatusEnvelope(text) {
   const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
-  if (!TERMINAL_FIRST_LINES.has(lines[0]) && !PENDING_FIRST_LINE.test(lines[0])) return false;
+  if (!TERMINAL_FIRST_LINES.has(lines[0]) && !pendingCellId(lines[0])) return false;
   return lines.slice(1).every((line) => {
     const trimmed = line.trim();
     return !trimmed || /^Wall time\b/i.test(trimmed) || /^(?:Live )?Output:$/i.test(trimmed);
@@ -129,14 +145,14 @@ function firstOutputLine(raw) {
 
 function classifyObservedOutput(raw) {
   const firstLine = firstOutputLine(raw);
-  const pendingMatch = PENDING_FIRST_LINE.exec(firstLine);
-  if (pendingMatch) {
+  const cellId = pendingCellId(firstLine);
+  if (cellId) {
     return {
       observationState: OBSERVATION_STATES.PENDING,
-      cellId: pendingMatch[1],
+      cellId,
     };
   }
-  if (!TERMINAL_FIRST_LINES.has(firstLine) || PENDING_LIKE_FIRST_LINE.test(firstLine)) {
+  if (!TERMINAL_FIRST_LINES.has(firstLine)) {
     return {
       observationState: OBSERVATION_STATES.UNKNOWN,
       cellId: '',
@@ -153,9 +169,7 @@ function waitCellId(raw) {
   const value = Object.hasOwn(payload, 'arguments') ? payload.arguments : raw?.output;
   const args = parseJsonContainer(value);
   if (!args || typeof args !== 'object' || Array.isArray(args)) return '';
-  return typeof args.cell_id === 'string' && /^[0-9]+$/.test(args.cell_id)
-    ? args.cell_id
-    : '';
+  return publicCellId(args.cell_id);
 }
 
 function isResponseItem(raw, payloadType) {

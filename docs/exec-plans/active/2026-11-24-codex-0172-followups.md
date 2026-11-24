@@ -1,6 +1,10 @@
 # Codex 0.172 reader increments / 读取适配增量
 
-Status: proposed, awaiting implementation selection. The [audit and coverage matrix](../../design-docs/codex-0163-0172-audit.md) fixes the reader and writer baselines. This plan changes no product contract by itself. / 状态：提案，待选择实施范围。审计固定了 reader/writer 基线；本计划供下一轮工程决策。
+Implementation in progress on `fix/codex-0172-reader-compatibility`. Audit baseline `9a6f990` pins the reports, aggregate statistics and reusable probes. / 本地分批实施中。审计基线固定了报告、聚合统计及复验探针。[Audit and coverage matrix / 审计矩阵](../../design-docs/codex-0163-0172-audit.md)
+
+## Implementation record / 实施记录
+
+- **Code Mode.** Generation-qualified cell IDs now retain their full spelling on pending receipts and waits. All three uniquely matched waits in the targeted real file joined their original execution, with 12/12 Raw checks. Four reader paths counted three operations in the synthetic fixture (previously four). History CLI found the recovered output on the original operation. 46 focused Node tests and the bilingual Chromium multi-wait scenario passed. Host reconnect was not forced. / 新版 cell ID 按完整代次关联。定向真实文件中 3/3 次等待归回原操作，12/12 次 Raw 回查一致。合成四路径、CLI 和双语浏览器验证通过，未主动触发主机重连。
 
 ## Acceptance units / 独立验收单元
 

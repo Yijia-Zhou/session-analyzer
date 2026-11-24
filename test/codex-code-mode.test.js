@@ -10,6 +10,7 @@ const {
   codeModeDisplayOutputText,
   codeModeOutputText,
   projectCodeModeOperations,
+  waitCellId,
 } = require('../src/codex-code-mode');
 const { deriveCodeModeFacts } = require('../src/codex-code-mode-facts');
 
@@ -183,6 +184,48 @@ test('decodes text arrays recursively and only accepts the canonical pending fir
     observationState: 'unknown',
     cellId: '',
   });
+});
+
+test('pending receipts and waits admit the same full generation-qualified cell identity', () => {
+  for (const id of ['14', '0014', 'g2:14', 'g10:1', 'g18446744073709551615:18446744073709551614']) {
+    const output = execOutput(2, 'exec', [
+      { type: 'input_text', text: `Script running with cell ID ${id}\nWall time 1 second\nLive output:\n` },
+      { type: 'input_text', text: 'partial batch' },
+    ]);
+    assert.deepEqual(classifyObservedOutput(output), { observationState: 'pending', cellId: id });
+    assert.equal(waitCellId(waitCall(3, 'wait', id)), id);
+    assert.equal(codeModeDisplayOutputText(output), 'partial batch');
+  }
+  for (const id of ['g0:7', 'g1:7', 'g02:7', 'g2:07', 'g2:0', 'g2:-7', 'g2:x', 'g2:1:2',
+    'g2:18446744073709551615', 'g18446744073709551616:1', 'g2:1 ', 'g2:1 extra']) {
+    assert.deepEqual(classifyObservedOutput(execOutput(2, 'exec', `Script running with cell ID ${id}`)),
+      { observationState: 'unknown', cellId: '' }, id);
+    assert.equal(waitCellId(waitCall(3, 'wait', id)), '', id);
+  }
+});
+
+test('parallel generations with the same local cell number keep distinct waits and output refs', () => {
+  const pending = id => `Script running with cell ID ${id}`;
+  const projection = projectCodeModeOperations([
+    execCall(1, 'first'), execOutput(2, 'first', pending('14')),
+    execCall(3, 'second'), execOutput(4, 'second', pending('g2:14')),
+    execCall(5, 'third'), execOutput(6, 'third', pending('g3:14')),
+    waitCall(7, 'second-poll', 'g2:14'), waitOutput(8, 'second-poll', pending('g2:14')),
+    waitCall(9, 'third-end', 'g3:14'), waitOutput(10, 'third-end', 'Script terminated'),
+    waitCall(11, 'second-end', 'g2:14'), waitOutput(12, 'second-end', 'Script completed'),
+    execCall(13, 'fourth'), execOutput(14, 'fourth', pending('g4:14')),
+    execCall(15, 'fourth-duplicate'), execOutput(16, 'fourth-duplicate', pending('g4:14')),
+    waitCall(17, 'ambiguous', 'g4:14'),
+    waitCall(18, 'cross-turn', 'g4:14', { turnId: 'turn-b' }),
+  ]);
+  assert.deepEqual(projection.operations.map(op => [op.cellId, op.observationState, op.phases.map(p => p.outputRef.line)]), [
+    ['14', 'unobserved_terminal', [2]],
+    ['g2:14', 'terminal', [4, 8, 12]],
+    ['g3:14', 'terminal', [6, 10]],
+    ['g4:14', 'unobserved_terminal', [14]],
+    ['g4:14', 'unobserved_terminal', [16]],
+  ]);
+  assert.deepEqual(projection.unassociatedWaits.map(w => w.reason), ['ambiguous_cell', 'orphan_cell']);
 });
 
 test('Code Mode display output removes an empty outer status envelope without changing classification', () => {
