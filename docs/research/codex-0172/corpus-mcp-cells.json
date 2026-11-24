@@ -1,0 +1,93 @@
+{
+  "runtime": "v24.18.1",
+  "inventory": {
+    "homes": 1,
+    "roots": {
+      "sessions": 1,
+      "archived_sessions": 1
+    },
+    "formats": {
+      "sessions.zstd": {
+        "files": 1544,
+        "bytes": 1277907425,
+        "maxBytes": 127972757
+      },
+      "sessions.plain": {
+        "files": 58,
+        "bytes": 115163082,
+        "maxBytes": 20083825
+      },
+      "archived_sessions.zstd": {
+        "files": 18,
+        "bytes": 7665589,
+        "maxBytes": 1895491
+      }
+    },
+    "mtimeUtc": {
+      "first": "2026-02-19",
+      "last": "2026-11-24"
+    },
+    "filenameUtc": {
+      "first": "2026-02-16",
+      "last": "2026-11-24"
+    },
+    "anomalies": {}
+  },
+  "limits": {
+    "recordBytes": 33554432,
+    "decodedFileBytes": 4294967296,
+    "recordsPerFile": 250000,
+    "nestedArrayElements": 128
+  },
+  "mcpAndCellSample": {
+    "files": 1620,
+    "outcomes": {
+      "readToInventoryEnd": 1620
+    },
+    "anomalies": {
+      "changedSinceInventory": 4
+    },
+    "records": {
+      "zstd.canonicalMcp.environmentId=absent/environment_id=absent": 3383,
+      "zstd.mcpJoin.environmentId=absent/environment_id=absent.differentName": 109,
+      "zstd.mcpJoin.environmentId=absent/environment_id=absent.nameMatches": 252,
+      "zstd.output.decimalCellRunningLine": 5431,
+      "zstd.waitArgument.decimalCellId": 5436,
+      "zstd.mcpJoin.environmentId=absent/environment_id=absent.noCall": 3022,
+      "zstd.output.generationCellRunningLine": 13,
+      "zstd.waitArgument.generationCellId": 13,
+      "zstd.generationWait.receiptInFile": 13,
+      "plain.output.decimalCellRunningLine": 150,
+      "plain.waitArgument.decimalCellId": 145,
+      "plain.canonicalMcp.environmentId=absent/environment_id=absent": 159,
+      "plain.mcpJoin.environmentId=absent/environment_id=absent.noCall": 159,
+      "plain.output.generationCellRunningLine": 43,
+      "plain.waitArgument.generationCellId": 47,
+      "plain.generationWait.receiptInFile": 47
+    },
+    "fileCounts": {
+      "zstd.canonicalMcp.environmentId=absent/environment_id=absent": 94,
+      "zstd.mcpJoin.environmentId=absent/environment_id=absent.differentName": 5,
+      "zstd.mcpJoin.environmentId=absent/environment_id=absent.nameMatches": 22,
+      "zstd.output.decimalCellRunningLine": 278,
+      "zstd.waitArgument.decimalCellId": 279,
+      "zstd.mcpJoin.environmentId=absent/environment_id=absent.noCall": 76,
+      "zstd.output.generationCellRunningLine": 5,
+      "zstd.waitArgument.generationCellId": 5,
+      "zstd.generationWait.receiptInFile": 5,
+      "plain.output.decimalCellRunningLine": 5,
+      "plain.waitArgument.decimalCellId": 3,
+      "plain.canonicalMcp.environmentId=absent/environment_id=absent": 4,
+      "plain.mcpJoin.environmentId=absent/environment_id=absent.noCall": 4,
+      "plain.output.generationCellRunningLine": 6,
+      "plain.waitArgument.generationCellId": 6,
+      "plain.generationWait.receiptInFile": 6
+    },
+    "sizes": {
+      "maxRecordBytes": 8449976,
+      "through1MiB": 917365,
+      "decodedBytesDelivered": 5273673787,
+      "above1Through32MiB": 349
+    }
+  }
+}
