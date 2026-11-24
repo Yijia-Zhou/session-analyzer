@@ -1,5 +1,21 @@
 'use strict';
 
+function hasGeneratedImageFile(item) {
+  return item?.type === 'Extension' && item.kind === 'image_gen.generation'
+    && typeof item.fileId === 'string' && item.fileId.trim() !== '';
+}
+
+function imageFilePeer(raw) {
+  if (raw.recordType === 'response_item') {
+    if (raw.payloadType === 'function_call') {
+      const { name, namespace } = raw.parsed.payload;
+      return name === 'imagegen' && (namespace == null || namespace === 'image_gen');
+    }
+    return raw.payloadType === 'function_call_output' || raw.payloadType === 'image_generation_call';
+  }
+  return raw.recordType === 'event_msg' && ['image_generation_begin', 'image_generation_end'].includes(raw.payloadType);
+}
+
 // Pinned producer: rust-v0.160.0 protocol/src/items.rs and core/src/tools/events.rs.
 // These are semantic views, never replacements for the persisted Raw record.
 // Only tool types whose producer assigns id = call_id can join call groups.
@@ -46,7 +62,9 @@ function typedItemRecord(record, sessionId) {
       break;
     case 'Extension':
       if (i.kind === 'image_gen.generation') {
-        if (typeof i.status !== 'string' || typeof i.result !== 'string') return null;
+        // 0.172's extension writer can keep an attachment-store ID on successful completion.
+        const fileCompletion = i.status === 'completed' && hasGeneratedImageFile(i);
+        if (typeof i.status !== 'string' || (typeof i.result !== 'string' && !fileCompletion)) return null;
         payload = { ...i, type: ['completed', 'failed'].includes(i.status) ? 'image_generation_end' : 'image_generation_call_update', call_id: i.id, name: 'image_generation', revised_prompt: i.revisedPrompt, saved_path: i.savedPath };
         if (i.failure) payload.status = 'failed';
       } else if (i.kind === 'clock.sleep' && Number.isSafeInteger(i.durationMs) && i.durationMs >= 0) {
@@ -138,6 +156,7 @@ function semanticRawEvents(rawEvents) {
           || (peer.turnId && view.turnId && peer.turnId !== view.turnId))) return { ...raw, callId: '' };
       const callName = calls[0]?.toolName;
       const item = raw.parsed.payload.item;
+      if (hasGeneratedImageFile(item) && peers.some((peer) => !imageFilePeer(peer))) return { ...raw, callId: '' };
       const compatible = !callName || callName === view.toolName
         || (item.type === 'CommandExecution' && ['shell', 'exec_command', 'write_stdin', 'functions.exec_command', 'functions.shell_command', 'functions.write_stdin'].includes(callName))
         || (item.type === 'FileChange' && callName === 'functions.apply_patch')
@@ -208,4 +227,4 @@ function additionalToolsSummary(payload) {
   return { valid: payload?.type === 'additional_tools' && payload.role === 'developer' && Array.isArray(payload.tools), entries: tools.length, count, names, unsupported, incomplete, shortened: incomplete || names.length >= 24 };
 }
 
-module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary };
+module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile };

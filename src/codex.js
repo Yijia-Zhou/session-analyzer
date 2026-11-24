@@ -3124,6 +3124,12 @@ function externalizeKnownImageGenerationResult(record, source, images = []) {
   const payload = typedImage ? originalPayload.item : originalPayload;
   if (!typedImage && !['image_generation_end', 'image_generation_call'].includes(payload.type)) return;
   if (typeof payload.result !== 'string') return;
+  if (typedImage && codexMessageEvidence.hasGeneratedImageFile(payload)) {
+    // GeneratedImageRef::File wins even when a migration left stale inline bytes.
+    // The exact row remains available through its snapshot-bound Raw reference.
+    if (payload.result) payload.result = EMBEDDED_IMAGE_EXTERNALIZED_MARKER;
+    return;
+  }
   const inspected = inspectSupportedBareImageBase64(payload.result);
   if (!inspected) return;
   images.push({
