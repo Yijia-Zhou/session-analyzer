@@ -1,7 +1,5 @@
 'use strict';
 
-const { parseRolloutArtifactIdentity } = require('./codex-rollout-history');
-
 function hasExternalizedImage(value) {
   return typeof value === 'string' && value.includes('[embedded image payload externalized; open raw refs for source]');
 }
@@ -57,6 +55,7 @@ function createCodexLogicalBuilder(deps) {
   const {
     classifyProtocolText,
     humanizeProtocolSubtype,
+    parseRolloutArtifactIdentity = () => null,
     protocolLabelFor,
     protocolPreviewFor,
   } = protocol;

@@ -4439,6 +4439,7 @@ const codexLogicalBuilder = createCodexLogicalBuilder({
   protocol: {
     classifyProtocolText,
     humanizeProtocolSubtype,
+    parseRolloutArtifactIdentity: rolloutHistory.parseRolloutArtifactIdentity,
     protocolLabelFor,
     protocolPreviewFor,
   },
