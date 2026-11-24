@@ -2569,6 +2569,21 @@ function classifyProtocolText(text, role) {
   return '';
 }
 
+function recordedSessionShell(session) {
+  const contextIds = new Set();
+  for (const event of session._logicalEvents) {
+    if (event.layer === 'protocol' && event.subtype === 'environment_context') contextIds.add(event.rawRefs[0].rawId);
+  }
+  if (contextIds.size) {
+    for (const raw of session.rawEvents) {
+      if (!contextIds.has(raw.rawId) || raw.parsed?.metadata?.inherited_user_message === true) continue;
+      const shell = readXmlTag(raw.messageText, 'shell');
+      if (shell) return boundedSessionShellContext(shell);
+    }
+  }
+  return '';
+}
+
 function commandArgsFromRaw(raw) {
   const args = coerceJsonValue(raw?.output);
   return args && typeof args === 'object' ? args : null;
@@ -5059,7 +5074,6 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
   const relationshipPlanningFacts = typeof options.onAcceptedRelationshipPlanningProjection === 'function'
     ? createCodexLeadingSessionFacts()
     : null;
-  let sessionShellCaptured = false;
   const includeCanonicalRawDigests = options.canonicalRawDigests === true;
   const sourceHash = crypto.createHash('sha256');
   let sourceBytesRead = 0;
@@ -5152,15 +5166,6 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
         session.sourceClientVersion = record.version;
       }
       updateTimeRangeFromNormalizedTimestamp(session, raw.timestamp);
-      if (!sessionShellCaptured
-          && raw.recordType !== 'realtime_item'
-          && classifyProtocolText(raw.messageText, raw.role) === 'environment_context') {
-        const shellContext = readXmlTag(raw.messageText, 'shell');
-        if (shellContext) {
-          sessionShellCaptured = true;
-          session.shell = boundedSessionShellContext(shellContext);
-        }
-      }
       session.rawEvents.push(raw);
       if (observeSourcePhases) sourceRecordParseMs += performance.now() - recordStartedAt;
     }
@@ -5223,13 +5228,9 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
         session.rawEvents[index].subagentInherited = true;
       }
       restoreCodexSubagentRawSegments(session);
-      // Inherited context cannot select the child's recorded shell context.
-      const ownedEnvironment = session.rawEvents.find((raw) => !raw.subagentInherited
-        && raw.recordType !== 'realtime_item'
-        && classifyProtocolText(raw.messageText, raw.role) === 'environment_context');
-      session.shell = ownedEnvironment ? boundedSessionShellContext(readXmlTag(ownedEnvironment.messageText, 'shell')) : '';
     }
     session._logicalEvents = codexLogicalBuilder.buildLogicalEvents(session.rawEvents.filter((raw) => raw.subagentInherited !== true));
+    session.shell = recordedSessionShell(session);
     session.logicalEvents = session._logicalEvents;
     if (includeCanonicalRawDigests) {
       session._canonicalRawDigests = session.rawEvents.map((raw) => raw._canonicalRawDigest);
@@ -5331,19 +5332,11 @@ async function parseSessionHistory(plan, sessionsRoot, repoRoot, signal, options
     && raw.source.line === 1);
   session.rawEvents = [canonicalMetadata, ...session.rawEvents.filter((raw) => raw !== canonicalMetadata)].filter(Boolean);
   if (session.rawEvents.some((raw) => raw.subagentInherited === true)) restoreCodexSubagentRawSegments(session);
-  // Shell evidence follows the accepted, owned replay in source order, including
-  // retained ancestors. An environment without a shell cannot shadow a later one.
-  session.shell = '';
-  for (const raw of session.rawEvents) {
-    if (raw.subagentInherited === true || raw.recordType === 'realtime_item'
-        || classifyProtocolText(raw.messageText, raw.role) !== 'environment_context') continue;
-    const shell = readXmlTag(raw.messageText, 'shell');
-    if (shell) { session.shell = boundedSessionShellContext(shell); break; }
-  }
   // Head metadata is authoritative for replay, while Raw retains all headers.
   const replay = [canonicalMetadata, ...session.rawEvents.filter((raw) => raw.recordType !== 'session_meta'
     && raw.subagentInherited !== true)].filter(Boolean);
   session._logicalEvents = codexLogicalBuilder.buildLogicalEvents(replay);
+  session.shell = recordedSessionShell(session);
   const historyEventIds = new Map(session._logicalEvents.map((event) => {
     const suffix = event.rawRefs[0]?.rawId?.split(':rollout:')[1];
     return [event.id, suffix ? `${event.id}:rollout:${suffix}` : event.id];

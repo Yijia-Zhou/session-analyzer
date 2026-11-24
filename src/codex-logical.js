@@ -1,5 +1,9 @@
 'use strict';
 
+function hasExternalizedImage(value) {
+  return typeof value === 'string' && value.includes('[embedded image payload externalized; open raw refs for source]');
+}
+
 function createCodexLogicalBuilder(deps) {
   const {
     semanticRawEvents = (raws) => raws,
@@ -910,6 +914,32 @@ function createCodexLogicalBuilder(deps) {
     return String(left || '').trim() === String(right || '').trim();
   }
 
+  // 0.172 creates the prepared input and a fresh-ID UserMessage in one
+  // acceptance. The mirror map has already checked full text and turn epoch.
+  function recordedUserTextOrigin(raw, mirror) {
+    if (raw.typedItemType) return '';
+    const payload = raw.parsed.payload;
+    const attribution = payload.internal_chat_message_metadata_passthrough;
+    const kinds = attribution?.content_item_kinds;
+    if (!Array.isArray(kinds) || !Array.isArray(payload.content) || kinds.length !== payload.content.length) return '';
+    if (kinds.length === 1 && kinds[0] === 'user.heartbeat' && payload.content[0]?.type === 'input_text') return 'heartbeat';
+    const parts = attribution.content_item_metadata;
+    const completion = mirror?.originalRaw?.parsed?.payload;
+    const evidence = raw.parsed.metadata;
+    if (mirror?.typedItemType !== 'UserMessage' || completion.thread_id !== raw.sessionId
+        || !mirror.turnId || attribution.turn_id !== mirror.turnId
+        || mirror.source.file !== raw.source.file || mirror.source.line !== raw.source.line + 1
+        || !Array.isArray(parts) || !kinds.length || parts.length !== kinds.length
+        || completion.item.content.length !== kinds.length
+        || evidence?.inherited_user_message || evidence?.guardian_sources?.length
+        || evidence?.realtime_session_input || evidence?.realtime_session_end_input) return '';
+    return payload.content.every((part, index) => part?.type === 'input_text' && typeof part.text === 'string'
+      && !hasExternalizedImage(part.text)
+      && kinds[index] === 'user.text' && parts[index]?.provenance?.type === 'user'
+      && completion.item.content[index]?.type === 'text' && completion.item.content[index].text === part.text)
+      ? 'submitted' : '';
+  }
+
   function attachmentSummaryForRaw(raw) {
     if (!raw || typeof raw !== 'object') return null;
     if (raw.attachmentSummary?.totalCount > 0) return raw.attachmentSummary;
@@ -1086,6 +1116,14 @@ function createCodexLogicalBuilder(deps) {
         : responseById.get(raw.parsed.payload.id) || [];
       if (candidates.length !== 1) continue;
       const owner = candidates[0];
+      if (raw.typedItemType === 'UserMessage') {
+        // Media redaction can replace even identity strings in a malformed row.
+        // A shared placeholder cannot identify the owner, turn or completion.
+        const prepared = owner.parsed?.payload;
+        const completion = raw.originalRaw?.parsed?.payload;
+        if ([owner.sessionId, owner.turnId, prepared?.id, prepared?.internal_chat_message_metadata_passthrough?.turn_id,
+          completion?.thread_id, completion?.turn_id, completion?.item?.id].some(hasExternalizedImage)) continue;
+      }
       const fullBody = (value) => {
         const payload = value.parsed?.payload || {};
         if (payload.content != null && !Array.isArray(payload.content)) return null;
@@ -1273,7 +1311,10 @@ function createCodexLogicalBuilder(deps) {
       }
 
       if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'user') {
-        const protocolSubtype = classifyProtocolText(raw.messageText, raw.role);
+        const mirror = typedMirrors.get(raw.rawId);
+        const origin = recordedUserTextOrigin(raw, mirror);
+        const protocolSubtype = origin === 'submitted' ? ''
+          : origin === 'heartbeat' ? 'meta_block' : classifyProtocolText(raw.messageText, raw.role);
         if (protocolSubtype === 'user_shell_command') {
           if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message'
               && mirroredMessageTextMatches(raw.messageText, next.messageText)
@@ -1292,15 +1333,20 @@ function createCodexLogicalBuilder(deps) {
           consumed.add(raw.rawId);
           continue;
         }
+        const sources = [raw];
+        if (origin === 'submitted') {
+          // This adjacent canonical completion supplies the recorded turn and
+          // precedes any legacy mirror in the physical evidence list.
+          sources.push(mirror);
+          typedMirrors.delete(raw.rawId);
+        }
         if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message'
             && mirroredMessageTextMatches(raw.messageText, next.messageText)
             && mirroredAttachmentIdentityMatches(raw, next)) {
-          logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:user:${raw.line}`, 'user_message', 'user', raw.messageText, [raw, next]));
-          consumed.add(raw.rawId);
+          sources.push(next);
           consumed.add(next.rawId);
-          continue;
         }
-        logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:user:${raw.line}`, 'user_message', 'user', raw.messageText, [raw]));
+        logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:user:${raw.line}`, 'user_message', 'user', raw.messageText, sources));
         consumed.add(raw.rawId);
         continue;
       }

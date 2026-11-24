@@ -54,6 +54,74 @@ async function representations(f, check) {
 }
 
 function main(session) { return session.logicalEvents.filter((e) => e.layer === 'main'); }
+
+test('0.172 submitted tag-like text needs an owned typed mirror and aligned native user attribution', async (t) => {
+  const rows = [];
+  const add = (label, {
+    body = '<example>' + label + '</example>', kind = 'user.text', source = 'user',
+    stamp = TURN, fields = {}, root, mirror = true, completion = {}, extraPart, typedExtra, gap,
+  } = {}) => {
+    const input = userResponse('response-' + label, body);
+    if (extraPart) input.payload.content.push(extraPart);
+    input.payload.internal_chat_message_metadata_passthrough = { turn_id: stamp,
+      content_item_kinds: [kind], content_item_metadata: [{ provenance: { type: source } }], ...fields };
+    if (root) input.metadata = root;
+    rows.push(input);
+    if (gap) rows.push(event({ type: 'unknown' }));
+    if (mirror) {
+      const item = user('typed-' + label, body);
+      if (typedExtra) item.content.push(typedExtra);
+      rows.push(typed(item, completion));
+    }
+  };
+  add('ordinary');
+  add('literal-context', { body: '<environment_context><shell>zsh</shell></environment_context>' });
+  add('heartbeat', { kind: 'user.heartbeat' });
+  add('plaintext-heartbeat', { body: 'scheduled message', kind: 'user.heartbeat' });
+  add('injected', { source: 'harness' });
+  add('unknown-source', { source: 'user_configured' });
+  add('partial', { fields: { content_item_kinds: [] } });
+  add('mixed', { extraPart: { type: 'input_text', text: 'instructions' },
+    typedExtra: { type: 'text', text: 'instructions' }, fields: { content_item_kinds: ['user.text', 'user.text'],
+      content_item_metadata: [{ provenance: { type: 'user' } }, { provenance: { type: 'skills' } }] } });
+  add('different-shape', { typedExtra: { type: 'audio', file_id: 'file-synthetic' } });
+  add('copied', { root: { inherited_user_message: true } });
+  add('copied-environment', { body: '<environment_context><shell>fake</shell></environment_context>',
+    root: { inherited_user_message: true }, mirror: false });
+  add('guardian', { root: { guardian_sources: [{}] } });
+  add('no-mirror', { mirror: false });
+  add('separated', { gap: true });
+  add('cross-turn', { stamp: 'other-turn' });
+  add('foreign', { completion: { thread_id: 'other-thread' } });
+  rows.push(userResponse('old', '<example>legacy</example>'), typed(user('typed-old', '<example>legacy</example>')));
+  rows.push(userResponse('environment', '<environment_context><shell>pwsh</shell></environment_context>'));
+  const f = await fixture(t, rows);
+  async function check(index, session) {
+    const users = main(session).filter(e => e.kind === 'user_message');
+    assert.deepEqual(users.map(e => e.preview), [
+      '<example>ordinary</example>', '<environment_context><shell>zsh</shell></environment_context>']);
+    assert.equal(session.counts.userMessages, 2);
+    assert.equal(session.shell || session._shell, 'pwsh');
+    for (const message of users) {
+      assert.equal(message.turnId, TURN);
+      assert.deepEqual(message.rawRefs.map(ref => ref.sourceRecordType), ['response_item', 'event_msg']);
+      await assertReadPaths(index, session, message, message.preview.includes('zsh') ? 'zsh' : 'ordinary', f);
+      const detail = await codex.buildHydratedEventDetail(index, session, message.id, 'main');
+      assert.ok(detail.timelineSections.find(section => section.title === 'Message').html.includes('&lt;'));
+    }
+    for (const body of ['<example>heartbeat</example>', 'scheduled message']) {
+      assert.equal(codex.query.getTimeline(index, session, { layer: 'main', q: body }).searchEventCount, 0);
+      const result = codex.query.getTimeline(index, session, { layer: 'protocol', q: body });
+      assert.equal(result.searchEventCount, 1);
+      assert.equal(codex.query.getTimeline(index, session, { layer: 'raw', q: body }).searchEventCount, 2);
+    }
+  }
+  await representations(f, check);
+  const cold = await codex.buildSourceBackedIndex(f.options);
+  const warm = await codex.buildSourceBackedIndex({ ...f.options, previousIndex: cold });
+  assert.equal(warm.totals.reusedFileCount, 1);
+  await check(warm, await materializeSessionForIndex(warm, warm.sessionsById.get(ID)));
+});
 async function assertReadPaths(index, session, e, text, f) {
   const found = codex.query.getTimeline(index, session, { layer: 'main', q: text, limit: 100 });
   assert.ok(found.searchEventCount >= 1, `search ${text}`);
@@ -74,6 +142,39 @@ async function assertReadPaths(index, session, e, text, f) {
     assert.deepEqual(result.parsed, f.records[raw.source.line - 1]);
   }
 }
+
+test('0.172 input evidence preserves physical order, sanitized turn identity and original-text uncertainty', async t => {
+  const opaqueTurn = 'data:application/octet-stream;base64,QUJDREVG';
+  const text = '<example>triple</example>';
+  function attributed(id, text, turn = TURN) {
+    const row = userResponse(id, text);
+    row.payload.internal_chat_message_metadata_passthrough = { turn_id: turn, content_item_kinds: ['user.text'],
+      content_item_metadata: [{ provenance: { type: 'user' } }] };
+    return row;
+  }
+  const typedOnly = user('typed-only', 'ordinary typed-only input');
+  typedOnly.internal_chat_message_metadata_passthrough = { content_item_kinds: ['user.heartbeat'] };
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+  const gif = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  const f = await fixture(t, [attributed('p1', text), typed(user('c1', text)),
+    event({ type: 'user_message', message: text }), typed(typedOnly),
+    attributed('p2', '<example>' + png + '</example>'), typed(user('c2', '<example>' + gif + '</example>')),
+    event({ type: 'task_started', turn_id: opaqueTurn }), attributed('p3', '<example>safe-turn</example>', opaqueTurn),
+    typed(user('c3', '<example>safe-turn</example>'), { turn_id: opaqueTurn }),
+    event({ type: 'task_started', turn_id: png }), attributed('p4', '<example>lost-turn</example>', png),
+    typed(user('c4', '<example>lost-turn</example>'), { turn_id: gif }),
+    event({ type: 'task_started', turn_id: TURN }), attributed(png, '<example>lost-id</example>'),
+    typed(user(gif, '<example>lost-id</example>'))]);
+  await representations(f, async (_index, session) => {
+    const messages = main(session).filter(e => e.kind === 'user_message');
+    assert.deepEqual(messages.map(e => e.rawRefs.map(ref => ref.line)), [[3, 4, 5], [6], [10, 11]]);
+    assert.equal(messages[0].turnId, TURN);
+    assert.ok(!messages[2].turnId.includes('QUJDREVG'));
+    const conflicts = session.logicalEvents.filter(e => e.rawRefs.some(ref => [13, 14, 16, 17].includes(ref.line)));
+    assert.deepEqual(conflicts.map(e => [e.layer, e.rawRefs.map(ref => ref.line)]), [
+      ['protocol', [13]], ['protocol', [14]], ['protocol', [16]], ['protocol', [17]]]);
+  });
+});
 
 test('typed messages, reasoning and external outputs retain one semantic event across source representations and mirrors', async (t) => {
   const cases = [
