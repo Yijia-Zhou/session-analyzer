@@ -1315,12 +1315,14 @@ function createCodexLogicalBuilder(deps) {
       const history = historyFacts(raw);
       if (history) {
         const identityCount = realtimeIdentities.get(realtimeIdentity(raw));
-        const event = history.type === 'transcript_segment' && identityCount === 1
+        // Only admitted, persisted speech has a role. Recording and receipt facts do not.
+        const speech = Boolean(history.role);
+        const event = speech && identityCount === 1
           ? buildConversationEvent(`${raw.sessionId}:logical:realtime:${raw.line}`, `${history.role}_message`, history.role, raw.messageText, [raw])
-          : buildProtocolEvent(raw, history.type === 'transcript_segment' ? 'realtime_identity_conflict' : history.type);
+          : buildProtocolEvent(raw, speech ? 'realtime_identity_conflict' : history.type);
         event.historyFacts = history;
         event.turnId = '';
-        if (history.type === 'transcript_segment' && event.layer === 'main') event.tags.push('realtime');
+        if (speech && event.layer === 'main') event.tags.push('realtime');
         logicalEvents.push(event);
         consumed.add(raw.rawId);
         continue;

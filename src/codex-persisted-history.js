@@ -17,13 +17,21 @@ function factsFromRecord(record) {
   if (record.type === 'realtime_item') {
     if (!identity(p.id) || !identity(p.realtime_session_id)) return null;
     const facts = { type: p.type, itemId: p.id, realtimeSessionId: p.realtime_session_id };
+    if (Number.isSafeInteger(p.observed_at_ms)) facts.observedAtMs = p.observed_at_ms;
+    if (p.type === 'frame') {
+      const voice = p.channels?.voice_transcript;
+      if (!object(voice) || !['user', 'assistant'].includes(voice.role)
+          || typeof voice.text !== 'string' || !voice.text.length) return null;
+      return { ...facts, role: voice.role };
+    }
     if (p.type === 'transcript_segment') {
       if (!['user', 'assistant'].includes(p.role) || typeof p.text !== 'string') return null;
       return { ...facts, role: p.role };
     }
     if (p.type === 'realtime_session_started') return facts;
     if (p.type === 'realtime_session_closed' && ['ended', 'failed'].includes(p.outcome)) {
-      return { ...facts, outcome: p.outcome };
+      return { ...facts, outcome: p.outcome, ...(Number.isSafeInteger(p.final_frame_sequence)
+        && p.final_frame_sequence >= 0 ? { finalFrameSequence: p.final_frame_sequence } : {}) };
     }
     if (p.type === 'bem_item_promoted' && identity(p.turn_id) && identity(p.item_id) && object(p.presentation)) {
       const presentation = p.presentation.type;
@@ -81,7 +89,9 @@ function validHistoryFacts(f) {
     record = { type: 'response_item', payload: { type: f.type, reasoning: { effort: f.effort } }, metadata: { harness_authored_configuration: f.harnessAuthored } };
   } else {
     record = { type: 'realtime_item', payload: { type: f.type, id: f.itemId, realtime_session_id: f.realtimeSessionId,
-      role: f.role, text: '', outcome: f.outcome, turn_id: f.targetTurnId, item_id: f.targetItemId,
+      role: f.role, text: '', channels: { voice_transcript: { role: f.role, text: 'recorded' } },
+      observed_at_ms: f.observedAtMs, final_frame_sequence: f.finalFrameSequence,
+      outcome: f.outcome, turn_id: f.targetTurnId, item_id: f.targetItemId,
       presentation: { type: f.presentation, index: f.visualizationIndex } } };
   }
   return isDeepStrictEqual(f, factsFromRecord(record));

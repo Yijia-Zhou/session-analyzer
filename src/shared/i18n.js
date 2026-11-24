@@ -2230,6 +2230,8 @@
         'Asynchronous message': '异步消息',
         'Realtime': '实时',
         'Realtime provenance': '实时 来源',
+        'Voice transcript from a recorded realtime frame.': '来自已记录实时帧的语音转录。',
+        'Speech is shortened here. Open Raw for the full transcript.': '此处语音转录已缩短。打开原始记录可查看全文。',
         'Applied thread settings': '已应用的线程设置',
         'Positional configuration control': '位置配置控制',
         'Realtime session started': '实时 会话开始',

@@ -4121,7 +4121,7 @@ function extractLifecycleSections(event, raws) {
 
 function rawConversationRole(raw) {
   const history = historyFacts(raw);
-  if (history?.type === 'transcript_segment') return history.role;
+  if (history?.role) return history.role;
   if (raw.recordType === 'event_msg' && raw.payloadType === 'user_message') return 'user';
   if (raw.recordType === 'event_msg' && raw.payloadType === 'agent_message') return 'assistant';
   if (raw.recordType === 'response_item' && raw.payloadType === 'message' && ['user', 'assistant'].includes(raw.role)) {
