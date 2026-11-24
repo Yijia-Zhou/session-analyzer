@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { interpretProjectPath } = require('../src/shared/project-path');
 const { createProjectPathContext } = require('../src/project-path-context');
+const codex = require('../src/codex');
 const { openSourceSwitchChooser, installWave1bM2SourceBundle, deferred } = require('./browser-helpers');
 
 const UNC = '\\\\server\\share\\Project';
@@ -472,4 +473,156 @@ test('synthetic native-backslash extended namespace stays readable and restores 
   assert.equal(restored.projectPath.key, saved.projectPath.key);
   assert.equal(restored.projectPathPolicyId, saved.policyId);
   await f.unchanged();
+});
+
+test('Codex chooser preserves exact saved identity and reopens hidden choices when refresh fails', { skip: process.platform !== 'win32' }, async (t) => {
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'browser-codex-extended-'));
+  t.after(() => fs.rm(codexHome, { recursive: true, force: true }));
+  if (!/^[A-Za-z]:\\/.test(codexHome)) return t.skip('The temporary directory is not drive-backed');
+  const ordinary = path.join(codexHome, 'repo');
+  const extended = path.toNamespacedPath(ordinary);
+  const projectPath = interpretProjectPath(extended, { legacyNamespace: true });
+  const policyId = createProjectPathContext({ sourceKind: 'codex', sourceHome: codexHome }).digest;
+  await fs.mkdir(ordinary);
+  await fs.mkdir(path.join(codexHome, 'sessions'));
+  await fs.writeFile(path.join(codexHome, 'config.toml'), `[projects.'${extended}']\n`);
+  await fs.writeFile(path.join(codexHome, 'sessions', 'rollout-ordinary.jsonl'), JSON.stringify({
+    type: 'session_meta', payload: { id: 'ordinary', cwd: ordinary },
+  }) + '\n');
+
+  const saved = { version: projectPath.version, repoRoot: extended, sourceHome: codexHome, policyId, projectPath, legacyAssumption: false };
+  const selections = [];
+  const { page, baseUrl } = await openSourceSwitchChooser(t, {
+    server: { codexHome, sessionPrewarm: false },
+    localStorage: {
+      'sessionAnalyzer.repoRoot.codex': extended,
+      'sessionAnalyzer.projectPath.codex': JSON.stringify(saved),
+    },
+    beforeGoto: async (page) => {
+      await installWave1bM2SourceBundle(page);
+      await page.route('**/api/project', async (route) => {
+        selections.push(route.request().postDataJSON());
+        await route.continue();
+      });
+    },
+  });
+  await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing'
+    || !document.querySelector('#projectPathNotice').hidden);
+  assert.equal(await page.locator('body').getAttribute('data-project-mode'), 'analyzing');
+  assert.equal(selections.length, 1);
+  assert.equal(selections[0].repoRoot, extended);
+  assert.equal(selections[0].projectPathKey, projectPath.key);
+  assert.equal(selections[0].projectPathPolicyId, policyId);
+  const restored = await page.request.get(`${baseUrl}/api/state`).then((response) => response.json());
+  assert.equal(restored.projectPath.key, projectPath.key);
+  assert.equal(restored.totals.sessionCount, 0);
+
+  const waitForFullScan = () => page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/projects' && url.searchParams.get('summary') !== '1';
+  });
+  const switchControl = page.locator('#projectSwitchControl');
+  const fullScan = waitForFullScan();
+  await switchControl.click();
+  assert.ok((await fullScan).ok());
+  await waitForProjects(page, 1);
+  assert.equal(await page.locator('#projectList [data-project-root]').getAttribute('data-project-root'), ordinary);
+  assert.equal(await page.locator('#projectPathNotice').isVisible(), false);
+
+  const extendedRow = page.locator('#projectList [data-project-root]').filter({ hasText: extended });
+  const configFile = path.join(codexHome, 'config.toml');
+  const savedConfig = path.join(codexHome, 'config.saved');
+  await fs.rename(configFile, savedConfig);
+  await fs.mkdir(configFile);
+  await switchControl.click();
+  const unreadableConfigScan = waitForFullScan();
+  await switchControl.click();
+  assert.ok((await unreadableConfigScan).ok());
+  await extendedRow.getByText('Activity not verified').waitFor();
+  assert.equal(await extendedRow.getAttribute('data-project-key'), projectPath.key);
+  await fs.rmdir(configFile);
+  await fs.rename(savedConfig, configFile);
+  await switchControl.click();
+  const recoveredConfigScan = waitForFullScan();
+  await switchControl.click();
+  assert.ok((await recoveredConfigScan).ok());
+  await extendedRow.waitFor({ state: 'hidden' });
+
+  let failFull = true;
+  let failSummary = false;
+  let fullGate;
+  const originalDiscovery = codex.discoverProjects;
+  t.mock.method(codex, 'discoverProjects', async (options) => {
+    if (options.codexHome === codexHome && failFull) throw new Error('Synthetic discovery failure');
+    return originalDiscovery(options);
+  });
+  await page.route('**/api/projects*', async (route) => {
+    const summary = new URL(route.request().url()).searchParams.get('summary') === '1';
+    if (!summary && fullGate) await fullGate.promise;
+    if (summary && failSummary) {
+      await route.fulfill({ status: 503, json: { error: 'Synthetic discovery failure' } });
+      return;
+    }
+    await route.continue();
+  });
+  async function reopenWithFailedScan() {
+    await switchControl.click();
+    const failed = waitForFullScan();
+    await switchControl.click();
+    assert.equal((await failed).status(), 500);
+    await extendedRow.getByText('Activity not verified').waitFor();
+    assert.equal(await extendedRow.getAttribute('data-project-root'), extended);
+    assert.equal(await extendedRow.isEnabled(), true);
+  }
+
+  await reopenWithFailedScan();
+  // The server now sends the choice as a visible pending row, with no hidden row to re-expose.
+  await reopenWithFailedScan();
+  failSummary = true;
+  await switchControl.click();
+  fullGate = deferred();
+  const awaitingFull = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === '/api/projects' && url.searchParams.get('summary') !== '1';
+  });
+  const failedRetry = waitForFullScan();
+  await switchControl.click();
+  try {
+    await awaitingFull;
+    assert.equal(await extendedRow.isVisible(), true);
+    assert.equal(await extendedRow.isEnabled(), true);
+    assert.equal(await page.locator('#projectList [data-project-root]').count(), 1);
+  } finally {
+    fullGate.resolve();
+  }
+  assert.equal((await failedRetry).status(), 500);
+  await extendedRow.getByText('Activity not verified').waitFor();
+
+  failFull = false;
+  failSummary = false;
+  await switchControl.click();
+  fullGate = deferred();
+  t.after(() => fullGate.resolve());
+  const successfulRetry = waitForFullScan();
+  await switchControl.click();
+  await extendedRow.getByText('Activity loading...').waitFor();
+  fullGate.resolve();
+  assert.ok((await successfulRetry).ok());
+  await extendedRow.waitFor({ state: 'hidden' });
+
+  await fs.writeFile(path.join(codexHome, 'sessions', 'rollout-new-extended.jsonl'), [
+    { timestamp: '2026-05-25T10:00:00.000Z', type: 'session_meta', payload: { id: 'new-extended', cwd: extended } },
+    { timestamp: '2026-05-25T10:00:01.000Z', type: 'response_item', payload: {
+      type: 'message', role: 'user', content: [{ type: 'input_text', text: 'SYNTHETIC_EXTENDED_CWD' }],
+    } },
+  ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+  failFull = true;
+  await reopenWithFailedScan();
+  await chooseProject(page, extended);
+  const selected = await page.request.get(`${baseUrl}/api/state`).then((response) => response.json());
+  assert.equal(selected.projectPath.key, projectPath.key);
+  assert.equal(selected.totals.sessionCount, 1);
+  const timeline = await page.request.get(`${baseUrl}/api/sessions/new-extended/timeline?layer=main&limit=1`);
+  assert.ok(timeline.ok(), await timeline.text());
+  assert.match(await timeline.text(), /SYNTHETIC_EXTENDED_CWD/);
 });

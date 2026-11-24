@@ -6,11 +6,12 @@ const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { analyzerSessionId, buildClaudeSourceBackedIndex } = require('../src/claude');
+const codex = require('../src/codex');
 const {
   buildIndex: buildResidentCodexIndex,
   buildSourceBackedIndex: buildIndex,
   buildHydratedEventDetail,
-} = require('../src/codex');
+} = codex;
 const { withNavigationDiagnostics } = require('./browser-diagnostics');
 
 const {
@@ -21,6 +22,7 @@ const {
   buildFixtureIndex,
   openApp,
   openSourceSwitchChooser,
+  installWave1bM2SourceBundle,
   makeClaudeSwitchFixture,
   confirmSourceAction,
   waitForProjectRoot,
@@ -119,6 +121,195 @@ test('browser chooser switches transcript source and refreshes project candidate
   await confirmSourceAction(page, 'Confirm switch to Codex');
   await waitForProjectRoot(page, repoRoot);
   assert.match(await page.locator('#projectSourceKind').textContent(), /Transcript source: Codex/);
+});
+
+for (const changedDuring of ['summary', 'full']) {
+  test(`browser chooser adopts an active source changed by another client before ${changedDuring}`, async (t) => {
+    const fixture = await makeClaudeSwitchFixture(t);
+    const { page, baseUrl } = await openSourceSwitchChooser(t, {
+      server: { claudeHome: fixture.claudeHome },
+      beforeGoto: installWave1bM2SourceBundle,
+    });
+    await waitForProjectRoot(page, repoRoot);
+    await page.locator('.projectItem[data-project-root]').filter({ hasText: repoRoot }).click();
+    await page.locator('#sessionList .sessionItem.active').waitFor();
+    let changed = false;
+    await page.route('**/api/projects*', async (route) => {
+      const summary = new URL(route.request().url()).searchParams.get('summary') === '1';
+      if (!changed && summary === (changedDuring === 'summary')) {
+        changed = true;
+        const response = await page.request.post(`${baseUrl}/api/source`, { data: { source: 'claude-code' } });
+        assert.ok(response.ok());
+      }
+      await route.continue();
+    });
+    await page.locator('#projectSwitchControl').click();
+    await waitForProjectRoot(page, fixture.claudeRepo);
+    assert.equal(changed, true);
+    assert.match(await page.locator('#projectSourceKind').textContent(), /Claude Code/);
+    assert.equal(await page.locator('.projectItem[data-project-root]').filter({ hasText: repoRoot }).count(), 0);
+  });
+}
+
+test('browser clears a retired startup failure when discovery adopts another source', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  const summary = deferred();
+  t.after(() => summary.resolve());
+  const { page, baseUrl } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome, repo: repoRoot, buildIndex: async () => { throw new Error('Synthetic Codex failure'); } },
+    beforeGoto: async (page) => {
+      await installWave1bM2SourceBundle(page);
+      await page.route('**/api/projects?summary=1*', async (route) => {
+        await summary.promise;
+        await route.continue();
+      });
+    },
+  });
+  await page.locator('#projectFailure [data-project-retry]').waitFor();
+  assert.ok((await page.request.post(`${baseUrl}/api/source`, { data: { source: 'claude-code' } })).ok());
+  summary.resolve();
+  await waitForProjectRoot(page, fixture.claudeRepo);
+  assert.equal(await page.locator('#projectFailure').isHidden(), true);
+  assert.equal(await page.locator('#projectFailure [data-project-retry]').count(), 0);
+});
+
+test('a same-policy discovery conflict uses the server authority for the Return action', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  const originalDiscovery = codex.discoverConfiguredProjects;
+  const entered = deferred();
+  const release = deferred();
+  t.after(() => release.resolve());
+  let hold = false;
+  t.mock.method(codex, 'discoverConfiguredProjects', async (options) => {
+    if (hold) {
+      hold = false;
+      entered.resolve();
+      await release.promise;
+    }
+    return originalDiscovery(options);
+  });
+  const { page, baseUrl } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome },
+    beforeGoto: installWave1bM2SourceBundle,
+  });
+  await waitForProjectRoot(page, repoRoot);
+  await page.locator('.projectItem[data-project-root]').filter({ hasText: repoRoot }).click();
+  await page.locator('#sessionList .sessionItem.active').waitFor();
+  const before = await (await page.request.get(`${baseUrl}/api/state`)).json();
+  const switchControl = page.locator('#projectSwitchControl');
+  const conflict = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/projects'
+    && response.status() === 409);
+  hold = true;
+  await switchControl.click();
+  await entered.promise;
+  try {
+    for (const source of ['claude-code', 'codex']) {
+      const response = await page.request.post(`${baseUrl}/api/source`, { data: { source } });
+      assert.ok(response.ok());
+      assert.equal((await response.json()).projectSelected, false);
+    }
+  } finally {
+    release.resolve();
+  }
+  const { details } = await (await conflict).json();
+  assert.equal(details.projectPathPolicyId, before.projectPathPolicyId);
+  assert.equal(details.projectSelected, false);
+  await waitForProjectRoot(page, repoRoot);
+  assert.doesNotMatch(await switchControl.getAttribute('aria-label'), /Return/);
+});
+
+test('browser protects a project committed by another client during chooser discovery', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  const fullDiscovery = deferred();
+  const release = deferred();
+  t.after(() => release.resolve());
+  const { page, baseUrl } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome },
+    localStorage: { 'sessionAnalyzer.repoRoot.codex': repoRoot },
+    beforeGoto: async (page) => {
+      await installWave1bM2SourceBundle(page);
+      await page.route((url) => url.pathname === '/api/projects' && !url.searchParams.has('summary'), async (route) => {
+        fullDiscovery.resolve();
+        await release.promise;
+        await route.continue();
+      });
+    },
+  });
+  await fullDiscovery.promise;
+  const discovered = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/projects' && !url.searchParams.has('summary');
+  });
+  try {
+    const response = await page.request.post(`${baseUrl}/api/project`, { data: { repoRoot } });
+    assert.equal(response.status(), 202);
+    let { job } = await response.json();
+    const statusUrl = `${baseUrl}/api/project/status?jobId=${encodeURIComponent(job.id)}`;
+    for (let attempt = 0; attempt < 80 && ['queued', 'running'].includes(job.status); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const status = await page.request.get(statusUrl);
+      assert.equal(status.status(), 200);
+      ({ job } = await status.json());
+    }
+    assert.equal(job.status, 'succeeded', job.error);
+  } finally {
+    release.resolve();
+  }
+  const discovery = await (await discovered).json();
+  assert.equal(discovery.projectSelected, true);
+  assert.equal(discovery.repoRoot, repoRoot);
+  await page.waitForFunction(() => document.querySelector('#projectStatus')?.textContent.includes('project candidates'));
+  const switchControl = page.locator('#projectSwitchControl');
+  assert.match(await switchControl.getAttribute('aria-label'), /Return/);
+  await page.locator('[data-source-choice="claude-code"]').click();
+  assert.equal(await page.locator('#projectSourceAction').isVisible(), true);
+  assert.equal(await page.locator('#projectSourceAction').textContent(), 'Confirm switch to Claude Code');
+  const selected = await (await page.request.get(`${baseUrl}/api/state`)).json();
+  assert.equal(selected.repoRoot, repoRoot);
+  await page.locator('#projectSourceCancel').click();
+  await switchControl.click();
+  await page.locator('#sessionList .sessionItem.active').waitFor();
+});
+
+test('a same-policy discovery conflict clears a retired startup retry', async (t) => {
+  const fixture = await makeClaudeSwitchFixture(t);
+  const originalDiscovery = codex.discoverConfiguredProjects;
+  const entered = deferred();
+  const release = deferred();
+  t.after(() => release.resolve());
+  let hold = true;
+  t.mock.method(codex, 'discoverConfiguredProjects', async (options) => {
+    if (hold) {
+      hold = false;
+      entered.resolve();
+      await release.promise;
+    }
+    return originalDiscovery(options);
+  });
+  const { page, baseUrl } = await openSourceSwitchChooser(t, {
+    server: { claudeHome: fixture.claudeHome, repo: repoRoot, buildIndex: async () => { throw new Error('Synthetic Codex failure'); } },
+    beforeGoto: installWave1bM2SourceBundle,
+  });
+  const retry = page.locator('#projectFailure [data-project-retry]');
+  await retry.waitFor();
+  await entered.promise;
+  const before = await (await page.request.get(`${baseUrl}/api/state`)).json();
+  assert.equal(before.job.status, 'failed');
+  const conflict = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/projects'
+    && response.status() === 409);
+  try {
+    for (const source of ['claude-code', 'codex']) {
+      assert.ok((await page.request.post(`${baseUrl}/api/source`, { data: { source } })).ok());
+    }
+  } finally {
+    release.resolve();
+  }
+  const { details } = await (await conflict).json();
+  assert.equal(details.projectPathPolicyId, before.projectPathPolicyId);
+  assert.equal(details.failedProjectJob, null);
+  assert.equal((await page.request.get(`${baseUrl}/api/state`)).status(), 409);
+  await waitForProjectRoot(page, repoRoot);
+  assert.equal(await retry.count(), 0);
 });
 
 test('browser chooser selects Qoder and reads native message Detail and Raw', async (t) => {
@@ -1355,23 +1546,18 @@ test('browser onboarding keeps mixed source diagnostics visible beside readable 
 test('browser onboarding preserves failed startup across reload and retries the specified project', async (t) => {
   let postCount = 0;
   let statusCount = 0;
-  const failure = { id: 'failed-before-open', status: 'failed', repoRoot, error: 'Source snapshot is busy; retry shortly', errorCode: 'DEEPSEEK_SOURCE_BUSY' };
   const { page } = await openSourceSwitchChooser(t, {
+    server: { repo: repoRoot, buildIndex: async () => { throw new Error('Source snapshot is busy; retry shortly'); } },
     beforeGoto: async (p) => {
-      await p.route('**/api/state*', async (route) => {
-        const response = await route.fetch();
-        const payload = await response.json();
-        failure.projectPathPolicyId = (payload.details || payload).projectPathPolicyId;
-        await route.fulfill({ status: 200, json: { ...(payload.details || payload), projectSelected: false, job: failure } });
-      });
+      await installWave1bM2SourceBundle(p);
       await p.route('**/api/project', async (route) => {
         assert.equal(route.request().postDataJSON().repoRoot, repoRoot);
         postCount += 1;
-        await route.fulfill({ status: 202, json: { job: { ...failure, id: 'retry-job', status: 'queued' } } });
+        await route.continue();
       });
       await p.route('**/api/project/status*', async (route) => {
         statusCount += 1;
-        await route.fulfill({ json: { job: { ...failure, id: 'retry-job' } } });
+        await route.continue();
       });
     },
   });
@@ -1413,14 +1599,17 @@ test('browser onboarding zero-session indexes distinguish unreadable files from 
 
 test('browser onboarding retains startup failure through discovery errors and inactive config then successfully retries', async (t) => {
   const fixture = await makeClaudeSwitchFixture(t);
+  let startup = true;
   const { page } = await openSourceSwitchChooser(t, {
-    server: { claudeHome: fixture.claudeHome },
+    server: { claudeHome: fixture.claudeHome, repo: repoRoot, buildIndex: async (options) => {
+      if (startup) {
+        startup = false;
+        throw new Error('Original startup failure');
+      }
+      return buildIndex({ ...options, codexHome: options.sourceHome });
+    } },
     beforeGoto: async (p) => {
-      await p.route('**/api/state*', async (route) => {
-        const response = await route.fetch();
-        const payload = await response.json();
-        await route.fulfill({ status: 200, json: { ...(payload.details || payload), projectSelected: false, job: { id: 'initial-failure', status: 'failed', repoRoot, error: 'Original startup failure' } } });
-      });
+      await installWave1bM2SourceBundle(p);
       await p.route('**/api/projects*', (route) => route.fulfill({ status: 500, json: { error: 'Discovery temporarily failed' } }));
     },
   });
@@ -1435,7 +1624,6 @@ test('browser onboarding retains startup failure through discovery errors and in
   await page.locator('#projectHomeApplyBtn').click();
   await page.waitForFunction(() => !document.querySelector('#projectHomeApplyBtn')?.disabled);
   assert.match(await page.locator('#projectFailure').textContent(), /Original startup failure/);
-  await page.unroute('**/api/state*');
   await page.locator('[data-project-retry]').click();
   await page.waitForFunction(() => document.body.dataset.projectMode === 'analyzing' && Boolean(document.querySelector('.sessionItem.active')));
   assert.equal(await page.locator('#projectFailure').isHidden(), true);

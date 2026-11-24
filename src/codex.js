@@ -14,6 +14,7 @@ const { backgroundTerminalLabel, compactBackgroundTerminalSections, terminalOutc
 const { terminalSourceEvidence, parseTerminalReceipt, parseNativeCommandOutput, nativeExecCommandArguments, buildTerminalContinuations, backgroundTerminalFactsForEvent } = require('./codex-terminal-continuations');
 
 const fs = require('node:fs');
+const { isUtf8 } = require('node:buffer');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { createProjectPathContext, projectPathFor, projectSelection, projectContextIndexFields, projectPathMatches } = require('./project-path-context');
@@ -1707,6 +1708,10 @@ function codexLeadingSessionProjection(facts) {
   };
 }
 
+function isCodexProjectMetadata(recordType, payload) {
+  return recordType === 'session_meta' || (recordType === 'event_msg' && payload?.type === 'session_configured');
+}
+
 function applyCodexSessionRelationshipMetadata(
   session,
   recordType,
@@ -1716,6 +1721,12 @@ function applyCodexSessionRelationshipMetadata(
   projectPathContext,
   physicalArtifact,
 ) {
+  if (!isCodexProjectMetadata(recordType, payload)) return primarySessionMetaSeen;
+
+  if (typeof payload.cwd === 'string' && payload.cwd) {
+    session.cwdSet.add(payload.cwd);
+    if (projectPathMatches(payload.cwd, repoRoot, physicalArtifact, projectPathContext)) session.matchesRepo = true;
+  }
   let primarySeen = primarySessionMetaSeen;
   if (recordType === 'session_meta') {
     if (!primarySeen) {
@@ -1732,25 +1743,14 @@ function applyCodexSessionRelationshipMetadata(
       session.agentNickname = agentNicknameFromMeta(payload);
       session.primarySessionMetaKind = derivedSessionKindFromMeta(payload);
     }
-    if (typeof payload.cwd === 'string' && payload.cwd) {
-      session.cwdSet.add(payload.cwd);
-      if (projectPathMatches(payload.cwd, repoRoot, physicalArtifact, projectPathContext)) session.matchesRepo = true;
+  } else if (!primarySeen) {
+    if (!session.forkedFromSessionId) {
+      session.forkedFromSessionId = forkedFromSessionIdFromMeta(payload);
     }
-  }
-  if (recordType === 'event_msg' && payload.type === 'session_configured') {
-    if (typeof payload.cwd === 'string' && payload.cwd) {
-      session.cwdSet.add(payload.cwd);
-      if (projectPathMatches(payload.cwd, repoRoot, physicalArtifact, projectPathContext)) session.matchesRepo = true;
-    }
-    if (!primarySeen) {
-      if (!session.forkedFromSessionId) {
-        session.forkedFromSessionId = forkedFromSessionIdFromMeta(payload);
-      }
-      if (!session.parentSessionId) session.parentSessionId = parentSessionIdFromMeta(payload);
-      if (!session.agentNickname) session.agentNickname = agentNicknameFromMeta(payload);
-      if (!session.primarySessionMetaKind) {
-        session.primarySessionMetaKind = derivedSessionKindFromMeta(payload);
-      }
+    if (!session.parentSessionId) session.parentSessionId = parentSessionIdFromMeta(payload);
+    if (!session.agentNickname) session.agentNickname = agentNicknameFromMeta(payload);
+    if (!session.primarySessionMetaKind) {
+      session.primarySessionMetaKind = derivedSessionKindFromMeta(payload);
     }
   }
   return primarySeen;
@@ -1823,6 +1823,10 @@ function expandEnvironmentVariables(value) {
     .replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (match, name) => process.env[name] ?? match);
 }
 
+const TOML_BASIC_KEY_ESCAPES = Object.freeze({
+  b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', e: '\x1b', '"': '"', '\\': '\\',
+});
+
 function readTomlQuotedKey(text, start) {
   const quote = text[start];
   if (quote !== '\'' && quote !== '"') return null;
@@ -1831,25 +1835,28 @@ function readTomlQuotedKey(text, start) {
   while (i < text.length) {
     const ch = text[i];
     if (ch === quote) return { value, next: i + 1, quoted: true };
-    if (quote === '"' && ch === '\\' && i + 1 < text.length) {
+    if (/[\u0000-\u0008\u000a-\u001f\u007f]/.test(ch)) break;
+    if (quote === '"' && ch === '\\') {
       const next = text[i + 1];
-      const escapes = {
-        b: '\b',
-        t: '\t',
-        n: '\n',
-        f: '\f',
-        r: '\r',
-        '"': '"',
-        '\\': '\\',
-      };
-      value += Object.hasOwn(escapes, next) ? escapes[next] : `\\${next}`;
-      i += 2;
+      if (Object.hasOwn(TOML_BASIC_KEY_ESCAPES, next)) {
+        value += TOML_BASIC_KEY_ESCAPES[next];
+        i += 2;
+        continue;
+      }
+      const width = { x: 2, u: 4, U: 8 }[next];
+      if (!width) break;
+      const hex = text.slice(i + 2, i + 2 + width);
+      if (hex.length !== width || !/^[a-f0-9]+$/i.test(hex)) break;
+      const scalar = Number.parseInt(hex, 16);
+      if (scalar > 0x10ffff || (scalar >= 0xd800 && scalar <= 0xdfff)) break;
+      value += String.fromCodePoint(scalar);
+      i += 2 + width;
       continue;
     }
     value += ch;
     i += 1;
   }
-  return null;
+  return { value, malformed: true };
 }
 
 function readTomlBareKey(text, start) {
@@ -1859,79 +1866,122 @@ function readTomlBareKey(text, start) {
   return { value: text.slice(start, i), next: i, quoted: false };
 }
 
-function parseTomlDottedKey(text) {
-  const parts = [];
-  let i = 0;
-  while (i < text.length) {
-    while (i < text.length && /\s/.test(text[i])) i += 1;
-    const part = text[i] === '\'' || text[i] === '"'
-      ? readTomlQuotedKey(text, i)
-      : readTomlBareKey(text, i);
-    if (!part) return null;
-    parts.push(part);
-    i = part.next;
-    while (i < text.length && /\s/.test(text[i])) i += 1;
-    if (i >= text.length) break;
-    if (text[i] !== '.') return null;
-    i += 1;
-  }
-  return parts;
+function readTomlKey(text, start) {
+  return text[start] === '\'' || text[start] === '"' ? readTomlQuotedKey(text, start) : readTomlBareKey(text, start);
 }
 
 function parseProjectConfigHeader(line) {
-  const text = String(line || '').trim();
-  if (!text.startsWith('[')) return '';
-  let quote = '';
-  let escaped = false;
-  let close = -1;
-  for (let i = 1; i < text.length; i += 1) {
-    const ch = text[i];
+  // Use relaxed whitespace to recognize a broken projects header, then enforce TOML whitespace.
+  let malformedWhitespace = false;
+  function trimSpace(text) {
+    const trimmed = text.trimStart();
+    malformedWhitespace ||= /[^ \t]/.test(text.slice(0, text.length - trimmed.length));
+    return trimmed;
+  }
+  const text = trimSpace(line);
+  let rest = trimSpace(text.slice(1));
+  const arrayTable = rest.startsWith('[');
+  if (arrayTable) rest = trimSpace(rest.slice(1));
+  const first = readTomlKey(rest, 0);
+  // null is a malformed projects header. Unrelated headers are outside this reader's scope.
+  if (!first) return undefined;
+  if (first.malformed) return /^projects(?=[\s.\]\\]|$)/.test(first.value) ? null : undefined;
+  if (first.value !== 'projects') return undefined;
+  if (arrayTable && !text.startsWith('[[')) return null;
+  const parts = [];
+  rest = trimSpace(rest.slice(first.next));
+  while (rest.startsWith('.')) {
+    rest = trimSpace(rest.slice(1));
+    const key = readTomlKey(rest, 0);
+    if (!key || key.malformed) return null;
+    parts.push(key);
+    rest = trimSpace(rest.slice(key.next));
+  }
+  const close = arrayTable ? ']]' : ']';
+  if (!rest.startsWith(close)) return null;
+  const suffix = trimSpace(rest.slice(close.length));
+  if (malformedWhitespace || (suffix && !suffix.startsWith('#'))) return null;
+  // The Codex projects map and its direct project values are tables.
+  if (arrayTable) return parts.length < 2 ? null : undefined;
+  return {
+    tableKey: JSON.stringify(parts.map(({ value }) => value)),
+    cwd: parts.length === 1 && parts[0].quoted ? parts[0].value : '',
+  };
+}
+
+function advanceTomlValueContext(line, context) {
+  let quote = context.multilineQuote;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
     if (quote) {
-      if (quote === '"' && ch === '\\' && !escaped) {
-        escaped = true;
-        continue;
+      if (quote[0] === '"' && ch === '\\') {
+        i += 1;
+      } else if (ch === quote[0] && line.startsWith(quote, i)) {
+        if (context.multilineQuote) {
+          i += 2;
+          while (line[i + 1] === ch) i += 1;
+          context.multilineQuote = '';
+        }
+        quote = '';
       }
-      if (ch === quote && !escaped) quote = '';
-      escaped = false;
-      continue;
-    }
-    if (ch === '\'' || ch === '"') {
-      quote = ch;
-    } else if (ch === ']') {
-      close = i;
+    } else if (ch === '#') {
       break;
+    } else if (ch === '"' || ch === '\'') {
+      quote = ch;
+      if (line[i + 1] === ch && line[i + 2] === ch) {
+        quote = ch.repeat(3);
+        context.multilineQuote = quote;
+        i += 2;
+      }
+    } else if (ch === '[' || ch === '{') {
+      context.depth += 1;
+    } else if ((ch === ']' || ch === '}') && context.depth) {
+      context.depth -= 1;
     }
   }
-  if (close < 0) return '';
-  const suffix = text.slice(close + 1).trim();
-  if (suffix && !suffix.startsWith('#')) return '';
-  const parts = parseTomlDottedKey(text.slice(1, close));
-  if (!parts || parts.length !== 2) return '';
-  if (parts[0].value !== 'projects' || !parts[1].quoted) return '';
-  return parts[1].value;
 }
 
 async function discoverConfiguredProjects({ codexHome, signal, ...options }) {
   throwIfAborted(signal);
   const context = createProjectPathContext({ ...options, sourceKind: CODEX_SOURCE_KIND, sourceHome: codexHome });
   const configPath = path.join(path.resolve(codexHome), 'config.toml');
-  let text = '';
+  let bytes;
   try {
-    text = await fsp.readFile(configPath, { encoding: 'utf8', signal });
+    bytes = await fsp.readFile(configPath, { signal });
   } catch (error) {
     throwIfAborted(signal);
     if (error.code !== 'ENOENT') {
-      console.warn(`Unable to read Codex config for project summary: ${error.message}`);
+      options.onDiagnostic?.({ code: 'CODEX_PROJECT_CONFIG_UNREADABLE', path: configPath, message: error.message });
     }
     return [];
   }
   throwIfAborted(signal);
+  if (!isUtf8(bytes)) {
+    options.onDiagnostic?.({ code: 'CODEX_PROJECT_CONFIG_UNREADABLE', path: configPath,
+      message: 'The Codex project configuration contains invalid UTF-8.' });
+    return [];
+  }
 
   const projects = new Map();
-  for (const line of text.split(/\r?\n/)) {
-    const parsed = parseProjectConfigHeader(line);
-    if (!parsed) continue;
-    const projectPath = projectPathFor(expandEnvironmentVariables(parsed), context, configPath, options.onDiagnostic);
+  const projectTables = new Set();
+  const valueContext = { multilineQuote: '', depth: 0 };
+  let lineNumber = 0;
+  for (const line of bytes.toString('utf8').replace(/^\uFEFF/, '').split(/\r?\n/)) {
+    lineNumber += 1;
+    if (valueContext.multilineQuote || valueContext.depth || !line.trimStart().startsWith('[')) {
+      advanceTomlValueContext(line, valueContext);
+      continue;
+    }
+    const header = parseProjectConfigHeader(line);
+    if (header === null || (header && projectTables.has(header.tableKey))) {
+      options.onDiagnostic?.({ code: 'CODEX_PROJECT_CONFIG_MALFORMED', path: configPath,
+        message: `Malformed Codex projects header on line ${lineNumber}.` });
+      continue;
+    }
+    if (!header) continue;
+    projectTables.add(header.tableKey);
+    if (!header.cwd) continue;
+    const projectPath = projectPathFor(expandEnvironmentVariables(header.cwd), context, configPath, options.onDiagnostic);
     if (projectPath.status !== 'valid') continue;
     const repoRoot = projectPath.path;
     const key = projectPath.key;
@@ -1947,6 +1997,10 @@ async function discoverConfiguredProjects({ codexHome, signal, ...options }) {
       legacyAssumption: projectPath.legacyAssumption, projectPathEvidence: [projectPath.evidence],
     });
   }
+  if (valueContext.multilineQuote || valueContext.depth) {
+    options.onDiagnostic?.({ code: 'CODEX_PROJECT_CONFIG_MALFORMED', path: configPath,
+      message: 'The Codex project configuration ends inside a multiline value.' });
+  }
 
   for (const project of projects.values()) {
     throwIfAborted(signal);
@@ -1961,27 +2015,54 @@ async function discoverConfiguredProjects({ codexHome, signal, ...options }) {
 }
 
 async function inspectSessionFile(filePath, options = {}) {
+  throwIfAborted(options.signal);
+  const descriptor = codexRolloutDescriptor(filePath);
+  if (!options.verifyCwdCoverage || descriptor.compression !== 'none') {
+    return inspectSessionMetadata(filePath, descriptor, options);
+  }
+  const fileHandle = await fsp.open(descriptor.physicalPath, 'r');
+  try {
+    return await inspectSessionMetadata(filePath, descriptor, options, fileHandle);
+  } finally {
+    await fileHandle.close();
+  }
+}
+
+async function inspectSessionMetadata(filePath, descriptor, options, fileHandle) {
   const signal = options.signal;
   const repoRoot = options.repoRoot ? projectSelection(options.repoRoot).path : '';
   throwIfAborted(signal);
-  const descriptor = codexRolloutDescriptor(filePath);
-  const stat = await codexRolloutStorage.acquireRolloutStat(descriptor);
-  const stream = codexRolloutStorage.createLogicalReadStream(descriptor, { signal });
+  const stat = await codexRolloutStorage.acquireRolloutStat(descriptor, fileHandle);
+  const expectedSourceStat = options.verifyCwdCoverage && descriptor.compression === 'zstd' ? stat : undefined;
+  const stream = codexRolloutStorage.createLogicalReadStream(descriptor, { signal, fileHandle, expectedSourceStat });
   const cwdSet = new Set();
   const leadingSessionFacts = createCodexLeadingSessionFacts();
   let historyBase = null;
   let logicalBytes = 0;
   let matchedRepo = false;
+  let cwdInspectionIncomplete = false;
+  let artifactChanged = false;
+  const onInvalidUtf8 = options.verifyCwdCoverage ? () => { cwdInspectionIncomplete = true; } : undefined;
   if (descriptor.compression === 'zstd') {
     stream.on('data', (chunk) => {
       logicalBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk), 'utf8');
     });
   }
   await codexRolloutStorage.visitLogicalLines(stream, (line) => {
-    if (!line.trim()) return;
-    let record = null;
-    if (!leadingSessionFacts.firstRecordSeen) {
-      record = safeJsonParse(line);
+    const text = line.trim();
+    if (!text) return;
+    const leading = !leadingSessionFacts.firstRecordSeen;
+    // Any escaped spelling of the cwd key contains a Unicode escape.
+    const couldContainCwd = line.includes('"cwd"') || line.includes('\\u');
+    const checkCoverage = options.onDiagnostic && !cwdInspectionIncomplete
+      && (options.verifyCwdCoverage || !text.endsWith('}') || /"(?:session_meta|session_configured)"/.test(text));
+    if (!leading && !couldContainCwd && !checkCoverage) return;
+    const record = safeJsonParse(line);
+    if (!record) {
+      cwdInspectionIncomplete = true;
+      return;
+    }
+    if (leading) {
       if (record?.type === 'session_meta' && record.payload?.history_base != null) {
         const parsedBase = rolloutHistory.parseHistoryBase(record.payload.history_base);
         historyBase = parsedBase.error ? {} : record.payload.history_base;
@@ -1990,29 +2071,48 @@ async function inspectSessionFile(filePath, options = {}) {
       }
       observeCodexLeadingSessionRecord(leadingSessionFacts, record);
     }
-    if (!line.includes('"cwd"')) return;
-    record ||= safeJsonParse(line);
-    if (!record) return;
-    const payloadType = record.type === 'event_msg' ? record.payload?.type : '';
-    const cwd = record.type === 'session_meta' || payloadType === 'session_configured' ? record.payload?.cwd : '';
-    if (typeof cwd === 'string' && cwd) {
-      cwdSet.add(cwd);
-      if (repoRoot && projectPathMatches(cwd, repoRoot, filePath, options.projectPathContext)) {
-        matchedRepo = true;
-        if (descriptor.compression === 'none') return false;
-      }
+    // The legacy leading-record check includes arrays. Chooser evidence still requires an object record.
+    if (typeof record !== 'object' || Array.isArray(record)) {
+      cwdInspectionIncomplete = true;
+      return;
     }
-  }, { signal });
+    const { payload } = record;
+    if (!isCodexProjectMetadata(record.type, payload)) return;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      cwdInspectionIncomplete = true;
+      return;
+    }
+    if (!Object.hasOwn(payload, 'cwd')) return;
+    const { cwd } = payload;
+    if (typeof cwd !== 'string' || !cwd) {
+      cwdInspectionIncomplete = true;
+      return;
+    }
+    cwdSet.add(cwd);
+    if (repoRoot && projectPathMatches(cwd, repoRoot, filePath, options.projectPathContext)) {
+      matchedRepo = true;
+      if (descriptor.compression === 'none') return false;
+    }
+  }, { signal, onInvalidUtf8 });
 
-  if (descriptor.compression === 'zstd') {
-    const verified = await codexRolloutStorage.acquireRolloutStat(descriptor);
-    if (!codexRolloutIdentityMatches(stat.fileIdentity, verified.fileIdentity)
+  if (descriptor.compression === 'zstd' || options.verifyCwdCoverage) {
+    const pathnameStat = await codexRolloutStorage.acquireRolloutStat(descriptor);
+    const verifiedStats = fileHandle ? [pathnameStat, await codexRolloutStorage.acquireRolloutStat(descriptor, fileHandle)]
+      : [pathnameStat];
+    artifactChanged = verifiedStats.some((verified) => !codexRolloutIdentityMatches(stat.fileIdentity, verified.fileIdentity)
         || stat.sizeBigInt !== verified.sizeBigInt
-        || stat.mtimeMs !== verified.mtimeMs) {
-      throw sourceSnapshotChangedError();
+        || stat.mtimeNs !== verified.mtimeNs);
+    if (artifactChanged) {
+      if (descriptor.compression === 'zstd' && !options.verifyCwdCoverage) throw sourceSnapshotChangedError();
+      cwdSet.clear();
     }
   }
 
+  if (artifactChanged || cwdInspectionIncomplete) {
+    options.onDiagnostic?.({ code: 'CODEX_ROLLOUT_CWD_UNREADABLE', path: filePath,
+      message: artifactChanged ? 'The Codex rollout changed while checking project working directories.'
+        : 'A Codex record could not be decoded or contained invalid project working directory metadata.' });
+  }
   return {
     historyBase,
     bytes: descriptor.compression === 'none' ? stat.physicalBytes : logicalBytes,
@@ -2052,18 +2152,18 @@ function materializedForkDigestFilePaths(candidateFiles, inspectionsByFile) {
   return digestFilePaths;
 }
 
-async function discoverProjects({ codexHome, signal, onDiagnostic, ...options } = {}) {
+async function discoverProjects({ codexHome, signal, onDiagnostic, verifyCwdCoverage = false, ...options } = {}) {
   const context = createProjectPathContext({ ...options, sourceKind: CODEX_SOURCE_KIND, sourceHome: codexHome });
   const resolvedCodex = path.resolve(codexHome);
   const sessionsRoot = path.join(resolvedCodex, 'sessions');
-  const files = await collectJsonlFiles(sessionsRoot, { signal, onDiagnostic });
+  const files = await collectJsonlFiles(sessionsRoot, { signal, onDiagnostic, verifyCwdCoverage });
   const projects = new Map();
 
   for (const filePath of files) {
     throwIfAborted(signal);
     let inspected;
     try {
-      inspected = await inspectSessionFile(filePath, { signal });
+      inspected = await inspectSessionFile(filePath, { signal, onDiagnostic, verifyCwdCoverage });
     } catch (error) {
       if (error?.name === 'AbortError') throw error;
       if (!codexRolloutStorage.isStorageFailure(error)) throw error;

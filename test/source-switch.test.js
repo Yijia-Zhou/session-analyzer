@@ -14,6 +14,7 @@ const {
 } = require('../src/source-adapters');
 const { strictClaudeIndexFromComplete } = require('./strict-claude-fixture');
 const { defaultOpenCodeHome } = require('../src/opencode-storage');
+const { interpretProjectPath } = require('../src/shared/project-path');
 
 const codexFixtureHome = path.join(__dirname, 'fixtures', 'codex-home');
 const codexFixtureRepo = 'G:\\vibe\\term-agent';
@@ -758,6 +759,36 @@ test('summary project discovery is rejected when the source changes mid-flight',
   assert.equal(state.projectCache, null);
 });
 
+test('an inactive source edit leaves an active discovery in flight', async () => {
+  let enter;
+  let release;
+  const started = new Promise((resolve) => { enter = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  const state = {
+    sourceRevision: 0, activeSourceRevision: 0, sourceKind: 'codex', projectCache: null,
+    sourceConfigs: { codex: { home: path.resolve('/codex-home') } },
+    adapter: {
+      discoverConfiguredProjects: async () => [],
+      async discoverProjects({ signal }) {
+        enter();
+        await gate;
+        assert.equal(signal.aborted, false);
+        return [{ repoRoot: '/active-project', source: 'transcripts', sessionCount: 1 }];
+      },
+    },
+  };
+  const full = discoverProjectsForSource(state, 'full');
+  await started;
+  const inactiveHome = path.resolve('/new-claude-home');
+  const mutation = resolveSourceMutation(state, { source: 'codex', claudeHome: inactiveHome });
+  assert.deepEqual(mutation.errors, []);
+  release();
+  const result = await full;
+  assert.equal(result.stale, false);
+  assert.equal(result.payload.claudeHome, inactiveHome);
+  assert.equal(result.payload.projects[0].repoRoot, '/active-project');
+});
+
 test('full project discovery does not write the cache when the source changes mid-scan', async () => {
   let releaseConfigured;
   let releaseScanned;
@@ -795,6 +826,219 @@ test('full project discovery does not write the cache when the source changes mi
   const result = await pending;
   assert.equal(result.stale, true);
   assert.equal(state.projectCache, null);
+});
+
+for (const stage of ['configuration', 'transcripts']) {
+  test(`a delayed ${stage} read cannot override a newer summary that confirmed configuration absence`, async () => {
+    let releaseOlder;
+    let enter;
+    const gate = new Promise((resolve) => { releaseOlder = resolve; });
+    const entered = new Promise((resolve) => { enter = resolve; });
+    const waitForNewerSummary = async () => { enter(); await gate; };
+    const state = {
+      sourceRevision: 0, sourceKind: 'codex', projectCache: null,
+      sourceConfigs: { codex: { home: path.resolve('/codex-home') } },
+      adapter: {
+        async discoverConfiguredProjects() {
+          if (stage === 'configuration') await waitForNewerSummary();
+          return [{ source: 'config', repoRoot: '/removed/project', statsPending: true }];
+        },
+        async discoverProjects() {
+          if (stage === 'transcripts') await waitForNewerSummary();
+          return [];
+        },
+      },
+    };
+    const olderFull = discoverProjectsForSource(state, 'full');
+    await entered;
+    state.adapter.discoverConfiguredProjects = async () => [];
+    assert.deepEqual((await discoverProjectsForSource(state, 'summary')).payload.projects, []);
+    releaseOlder();
+    assert.deepEqual((await olderFull).payload.projects, []);
+    state.adapter.discoverConfiguredProjects = async ({ onDiagnostic }) => {
+      onDiagnostic({ code: 'CODEX_PROJECT_CONFIG_UNREADABLE' });
+      return [];
+    };
+    const fallback = (await discoverProjectsForSource(state, 'summary')).payload;
+    assert.deepEqual(fallback.projects, []);
+    assert.equal(fallback.sourceDiagnostics.counts.CODEX_PROJECT_CONFIG_UNREADABLE, 1);
+  });
+}
+
+test('a newer configuration failure makes an older full scan return provisional choices', async (t) => {
+  const temp = await fsp.mkdtemp(path.join(os.tmpdir(), 'chooser-config-outcome-'));
+  t.after(() => fsp.rm(temp, { recursive: true, force: true }));
+  const home = await fsp.realpath(temp);
+  const ordinary = path.join(home, 'repo');
+  const configured = process.platform === 'win32' ? path.toNamespacedPath(ordinary) : path.join(home, 'configured');
+  const driveBacked = process.platform === 'win32' && /^[A-Za-z]:\\/.test(ordinary);
+  const configFile = path.join(home, 'config.toml');
+  const config = `[projects.'${configured}']\n`;
+  await fsp.mkdir(ordinary);
+  await fsp.mkdir(path.join(home, 'sessions'));
+  await fsp.writeFile(configFile, config);
+  await fsp.writeFile(path.join(home, 'sessions', 'rollout-synthetic.jsonl'), JSON.stringify({
+    type: 'session_meta', payload: { id: 'fixture', cwd: ordinary },
+  }) + '\n');
+  const adapter = getSourceAdapter('codex');
+  let releaseScan;
+  let enter;
+  const gate = new Promise((resolve) => { releaseScan = resolve; });
+  const entered = new Promise((resolve) => { enter = resolve; });
+  const state = {
+    sourceRevision: 0, sourceKind: 'codex', projectCache: null, sourceConfigs: { codex: { home } },
+    adapter: { ...adapter, async discoverProjects(context) {
+      assert.equal(context.verifyCwdCoverage, driveBacked);
+      enter();
+      await gate;
+      return adapter.discoverProjects(context);
+    } },
+  };
+  const older = discoverProjectsForSource(state, 'full');
+  await entered;
+  await fsp.unlink(configFile);
+  await fsp.mkdir(configFile);
+  const newer = (await discoverProjectsForSource(state, 'summary')).payload;
+  assert.equal(newer.projects.find((project) => project.repoRoot === configured).configurationUnverified, true);
+  releaseScan();
+  const finished = (await older).payload;
+  const choice = finished.projects.find((project) => project.repoRoot === configured);
+  assert.equal(choice.projectPath.key, newer.projects.find((project) => project.repoRoot === configured).projectPath.key);
+  assert.equal(choice.configurationUnverified, true);
+  assert.equal(choice.statsPending, true);
+  assert.equal(finished.hiddenProjects, undefined);
+  assert.equal(finished.sourceDiagnostics.counts.CODEX_PROJECT_CONFIG_UNREADABLE, 1);
+  assert.equal(finished.projects.find((project) => project.repoRoot === ordinary).sessionCount, 1);
+  await fsp.rmdir(configFile);
+  await fsp.writeFile(configFile, config);
+  state.adapter = adapter;
+  const recovered = (await discoverProjectsForSource(state, 'full')).payload;
+  assert.equal(recovered.sourceDiagnostics.counts.CODEX_PROJECT_CONFIG_UNREADABLE, undefined);
+  assert.equal(recovered.hiddenProjects?.some((project) => project.repoRoot === configured) ?? false, driveBacked);
+});
+
+test('late verified configuration retires old choices carried into a newer read failure', async () => {
+  const choice = (repoRoot) => ({ repoRoot, source: 'config', statsPending: true });
+  const state = {
+    sourceRevision: 0, sourceKind: 'codex', projectCache: null,
+    sourceConfigs: { codex: { home: path.resolve('/codex-home') } },
+    adapter: { discoverConfiguredProjects: async () => [choice('/old')] },
+  };
+  const summary = async () => (await discoverProjectsForSource(state, 'summary')).payload;
+  await summary();
+  let release;
+  const gatedConfig = new Promise((resolve) => { release = resolve; });
+  state.adapter.discoverConfiguredProjects = () => gatedConfig;
+  const pending = summary();
+  state.adapter.discoverConfiguredProjects = async ({ onDiagnostic }) => {
+    onDiagnostic({ code: 'CODEX_PROJECT_CONFIG_UNREADABLE' });
+    return [];
+  };
+  assert.deepEqual((await summary()).projects.map(({ repoRoot }) => repoRoot), ['/old']);
+  release([choice('/new')]);
+  for (const result of [await pending, await summary()]) {
+    assert.deepEqual(result.projects.map(({ repoRoot }) => repoRoot), ['/new']);
+    assert.equal(result.projects[0].configurationUnverified, true);
+  }
+});
+
+test('a late partial read supplies provisional choices after a newer read failure', async () => {
+  const choice = (repoRoot) => ({ repoRoot, source: 'config', statsPending: true });
+  const state = {
+    sourceRevision: 0, sourceKind: 'codex', projectCache: null,
+    sourceConfigs: { codex: { home: path.resolve('/codex-home') } },
+    adapter: { discoverConfiguredProjects: async () => [choice('/kept')] },
+  };
+  const summary = async () => (await discoverProjectsForSource(state, 'summary')).payload;
+  await summary();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  state.adapter.discoverConfiguredProjects = async ({ onDiagnostic }) => {
+    await gate;
+    onDiagnostic({ code: 'CODEX_PROJECT_CONFIG_MALFORMED' });
+    return [choice('/new-sibling')];
+  };
+  const pending = summary();
+  state.adapter.discoverConfiguredProjects = async ({ onDiagnostic }) => {
+    onDiagnostic({ code: 'CODEX_PROJECT_CONFIG_UNREADABLE' });
+    return [];
+  };
+  assert.deepEqual((await summary()).projects.map(({ repoRoot }) => repoRoot), ['/kept']);
+  release();
+  for (const result of [await pending, await summary()]) {
+    assert.deepEqual(result.projects.map(({ repoRoot }) => repoRoot), ['/kept', '/new-sibling']);
+    assert.ok(result.projects.every((project) => project.configurationUnverified));
+    assert.equal(result.sourceDiagnostics.counts.CODEX_PROJECT_CONFIG_UNREADABLE, 1);
+  }
+
+  state.adapter.discoverConfiguredProjects = async () => [];
+  assert.deepEqual((await summary()).projects, []);
+});
+
+test('only the latest settled full scan supplies candidates and controls cached project evidence', async () => {
+  const configured = { source: 'config', repoRoot: '/configured/project', statsPending: true,
+    projectPath: interpretProjectPath('/configured/project') };
+  const transcript = { source: 'transcripts', repoRoot: '/recorded/project', sessionCount: 1 };
+  const makeCache = () => ({
+    scanCoverageComplete: true,
+    projects: [{ ...configured, statsPending: false, sessionCount: 0 }, transcript],
+  });
+  const state = {
+    sourceRevision: 0, sourceKind: 'codex', projectCache: makeCache(),
+    sourceConfigs: { codex: { home: path.resolve('/codex-home') } },
+    adapter: { discoverConfiguredProjects: async () => [configured] },
+  };
+  const fail = async () => { throw new Error('scan failed'); };
+  async function discoverWith(scan) {
+    state.adapter.discoverProjects = scan;
+    return discoverProjectsForSource(state, 'full');
+  }
+  await assert.rejects(discoverWith(fail), /scan failed/);
+  assert.equal(state.projectCache.scanCoverageComplete, false);
+  const summary = (await discoverProjectsForSource(state, 'summary')).payload;
+  assert.equal(summary.projects.find((project) => project.source === 'config').statsPending, true);
+  assert.equal(summary.projects.find((project) => project.source === 'transcripts').sessionCount, 1);
+
+  async function startBlockedScan(scan) {
+    let release;
+    let entered;
+    const started = new Promise((resolve) => { entered = resolve; });
+    const gate = new Promise((resolve) => { release = resolve; });
+    const pending = discoverWith(async () => {
+      entered();
+      await gate;
+      return scan();
+    });
+    await started;
+    return { pending, release };
+  }
+
+  state.projectCache = makeCache();
+  const olderFailure = await startBlockedScan(fail);
+  const winning = await discoverWith(async () => [transcript]);
+  const newerSuccess = state.projectCache;
+  olderFailure.release();
+  assert.deepEqual((await olderFailure.pending).payload, winning.payload);
+  assert.equal(state.projectCache, newerSuccess);
+
+  const olderResult = await startBlockedScan(async () => [{ repoRoot: '/retired', sessionCount: 1 }]);
+  const latest = await discoverWith(async ({ onDiagnostic }) => {
+    onDiagnostic({ code: 'LATEST_SCAN_FIXTURE' });
+    return [transcript];
+  });
+  olderResult.release();
+  const replay = (await olderResult.pending).payload;
+  assert.deepEqual(replay.projects, latest.payload.projects);
+  assert.deepEqual(replay.sourceDiagnostics, latest.payload.sourceDiagnostics);
+
+  state.projectCache = makeCache();
+  const olderSuccess = await startBlockedScan(async () => [transcript]);
+  await assert.rejects(discoverWith(fail), /scan failed/);
+  const revoked = state.projectCache;
+  olderSuccess.release();
+  await assert.rejects(olderSuccess.pending, /scan failed/);
+  assert.equal(state.projectCache, revoked);
+  assert.equal(revoked.scanCoverageComplete, false);
 });
 
 for (const stage of ['configured', 'scanned']) {
