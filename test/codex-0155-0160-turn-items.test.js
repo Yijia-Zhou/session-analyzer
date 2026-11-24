@@ -100,6 +100,107 @@ function rowsFor(scenario, mode) {
   return [scenario.call, typed(scenario.item), ...(scenario.partial ? [] : [scenario.output])];
 }
 
+test('a scoped MCP terminal joins only the exact registration namespace and tool', async (t) => {
+  const { createHash } = require('node:crypto');
+  const scope = 'synthetic-registration-scope';
+  const hash = (value) => createHash('sha1').update(value).digest('hex').slice(0, 12);
+  const request = (id, namespace, name = 'echo') => response({ type: 'function_call', call_id: id, namespace, name, arguments: '{}' });
+  const completion = (id, environmentId, failed) => typed({ type: 'McpToolCall', id, environmentId,
+    server: 'notes', tool: 'echo', status: failed ? 'failed' : 'completed', result: { content: [], isError: failed } });
+  const output = (id) => response({ type: 'function_call_output', call_id: id, output: 'MCP result ' + id });
+  const localName = hash(scope) + '__notes';
+  const rows = [
+    request('first', 'mcp__' + localName), completion('first', scope, true),
+    response({ ...output('first').payload, name: 'echo', namespace: 'mcp__' + localName }),
+    request('second', hash('second-scope') + '__notes'), completion('second', 'second-scope', false), output('second'),
+    request('conflict', localName), completion('conflict', 'other', true), output('conflict'),
+    request('other-tool', localName, 'other'), completion('other-tool', scope, true), output('other-tool'),
+    request('missing', localName), output('missing'),
+  ];
+  const f = await fixture(t, rows);
+  const index = await codex.buildSourceBackedIndex(f.options);
+  const session = await materializeSessionForIndex(index, index.sessionsById.get(ID));
+  for (const [offset, status] of [[0, 'failed'], [3, 'success']]) {
+    const owner = session.logicalEvents.find((e) => e.layer === 'main' && e.rawRefs.some((r) => r.line === offset + 3));
+    assert.equal(owner.kind, 'mcp_call');
+    assert.equal(owner.status, status);
+    assert.deepEqual(owner.rawRefs.map((r) => r.line), [3, 4, 5].map((n) => n + offset));
+  }
+  for (const line of [10, 13]) {
+    assert.equal(session.logicalEvents.find((e) => e.rawRefs.some((r) => r.line === line)).layer, 'protocol');
+  }
+  assert.equal(session.counts.toolCalls, 5);
+  const failed = codex.query.getTimeline(index, session, { layer: 'main', kind: 'mcp_call', status: 'failed' });
+  assert.equal(failed.events.length, 1);
+  assert.equal(failed.events[0].status, 'failed');
+});
+
+test('verified scoped MCP short names stay distinct from native tools and pending cells', async (t) => {
+  const scope = 'synthetic-registration-scope';
+  const namespace = 'mcp__106cd32d0170__notes';
+  const rows = [
+    response({ type: 'custom_tool_call', name: 'exec', call_id: 'native', input: 'await yield_control()' }),
+    response({ type: 'custom_tool_call_output', call_id: 'native', output: [
+      { type: 'input_text', text: 'Script running with cell ID 14\nWall time 0.0 seconds\nOutput:\n' },
+    ] }),
+  ];
+  for (const tool of ['wait', 'js_repl', 'create_goal', 'shell_command', 'apply_patch']) {
+    rows.push(response({ type: 'function_call', namespace, name: tool, call_id: tool, arguments: '{"cell_id":"14"}' }),
+      typed({ type: 'McpToolCall', id: tool, tool, server: 'notes', environmentId: scope, status: 'failed' }),
+      response({ type: 'function_call_output', call_id: tool, output: 'failed' }));
+  }
+  const f = await fixture(t, rows);
+  const index = await codex.buildSourceBackedIndex(f.options);
+  const session = await materializeSessionForIndex(index, index.sessionsById.get(ID));
+  const main = session.logicalEvents.filter(e => e.layer === 'main');
+  const pending = main.find(e => e.kind === 'code_mode_operation');
+  assert.deepEqual(pending.rawRefs.map(r => r.line), [3, 4]);
+  assert.equal(main.length, 6);
+  for (const [i, e] of main.filter(e => e !== pending).entries()) {
+    assert.equal(e.kind, 'mcp_call');
+    assert.equal(e.status, 'failed');
+    assert.deepEqual(e.rawRefs.map(r => r.line), [5, 6, 7].map(n => n + i * 3));
+    const raw = session.rawEvents.find(r => r.rawId === e.rawRefs[0].rawId);
+    const record = await codex.readIndexedCodexRawRecord(index, session, raw);
+    assert.equal(JSON.parse(record.raw).payload.name, rows[2 + i * 3].payload.name);
+  }
+});
+
+test('scoped MCP registration rejects incompatible peer rows and names outside producer limits', async (t) => {
+  const make = (id, server, tool, extra) => [
+    response({ type: 'function_call', call_id: id, namespace: 'mcp__106cd32d0170__' + server, name: tool, arguments: '{}' }),
+    typed({ type: 'McpToolCall', id, server, tool, environmentId: 'synthetic-registration-scope', status: 'failed' }),
+    ...(extra ? [event({ ...extra, call_id: id })] : []),
+    response({ type: 'function_call_output', call_id: id, output: 'result' }),
+  ];
+  const cases = [
+    make('minus', 'my-notes', 'echo'), make('long', 'notes', 'x'.repeat(103)),
+    make('cmd', 'notes', 'echo', { type: 'exec_command_end', exit_code: 0 }),
+    make('collision', 'notes', 'echo', { type: 'mcp_tool_call_end',
+      invocation: { server: 'notes', tool: 'echo', environment_id: 'other' } }),
+  ];
+  for (const conflict of [{ name: 'different' }, { namespace: 'functions' }]) {
+    const rows = make('output-' + Object.keys(conflict)[0], 'notes', 'echo');
+    Object.assign(rows.at(-1).payload, conflict);
+    cases.push(rows);
+  }
+  for (const status of [undefined, 'inProgress', 'unrecognized']) {
+    const rows = make('status-' + status, 'notes', 'echo');
+    rows[1].payload.item.status = status;
+    cases.push(rows);
+  }
+  const f = await fixture(t, cases.flat());
+  const index = await codex.buildIndex(f.options);
+  const session = index.sessionsById.get(ID);
+  let typedLine = 4;
+  for (const rows of cases) {
+    const owner = session.logicalEvents.find(e => e.rawRefs.some(r => r.line === typedLine));
+    assert.equal(owner.layer, 'protocol');
+    assert.deepEqual(owner.rawRefs.map(r => r.line), [typedLine]);
+    typedLine += rows.length;
+  }
+});
+
 test('typed tool outcomes preserve semantic status, counts, files and search across Legacy/Paginated/mixed paths', async (t) => {
   for (const scenario of scenarios()) {
     await t.test(scenario.id, async (t) => {

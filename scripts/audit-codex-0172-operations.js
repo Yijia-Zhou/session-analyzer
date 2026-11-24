@@ -101,10 +101,13 @@ async function inspectHistory(options) {
       '--query', query, '--limit', '5', '--presentation', 'full']);
     const recovered = await lookup('main', 'synthetic-recovered-batch');
     const failed = await lookup('protocol', 'synthetic-registration-scope');
+    const failedMain = await lookup('main', 'synthetic-mcp-result');
+    assert.deepEqual(failedMain.items.map(({ kind, status }) => [kind, status]), [['mcp_call', 'failed']]);
     const raw = await lookup('raw', 'synthetic-registration-scope');
     const read = await invoke('read', ['--context', status.contextRef, '--ref', raw.items[0].ref, '--parts', 'raw']);
     return { recoveredMain: recovered.items.map(x => ({ kind: x.kind, status: x.status })),
       scopeProtocol: failed.items.length, scopeRaw: raw.items.length,
+      mcpMain: failedMain.items.map(({ kind, status }) => ({ kind, status })),
       readScope: JSON.stringify(read.items).includes('synthetic-registration-scope') };
   } finally {
     await server.close();
