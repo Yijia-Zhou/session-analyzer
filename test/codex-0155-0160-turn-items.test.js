@@ -408,6 +408,13 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
   const dynamicDecline = event({ type: 'dynamic_tool_call_declined', call_id, ...qualifiedDynamic, reason: 'decline_marker' });
   const mcpDecline = event({ type: 'mcp_tool_call_declined', call_id,
     invocation: { server: 'notes', tool, environment_id: environment, arguments: {} }, reason: 'decline_marker' });
+  const historicalMcp = (name = 'mcp__notes__echo', namespace, args = '{}') => response({ type: 'function_call', call_id,
+    name, ...(namespace == null ? {} : { namespace }), arguments: args });
+  const historicalItem = { type: 'McpToolCall', id: call_id, server: 'notes', tool: 'echo', arguments: {},
+    status: 'failed', error: { message: 'historical_typed_marker' } };
+  const historicalEnd = (failed, fields = {}) => event({ type: 'mcp_tool_call_end', call_id,
+    invocation: { server: 'notes', tool: 'echo', arguments: {} }, ...fields,
+    result: failed ? { Err: 'historical_legacy_marker' } : { Ok: { content: [{ type: 'text', text: 'historical_legacy_marker' }] } } });
   const foreignTypedEnd = typedEnd(false, 'foreign-environment', 'second_terminal_marker');
   const independentDynamic = response({ type: 'function_call', call_id, namespace: 'fixture', name: 'lookup', arguments: '{}' });
   const shell = response({ type: 'function_call', call_id, namespace: 'functions', name: 'shell_command',
@@ -1107,6 +1114,104 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
         typed({ ...patchItem, changes: { 'synthetic.txt': change } }), patchReceipt, receipt],
       main: [['other_tool_call', 'completed', [3, 7]], ['patch', matches ? 'failed' : 'success', matches ? [4, 5, 6] : [4, 6]]],
       detached: matches ? [] : [5], markers: [[5, 'typed_patch_marker']] })),
+    ...[
+      ['default namespace', historicalMcp(), true],
+      ['functions namespace', historicalMcp('mcp__notes__echo', 'functions'), false],
+      ['separate namespace', historicalMcp('echo', 'mcp__notes'), true],
+      ['native short namesake', historicalMcp('shell_command', 'mcp__notes'), true, 'shell_command'],
+    ].map(([label, request, withReceipt, tool = 'echo']) => ({
+      name: 'historical MCP typed failure with ' + label, rows: [scopedCustom, request,
+        typed({ ...historicalItem, tool }), ...(withReceipt ? [receipt] : []), customReceipt],
+      main: [['other_tool_call', 'completed', [3, withReceipt ? 7 : 6]], ['mcp_call', 'failed', withReceipt ? [4, 5, 6] : [4, 5]]],
+      detached: [], markers: [[5, 'historical_typed_marker']] })),
+    ...[
+      ['agreeing', typed(historicalItem), historicalEnd(true), true, true],
+      ['conflicting', typed(historicalItem), historicalEnd(false), false, true],
+      ['conflicting in reverse order without a receipt', historicalEnd(false), typed(historicalItem), false, false],
+      ['conflicting legacy explicit status', typed(historicalItem), event({ ...historicalEnd(false).payload,
+        result: null, status: 'completed', message: 'historical_legacy_marker' }), false, true],
+    ].map(([label, first, second, agrees, withReceipt]) => ({
+      name: 'historical MCP terminals ' + label, rows: [scopedCustom, historicalMcp(), first, second, ...(withReceipt ? [receipt] : []), customReceipt],
+      main: [['other_tool_call', 'completed', [3, withReceipt ? 8 : 7]], ['mcp_call', agrees ? 'failed' : withReceipt ? 'completed' : 'incomplete',
+        [4, ...(agrees ? [5, 6] : []), ...(withReceipt ? [7] : [])]]],
+      detached: agrees ? [] : [5, 6], markers: [first, second].map((r, i) => [5 + i, r.payload.item ? 'historical_typed_marker' : 'historical_legacy_marker']) })),
+    ...[
+      ['foreign environment', { environmentId: environment }, true],
+      ['foreign server', { server: 'other' }, true],
+      ['duplicate registration', {}, false],
+      ['incomplete registration', { tool: null }, false],
+    ].map(([label, registration, foreign]) => ({ name: 'historical MCP typed failure alongside ' + label,
+      rows: [scopedCustom, historicalMcp(), typed(historicalItem), typed({ ...historicalItem, ...registration,
+        error: { message: 'second_mcp_marker' } }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['mcp_call', foreign ? 'failed' : 'completed', foreign ? [4, 5, 7] : [4, 7]]],
+      detached: foreign ? [6] : [5, 6], markers: [[5, 'historical_typed_marker'], [6, 'second_mcp_marker']] })),
+    { name: 'historical MCP with ambiguous flat name separators keeps both candidate registrations in Protocol',
+      rows: [scopedCustom, historicalMcp('mcp__notes___echo'), typed({ ...historicalItem, server: 'notes_' }),
+        historicalEnd(false, { invocation: { server: 'notes', tool: '_echo' } }), customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['mcp_call', 'incomplete', [4]]], detached: [5, 6],
+      markers: [[5, 'historical_typed_marker'], [6, 'historical_legacy_marker']] },
+    { name: 'historical MCP conflicting terminals with a status on the ordinary receipt',
+      rows: [scopedCustom, historicalMcp(), historicalEnd(true), typed({ ...historicalItem, status: 'completed', error: null,
+        result: { content: [{ type: 'text', text: 'historical_typed_marker' }] } }), response({ ...receipt.payload, status: 'failed' }), customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['mcp_call', 'completed', [4, 7]]], detached: [5, 6],
+      markers: [[5, 'historical_legacy_marker'], [6, 'historical_typed_marker'], [7, 'current_function_marker']] },
+    { name: 'historical MCP with an exact registration but no typed thread ID',
+      rows: [scopedCustom, historicalMcp(), event({ type: 'item_completed', turn_id: TURN, item: historicalItem }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['mcp_call', 'completed', [4, 6]]], detached: [5],
+      markers: [[5, 'historical_typed_marker'], [6, 'current_function_marker']] },
+    ...[
+      ['flat without a terminal', historicalMcp(), true, 'mcp__notes__echo'],
+      ['ambiguous flat without a terminal', historicalMcp('mcp__notes___echo'), true, 'mcp__notes___echo'],
+      ['separate namespace without a receipt', historicalMcp('shell_command', 'mcp__notes'), false, 'mcp__notes__shell_command'],
+      ['separate namespace with a receipt', historicalMcp('shell_command', 'mcp__notes'), true, 'mcp__notes__shell_command'],
+    ].map(([label, request, withReceipt, toolName]) => ({ name: 'historical MCP ordinary return ' + label,
+      rows: [scopedCustom, request, ...(withReceipt ? [receipt] : []), customReceipt],
+      main: [['other_tool_call', 'completed', [3, withReceipt ? 6 : 5]], ['mcp_call', withReceipt ? 'completed' : 'incomplete', withReceipt ? [4, 5] : [4]]],
+      detached: [], functionName: toolName, markers: withReceipt ? [[5, 'current_function_marker']] : [] })),
+    { name: 'historical MCP with only a typed failure from another environment',
+      rows: [scopedCustom, historicalMcp(), typed({ ...historicalItem, environmentId: environment }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['mcp_call', 'completed', [4, 6]]], detached: [5],
+      markers: [[5, 'historical_typed_marker'], [6, 'current_function_marker']] },
+    { name: 'historical MCP spelling with an exact independent dynamic completion',
+      rows: [scopedCustom, historicalMcp('shell_command', 'mcp__notes'), typed({ type: 'DynamicToolCall', id: call_id,
+        namespace: 'mcp__notes', tool: 'shell_command', status: 'failed', success: false, error: 'dynamic_failure_marker' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['other_tool_call', 'failed', [4, 5, 6]]], detached: [],
+      functionName: 'mcp__notes__shell_command', markers: [[5, 'dynamic_failure_marker']] },
+    ...[true, false].flatMap(isTyped => [
+      ['object key order', '{"a":[1,2],"b":{"x":0}}', { b: { x: 0 }, a: [1, 2] }, true],
+      ['different nested value', '{"a":[1,2],"b":{"x":0}}', { b: { x: 1 }, a: [1, 2] }, false],
+      ['different scalar', '"argument"', 'elsewhere', false],
+      ['different array order', '[1,2]', [2, 1], false],
+    ].map(([label, requested, recorded, matches]) => ({
+      name: 'historical MCP ' + (isTyped ? 'typed' : 'legacy') + ' arguments with ' + label,
+      rows: [scopedCustom, historicalMcp(undefined, undefined, requested), isTyped ? typed({ ...historicalItem, arguments: recorded })
+        : historicalEnd(true, { invocation: { server: 'notes', tool: 'echo', arguments: recorded } }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['mcp_call', matches ? 'failed' : 'completed', matches ? [4, 5, 6] : [4, 6]]],
+      detached: matches ? [] : [5], markers: [[5, isTyped ? 'historical_typed_marker' : 'historical_legacy_marker']] }))),
+    ...[true, false].map(foreignTyped => ({
+      name: 'historical MCP arguments exclude the opposing ' + (foreignTyped ? 'typed' : 'legacy') + ' terminal',
+      rows: [scopedCustom, historicalMcp(), typed({ ...historicalItem, arguments: foreignTyped ? { other: true } : {} }),
+        historicalEnd(false, { invocation: { server: 'notes', tool: 'echo', arguments: foreignTyped ? {} : { other: true } } }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['mcp_call', foreignTyped ? 'success' : 'failed', [4, foreignTyped ? 6 : 5, 7]]],
+      detached: [foreignTyped ? 5 : 6], markers: [[5, 'historical_typed_marker'], [6, 'historical_legacy_marker']] })),
+    ...[
+      ['invalid token', '!', false, true],
+      ['trailing comma', '{"q":1,}', false, false],
+      ['BOM alone', '\uFEFF', false, true],
+      ['empty', '', true, true],
+      ['whitespace', ' \t\n\u0085', true, false],
+      ['JSON null', 'null', true, true],
+    ].map(([label, args, accepts, withReceipt]) => ({
+      name: 'historical MCP invocation parses ' + label,
+      rows: [scopedCustom, historicalMcp('echo', 'mcp__notes', args), typed({ ...historicalItem, arguments: null }),
+        historicalEnd(true, { invocation: { server: 'notes', tool: 'echo' } }), ...(withReceipt ? [receipt] : []), customReceipt],
+      main: [['other_tool_call', 'completed', [3, withReceipt ? 8 : 7]],
+        ['mcp_call', accepts ? 'failed' : withReceipt ? 'completed' : 'incomplete', [4, ...(accepts ? [5, 6] : []), ...(withReceipt ? [7] : [])]]],
+      detached: accepts ? [] : [5, 6], functionName: 'mcp__notes__echo', markers: [[5, 'historical_typed_marker'], [6, 'historical_legacy_marker']] })),
+    { name: 'historical MCP legacy invocation without recorded arguments keeps the typed failure',
+      rows: [scopedCustom, historicalMcp(), typed(historicalItem), historicalEnd(true, { invocation: { server: 'notes', tool: 'echo' } }), customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['mcp_call', 'failed', [4, 5, 6]]], detached: [],
+      markers: [[5, 'historical_typed_marker'], [6, 'historical_legacy_marker']] },
     { name: 'native MCP function keeps only its matching legacy invocation beside a scoped custom call',
       rows: [scopedCustom, response({ type: 'function_call', call_id, name: 'mcp__repo__lookup', arguments: '{}' }),
         event({ type: 'mcp_tool_call_end', call_id, invocation: { server: 'repo', tool: 'lookup', arguments: {} },
@@ -1188,6 +1293,11 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       const session = index === cold || index === warm ? await materializeSessionForIndex(index, indexed) : indexed;
       const main = session.logicalEvents.filter(e => e.layer === 'main').sort((a, b) => a.rawRefs[0].line - b.rawRefs[0].line);
       assert.deepEqual(main.map(e => [e.kind, e.status, e.rawRefs.map(r => r.line)]), scenario.main);
+      if (scenario.functionName) {
+        assert.equal(main[1].toolName, scenario.functionName);
+        const hits = codex.query.getTimeline(index, session, { layer: 'main', q: scenario.functionName });
+        assert.deepEqual(hits.events.filter(e => e.hasSearchHit).map(e => e.id), [main[1].id]);
+      }
       assert.equal(indexed.counts.failedCommands, scenario.main.filter(([kind, status]) => kind === 'command' && status === 'failed').length);
       if (scenario.commandExit !== undefined) assert.equal(main.find(e => e.kind === 'command').outputStats.exitCode, scenario.commandExit);
       assert.equal(indexed.counts.patches, scenario.main.filter(([kind]) => kind === 'patch').length);

@@ -26,6 +26,8 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
   const foreignBegin = 'foreign-dynamic-start';
   const oldTurnReceipt = 'old-turn-tool-receipt';
   const transport = 'dynamic-transport-only';
+  const priorTurn = 'prior-turn-transport-response';
+  const foreignCommand = 'foreign-begin-output';
   const records = [
     { type: 'session_meta', payload: { id, cwd: home, history_mode: 'paginated', attached_thread: true,
       thread_source: 'tui_side_chat', forked_from_id: 'bbbbbbbb-0172-4172-8172-bbbbbbbbbbbb' } },
@@ -77,6 +79,15 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
     completion({ type: 'CommandExecution', id: 'native', source: 'agent', command: ['/bin/sh', '-c', 'echo native'],
       cwd: 'file:///synthetic/project', parsed_cmd: [], status: 'failed', exit_code: 72, aggregated_output: 'native failure' }),
     response({ type: 'custom_tool_call_output', call_id: 'native', output: 'independent custom receipt' }),
+    { type: 'event_msg', payload: { type: 'exec_command_begin', call_id: 'native', source: 'user_shell',
+      command: ['echo', foreignCommand] } },
+    response({ type: 'custom_tool_call', call_id: 'shared-mcp', namespace, name: 'custom', input: 'custom channel' }),
+    response({ type: 'function_call', call_id: 'shared-mcp', name: 'mcp__notes__echo', arguments: '{}' }),
+    { type: 'event_msg', payload: { type: 'dynamic_tool_call_response', call_id: 'shared-mcp', turn_id: 'prior-turn',
+      tool: 'echo', success: true, content_items: [{ type: 'inputText', text: priorTurn }] } },
+    completion({ type: 'McpToolCall', id: 'shared-mcp', server: 'notes', tool: 'echo', arguments: {},
+      status: 'failed', error: { message: 'verified-flat-mcp-failure' } }),
+    response({ type: 'function_call_output', call_id: 'shared-mcp', output: 'ordinary MCP receipt' }),
   ].map((row, n) => ({
     timestamp: new Date(Date.UTC(2026, 10, 24, 0, 0, n)).toISOString(), ordinal: n, ...row,
   }));
@@ -85,16 +96,18 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
   const session = await materializeIndexedSession(index, id);
   const main = session.logicalEvents.filter(event => event.layer === 'main');
   assert.deepEqual(main.map(event => event.rawRefs.map(ref => ref.line)),
-    [[5, 6], [7], [8], [9, 10, 11], [14, 15, 22, 27], [16, 17], [18, 19, 29], [28, 30]]);
+    [[5, 6], [7], [8], [9, 10, 11], [14, 15, 22, 27], [16, 17], [18, 19, 29], [28, 30], [32], [33, 35, 36]]);
   const tools = [
     [main[3], 'mcp_call', 'failed'],
     [main[4], 'other_tool_call', 'failed'],
     [main[5], 'other_tool_call', 'completed'],
     [main[6], 'command', 'failed'],
     [main[7], 'other_tool_call', 'completed'],
+    [main[9], 'mcp_call', 'failed'],
   ];
   const controls = [[marker, [3]], [heartbeat, [12, 13]], [foreignReceipt, [20]], [foreignEnd, [21]],
-    [foreignTyped, [23]], [foreignBegin, [24]], [oldTurnReceipt, [25]], [transport, [26]]].map(([text, lines]) => {
+    [foreignTyped, [23]], [foreignBegin, [24]], [oldTurnReceipt, [25]], [transport, [26]],
+    [foreignCommand, [31]], [priorTurn, [34]]].map(([text, lines]) => {
     const event = session.logicalEvents.find(e => e.layer === 'protocol' && e.rawRefs.some(ref => ref.line === lines[0]));
     assert.deepEqual(event.rawRefs.map(ref => ref.line), lines);
     return { text, event };

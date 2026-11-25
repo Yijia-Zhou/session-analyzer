@@ -221,6 +221,56 @@ function scopedLegacyMcpStatus(call, row) {
   return legacyMcpStatus(p);
 }
 
+function historicalMcpRegistration(call) {
+  if (call.payloadType !== 'function_call') return null;
+  const { namespace, name } = call.parsed.payload;
+  if (typeof name !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(name)) return null;
+  let server, tool = name, qualifiedName = name;
+  if (namespace == null || namespace === '' || namespace === 'functions') {
+    if (!name.startsWith('mcp__')) return null;
+    const pair = name.slice(5);
+    const split = pair.indexOf('__');
+    // Keep the recorded spelling even when its separators allow several registrations.
+    if (split > 0 && split === pair.lastIndexOf('__') && split + 2 < pair.length) {
+      server = pair.slice(0, split);
+      tool = pair.slice(split + 2);
+    }
+  } else {
+    if (typeof namespace !== 'string' || !/^mcp__[A-Za-z0-9_-]+$/.test(namespace)
+        || namespace.length + 2 + name.length > 128 || scopedToolNamespace.test(namespace)) return null;
+    server = namespace.slice(5);
+    qualifiedName = namespace + '__' + name;
+  }
+  const text = call.parsed.payload.arguments;
+  let args;
+  if (typeof text === 'string') {
+    // The writer accepts Rust str::trim whitespace and returns before creating
+    // an invocation on a JSON parse error. The request still owns its wire name.
+    try { args = /^\p{White_Space}*$/u.test(text) ? null : JSON.parse(text); }
+    catch { return { qualifiedName }; }
+  }
+  return { qualifiedName, server, tool, args };
+}
+
+function matchesHistoricalMcpCall(registration, server, tool, environmentId, recordedArguments) {
+  if (!registration?.server || environmentId != null) return false;
+  if (registration.args !== undefined && recordedArguments !== undefined && !isDeepStrictEqual(registration.args, recordedArguments)) return false;
+  const knownServer = typeof server === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(server);
+  const knownTool = typeof tool === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(tool);
+  if ((knownServer && registration.server !== server) || (knownTool && registration.tool !== tool)) return false;
+  return knownServer && knownTool ? true : null;
+}
+
+function historicalMcpPeer(call, row) {
+  const invocation = row.parsed.payload.invocation;
+  const registration = call.historicalMcpRequest || historicalMcpRegistration(call);
+  if (!matchesHistoricalMcpCall(registration, invocation?.server, invocation?.tool, invocation?.environment_id, invocation?.arguments)) return null;
+  // Only an admitted typed item reaches this dispatch as an MCP lifecycle.
+  if (row.typedItemType === 'McpToolCall') return row;
+  const status = legacyMcpStatus(row.parsed.payload);
+  return status ? { ...row, status } : row;
+}
+
 function legacyMcpStatus(p) {
   if (p.type === 'mcp_tool_call_declined') return 'declined';
   if (['mcp_tool_call_begin', 'mcp_tool_call_update', 'mcp_tool_call_delta'].includes(p.type)) return 'incomplete';
@@ -268,15 +318,15 @@ function toolPeersInTurn(call, group, epochs, identify) {
 }
 
 // match is false for an identified foreign owner and null for an unresolved identity.
-function scopedLifecycleCarrier(call, row, scopedFunction, singleRequest) {
+function scopedLifecycleCarrier(call, row, matchMcp, historical, singleRequest) {
   const p = row.parsed.payload;
   const item = p.item;
   if (row.payloadType === 'item_completed') {
     if (item?.id !== call.callId) return null;
     let family, match, status;
-    if (scopedFunction && item.type === 'McpToolCall') {
+    if (matchMcp && item.type === 'McpToolCall') {
       family = TOOL_LIFECYCLE_FAMILY.MCP_TOOL;
-      match = matchesScopedMcpCall(call, item.server, item.tool, item.environmentId);
+      match = matchMcp(item.server, item.tool, item.environmentId, item.arguments);
       if (['completed', 'failed'].includes(item.status)) status = row.status === 'failed' ? 'failed' : 'success';
     } else if (item.type === 'DynamicToolCall') {
       family = TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL;
@@ -294,10 +344,14 @@ function scopedLifecycleCarrier(call, row, scopedFunction, singleRequest) {
   }
   const descriptor = toolLifecycleDescriptorFor(row.payloadType);
   const terminal = descriptor?.phase === TOOL_LIFECYCLE_PHASE.TERMINAL;
-  if (scopedFunction && descriptor?.family === TOOL_LIFECYCLE_FAMILY.MCP_TOOL) {
+  if (matchMcp && descriptor?.family === TOOL_LIFECYCLE_FAMILY.MCP_TOOL) {
     const i = p.invocation;
-    const match = matchesScopedMcpCall(call, i?.server, i?.tool, i?.environment_id);
-    const status = terminal ? legacyMcpStatus(p) : '';
+    const match = matchMcp(i?.server, i?.tool, i?.environment_id, i?.arguments);
+    let status = terminal ? legacyMcpStatus(p) : '';
+    if (historical && terminal && !status) {
+      if (p.status === 'completed' || p.status === 'success') status = 'success';
+      else if (p.status === 'failed' || p.status === 'declined') status = p.status;
+    }
     return { row, family: descriptor.family, match: match && terminal && !status ? null : match, status };
   }
   if (descriptor?.family !== TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL) return null;
@@ -621,19 +675,27 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCw
   const functions = requests.filter(row => row.payloadType === 'function_call');
   if (functions.length !== 1) return;
   const call = functions[0];
-  const scopedFunction = Boolean(scopedRequestToolName(call));
+  const custom = requests.length === 2 && requests.find(row => row.payloadType === 'custom_tool_call');
+  const historical = custom && scopedRequestToolName(custom) && historicalMcpRegistration(call);
+  const matchMcp = scopedRequestToolName(call) ? matchesScopedMcpCall.bind(null, call)
+    : historical && matchesHistoricalMcpCall.bind(null, historical);
   const peers = group.filter(row => followsToolRequest(call, row, epochs));
   const eligible = new Set(peers);
   const identified = new Set();
   const mcp = [];
+  const unresolvedHistoricalMcp = [];
   const dynamic = [];
   for (const row of group) {
     if (row.recordType !== 'event_msg') continue;
-    const carrier = scopedLifecycleCarrier(call, row, scopedFunction, requests.length === 1);
+    const carrier = scopedLifecycleCarrier(call, row, matchMcp, historical, requests.length === 1);
     if (!carrier) continue;
     // Typed rows start in Protocol. Only a unique in-scope owner can claim one.
     if (carrier.typed) views.set(row, { ...row, callId: '' });
-    if (!eligible.has(row) || carrier.match == null) continue;
+    if (!eligible.has(row)) continue;
+    if (carrier.match == null) {
+      if (historical && carrier.family === TOOL_LIFECYCLE_FAMILY.MCP_TOOL) unresolvedHistoricalMcp.push(row);
+      continue;
+    }
     identified.add(row);
     if (carrier.match) {
       const family = carrier.family === TOOL_LIFECYCLE_FAMILY.MCP_TOOL ? mcp : dynamic;
@@ -641,16 +703,17 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCw
     }
   }
   const competingFamilies = mcp.length > 0 && dynamic.length > 0;
-  const custom = requests.length === 2 && requests.find(row => row.payloadType === 'custom_tool_call');
   for (const carriers of [mcp, dynamic]) {
     const terminals = carriers.filter(carrier => carrier.status);
     const typedItems = carriers.filter(carrier => carrier.typed);
     const outcomes = new Set(terminals.map(carrier => carrier.status));
     outcomes.delete('completed'); // A neutral receipt does not contradict a specific terminal.
     const disputed = outcomes.size > 1 || typedItems.length > 1
+      || (carriers === mcp && unresolvedHistoricalMcp.length > 0)
       || terminals.filter(carrier => !carrier.typed).length > 1;
     if (competingFamilies || disputed) {
       for (const { row } of competingFamilies ? carriers : terminals) views.set(row, { ...row, callId: '' });
+      if (carriers === mcp) for (const row of unresolvedHistoricalMcp) views.set(row, { ...row, callId: '' });
       continue;
     }
     const typed = typedItems[0];
@@ -671,7 +734,11 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCw
       return !(custom && followsToolRequest(custom, row, epochs) && remainingToolPeer?.(custom, views.get(row) || row));
     });
     if (!unresolved) views.set(typed.row, semanticRaw(typed.row));
+    else if (historical && carriers === mcp) {
+      for (const { row } of terminals) views.set(row, { ...row, callId: '' });
+    }
   }
+  if (historical) views.set(call, { ...call, toolName: historical.qualifiedName, historicalMcpRequest: historical });
 }
 
 function dynamicOutcome(p) {
@@ -838,4 +905,4 @@ function additionalToolsSummary(payload) {
   return { valid: payload?.type === 'additional_tools' && payload.role === 'developer' && Array.isArray(payload.tools), entries: tools.length, count, names, unsupported, incomplete, shortened: incomplete || names.length >= 24 };
 }
 
-module.exports = { collaborationThreadId, typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, toolPeersInTurn, legacyMcpStatus, matchesToolOutput, dynamicToolPeer, legacyCommandOrPatchMatches };
+module.exports = { collaborationThreadId, typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, toolPeersInTurn, legacyMcpStatus, historicalMcpPeer, matchesToolOutput, dynamicToolPeer, legacyCommandOrPatchMatches };

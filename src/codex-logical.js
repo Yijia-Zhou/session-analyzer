@@ -10,8 +10,8 @@ function createCodexLogicalBuilder(deps) {
     scopedRequestPeer,
     toolPeersInTurn,
     collaborationThreadId,
-    legacyMcpStatus,
     legacyCommandOrPatchMatches,
+    historicalMcpPeer,
     matchesToolOutput,
     dynamicToolPeer,
     resolvedSubAgentStartup = () => null,
@@ -562,11 +562,12 @@ function createCodexLogicalBuilder(deps) {
     let severity = 'normal';
     let touchedFiles = [];
     const outputStats = {};
-    const parts = scopedRequest ? [toolName] : [];
+    const requireLifecycleOutcome = scopedRequest || functionCall?.historicalMcpRequest;
+    const parts = requireLifecycleOutcome ? [toolName] : [];
 
     // A scoped request can carry its own status. Only an admitted lifecycle
     // describes the tool's outcome; an ordinary response just records a return.
-    const outcomeRows = group.filter(raw => isToolOutcomeRow(raw) && (!scopedRequest || raw.recordType === 'event_msg'));
+    const outcomeRows = group.filter(raw => isToolOutcomeRow(raw) && (!requireLifecycleOutcome || raw.recordType === 'event_msg'));
     const protocolStatus = String(outcomeRows.find((raw) => raw.status)?.status || '').toLowerCase();
     const declined = outcomeRows.some((raw) => /_declined$/.test(raw.payloadType) || String(raw.status || '').toLowerCase() === 'declined');
     const failed = outcomeRows.some((raw) => String(raw.status || '').toLowerCase() === 'failed');
@@ -655,12 +656,13 @@ function createCodexLogicalBuilder(deps) {
       preview = truncate(codexSearchValue(customCall?.output) || codexSearchValue(customOutputObj?.output) || 'js_repl');
       outputStats.exitCode = exitCode;
       outputStats.durationMs = execEnd?.durationMs || Math.round(Number(customOutputObj?.metadata?.duration_seconds || 0) * 1000);
-    } else if (mcpRows.length || (!scopedRequest && toolName.startsWith('mcp__'))) {
+    } else if (mcpRows.length || (!scopedRequest && toolName.startsWith('mcp__')
+        && (!functionCall?.historicalMcpRequest || !dynamicRows.length))) {
       kind = 'mcp_call';
       label = 'MCP tool';
       preview = truncate(mcpEnd?.preview || group.find((raw) => raw.preview)?.preview || toolName);
       status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
-      if (scopedRequest && !mcpEnd && !declined && !failed) status = completed ? 'completed' : 'incomplete';
+      if (requireLifecycleOutcome && !mcpEnd && !declined && !failed) status = completed ? 'completed' : 'incomplete';
       severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
       outputStats.durationMs = mcpEnd?.durationMs || 0;
     } else if (hookRows.length) {
@@ -701,7 +703,7 @@ function createCodexLogicalBuilder(deps) {
     if (dynamicEnds.length) {
       status = dynamicEnds.find(row => row.dynamicTerminalStatus !== 'completed')?.dynamicTerminalStatus || 'completed';
       severity = status === 'failed' ? 'error' : ['declined', 'interrupted'].includes(status) ? 'warning' : 'normal';
-    } else if (scopedRequest && dynamicRows.length) {
+    } else if (requireLifecycleOutcome && dynamicRows.length) {
       status = completed ? 'completed' : 'incomplete';
       severity = completed ? 'normal' : 'warning';
     } else if (typedDynamic && typedDynamic.success !== true && status === 'success') status = 'completed';
@@ -1431,18 +1433,7 @@ function createCodexLogicalBuilder(deps) {
       }
       if (row.recordType !== 'event_msg') return null;
       if (fn && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.MCP_TOOL)) {
-        const p = row.parsed.payload;
-        const invocation = p.invocation;
-        if (!invocation || invocation.environment_id != null || typeof invocation.server !== 'string'
-            || !invocation.server || typeof invocation.tool !== 'string' || !invocation.tool) return null;
-        const server = 'mcp__' + invocation.server;
-        const flat = native && !invocation.server.includes('__') && !invocation.tool.includes('__')
-          && name === server + '__' + invocation.tool;
-        if (!flat && !(namespace === server && name === invocation.tool)) return null;
-        const status = legacyMcpStatus(p);
-        // Older native records carry their outcome in status or the lifecycle
-        // subtype. Once the invocation matches, keep their normal dispatch.
-        return status ? { ...row, status } : row;
+        return historicalMcpPeer(call, row);
       }
       if (fn && (native || ['collaboration', 'agents', 'multi_agent_v1'].includes(namespace))
           && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.COLLABORATION)) {
