@@ -28,6 +28,7 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
   const transport = 'dynamic-transport-only';
   const priorTurn = 'prior-turn-transport-response';
   const foreignCommand = 'foreign-begin-output';
+  const foreignArguments = 'another-invocation-result';
   const records = [
     { type: 'session_meta', payload: { id, cwd: home, history_mode: 'paginated', attached_thread: true,
       thread_source: 'tui_side_chat', forked_from_id: 'bbbbbbbb-0172-4172-8172-bbbbbbbbbbbb' } },
@@ -88,6 +89,10 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
     completion({ type: 'McpToolCall', id: 'shared-mcp', server: 'notes', tool: 'echo', arguments: {},
       status: 'failed', error: { message: 'verified-flat-mcp-failure' } }),
     response({ type: 'function_call_output', call_id: 'shared-mcp', output: 'ordinary MCP receipt' }),
+    { type: 'event_msg', payload: { type: 'mcp_tool_call_end', call_id: 'tool',
+      invocation: { server: 'notes', tool: 'shell_command', environment_id: 'synthetic-registration-scope', arguments: { q: 'other' } },
+      result: { Ok: { content: [{ type: 'text', text: foreignArguments }] } } } },
+    response({ type: 'custom_tool_call', call_id: 'shared-mcp', namespace, name: 'custom', input: 'second custom request' }),
   ].map((row, n) => ({
     timestamp: new Date(Date.UTC(2026, 10, 24, 0, 0, n)).toISOString(), ordinal: n, ...row,
   }));
@@ -96,18 +101,20 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
   const session = await materializeIndexedSession(index, id);
   const main = session.logicalEvents.filter(event => event.layer === 'main');
   assert.deepEqual(main.map(event => event.rawRefs.map(ref => ref.line)),
-    [[5, 6], [7], [8], [9, 10, 11], [14, 15, 22, 27], [16, 17], [18, 19, 29], [28, 30], [32], [33, 35, 36]]);
+    [[5, 6], [7], [8], [9, 10, 11], [14, 15, 22, 27], [16, 17], [18, 19, 29], [28, 30], [32], [33, 35, 36], [38]]);
   const tools = [
     [main[3], 'mcp_call', 'failed'],
     [main[4], 'other_tool_call', 'failed'],
     [main[5], 'other_tool_call', 'completed'],
     [main[6], 'command', 'failed'],
     [main[7], 'other_tool_call', 'completed'],
+    [main[8], 'other_tool_call', 'incomplete'],
     [main[9], 'mcp_call', 'failed'],
+    [main[10], 'other_tool_call', 'incomplete'],
   ];
   const controls = [[marker, [3]], [heartbeat, [12, 13]], [foreignReceipt, [20]], [foreignEnd, [21]],
     [foreignTyped, [23]], [foreignBegin, [24]], [oldTurnReceipt, [25]], [transport, [26]],
-    [foreignCommand, [31]], [priorTurn, [34]]].map(([text, lines]) => {
+    [foreignCommand, [31]], [priorTurn, [34]], [foreignArguments, [37]]].map(([text, lines]) => {
     const event = session.logicalEvents.find(e => e.layer === 'protocol' && e.rawRefs.some(ref => ref.line === lines[0]));
     assert.deepEqual(event.rawRefs.map(ref => ref.line), lines);
     return { text, event };

@@ -444,6 +444,121 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       name: `${call.payload.type} cannot own a response stamped for a previous turn`,
       rows: [stamped(call, TURN), stamped(output, 'previous-turn')],
       main: [['other_tool_call', 'incomplete', [3]]], detached: [4], markers: [[4, output.payload.output]] })),
+    ...[
+      ['foreign legacy success', { b: 2, a: [1, 3] }, { a: [3, 1], b: 2 }, 'failed', [4], [5]],
+      ['foreign typed failure', { b: 2, a: [1, 3, 4] }, { a: [1, 3], b: 2 }, 'success', [5], [4]],
+      ['conflicting outcomes with equal arguments', { b: 2, a: [1, 3] }, { a: [1, 3], b: 2 }, 'completed', [], [4, 5]],
+    ].map(([label, typedArgs, legacyArgs, status, owned, detached]) => {
+      const item = typedEnd(true).payload.item;
+      const end = legacyEnd(false).payload;
+      return { name: 'scoped MCP invocation arguments with ' + label,
+        rows: [response({ ...scoped.payload, arguments: '{"a":[1,3],"b":2}' }),
+          typed({ ...item, arguments: typedArgs }), event({ ...end, invocation: { ...end.invocation, arguments: legacyArgs } }), receipt],
+        main: [[owned.length ? 'mcp_call' : 'other_tool_call', status, [3, ...owned, 6]]],
+        detached, markers: [[4, 'typed_terminal_marker'], [5, 'legacy_terminal_marker']] };
+    }),
+    ...[false, true].flatMap(historical => [false, true].map(foreignTyped => {
+      const first = historical ? '-9007199254740992' : '9007199254740992';
+      const other = historical ? '-9007199254740993' : '9007199254740993';
+      const args = value => ({ x: [{ rid: JSON.rawJSON(value) }] });
+      const request = historical ? historicalMcp() : scoped;
+      const start = historical ? [scopedCustom] : [];
+      const line = start.length + 3;
+      const item = historical ? historicalItem : typedEnd(true).payload.item;
+      const end = (historical ? historicalEnd(false) : legacyEnd(false)).payload;
+      return { name: 'exact MCP integers for ' + (historical ? 'historical' : 'scoped') + ' with foreign ' + (foreignTyped ? 'typed' : 'legacy'),
+        rows: [...start, response({ ...request.payload, arguments: JSON.stringify(args(first)) }),
+          typed({ ...item, arguments: args(foreignTyped ? other : first) }),
+          event({ ...end, invocation: { ...end.invocation, arguments: args(foreignTyped ? first : other) } }), receipt],
+        main: [...(historical ? [['other_tool_call', 'incomplete', [3]]] : []),
+          ['mcp_call', foreignTyped ? 'success' : 'failed', [line, line + (foreignTyped ? 2 : 1), line + 3]]],
+        detached: [line + (foreignTyped ? 1 : 2)], markers: [[line + 1, historical ? 'historical_typed_marker' : 'typed_terminal_marker'],
+          [line + 2, historical ? 'historical_legacy_marker' : 'legacy_terminal_marker']] };
+    })),
+    ...[
+      ['largest safe integer', '9007199254740991', '9007199254740991', true, true],
+      ['largest writer integer', '18446744073709551615', '18446744073709551615', true, true],
+      ['unverified integer that could dispute the failure', '18446744073709551615', '18446744073709551616', false, false],
+      ['unverified integer with an explicitly foreign key', '18446744073709551615', '18446744073709551616', true, false],
+    ].map(([label, requested, competing, keepTyped, keepLegacy]) => {
+      const args = (n, marker) => ({ id: JSON.rawJSON(n), key: marker });
+      const end = legacyEnd(keepLegacy).payload;
+      const key = label.endsWith('foreign key') ? 'other' : 'local';
+      return { name: 'scoped MCP precision with ' + label,
+        rows: [response({ ...scoped.payload, arguments: JSON.stringify(args(requested, 'local')) }),
+          typed({ ...typedEnd(true).payload.item, arguments: args(requested, 'local') }),
+          event({ ...end, invocation: { ...end.invocation, arguments: args(competing, key) } }), receipt],
+        main: [[keepTyped ? 'mcp_call' : 'other_tool_call', keepTyped ? 'failed' : 'completed', [3, ...(keepTyped ? [4] : []), ...(keepLegacy ? [5] : []), 6]]],
+        detached: [...(keepTyped ? [] : [4]), ...(keepLegacy ? [] : [5])], markers: [[4, 'typed_terminal_marker'], [5, 'legacy_terminal_marker']] };
+    }),
+    ...[
+      ['safe integer', Number.MAX_SAFE_INTEGER, true, true, true],
+      ['unverified wide integer and agreeing outcome', JSON.rawJSON('9007199254740993'), true, true, false],
+      ['unverified wide integer and conflicting outcome', JSON.rawJSON('9007199254740993'), false, false, false],
+    ].map(([label, id, legacyFailed, keepTyped, keepLegacy]) => {
+      const end = legacyEnd(legacyFailed).payload;
+      return { name: 'large physical MCP terminal with ' + label,
+        rows: [response({ ...scoped.payload, arguments: JSON.stringify({ id }) }), typed({ ...typedEnd(true).payload.item, arguments: { id } }),
+          event({ ...end, invocation: { ...end.invocation, arguments: { id } }, padding: 'x'.repeat(64 * 1024) }), receipt],
+        main: [[keepTyped ? 'mcp_call' : 'other_tool_call', keepTyped ? 'failed' : 'completed', [3, ...(keepTyped ? [4] : []), ...(keepLegacy ? [5] : []), 6]]],
+        detached: [...(keepTyped ? [] : [4]), ...(keepLegacy ? [] : [5])], markers: [[4, 'typed_terminal_marker'], [5, 'legacy_terminal_marker']] };
+    }),
+    ...[
+      ['ordinary prefix in a value', { query: 'data:image/' }, false],
+      ['unsupported MIME and incomplete header in a key', { 'data:image/png;base64': 'data:image/svg+xml;base64,AAAA' }, false],
+      ['ordinary prefix in a long request', { query: 'data:image/png' }, true],
+    ].map(([label, args, longRequest]) => ({
+      name: 'ordinary MCP arguments with ' + label + ' keep the exact typed failure',
+      rows: [response({ ...scoped.payload, arguments: (longRequest ? ' '.repeat(64 * 1024) : '') + JSON.stringify(args) }),
+        typed({ ...typedEnd(true).payload.item, arguments: args,
+          error: { message: 'typed_terminal_marker' + (longRequest ? '' : 'x'.repeat(64 * 1024)) } }), receipt],
+      main: [['mcp_call', 'failed', [3, 4, 5]]], detached: [], markers: [[4, 'typed_terminal_marker'], [5, 'current_function_marker']] })),
+    ...[false, true].flatMap(isLegacy => [
+      ['same image', 'data:image/png;base64,AAAA', 'data:image/png;base64,AAAA', true],
+      ['different images', 'data:image/png;base64,AAAA', 'data:image/png;base64,BBBB', false],
+      ['literal placeholder', '[embedded image payload externalized; open raw refs for source]', 'data:image/png;base64,BBBB', false],
+      ['reversed literal placeholder', 'data:image/png;base64,AAAA', '[embedded image payload externalized; open raw refs for source]', false],
+      ['same literal', '[embedded image payload externalized; open raw refs for source]', '[embedded image payload externalized; open raw refs for source]', true],
+      ['escaped slash', 'data:image/png;base64,AAAA', 'data:image/png;base64,AAAA', true],
+      ['same large integer', 'data:image/png;base64,AAAA', 'data:image/png;base64,AAAA', true],
+      ['different adjacent integers', 'data:image/png;base64,AAAA', 'data:image/png;base64,AAAA', false],
+    ].map(([label, first, second, matches]) => {
+      const id = label.includes('integer') ? '9007199254740993' : '1';
+      let text = JSON.stringify({ i: [first], n: JSON.rawJSON(id) });
+      if (label === 'escaped slash') text = text.replace('image/', 'image\\/');
+      const args = { n: JSON.rawJSON(label === 'different adjacent integers' ? '9007199254740992' : id), i: [second] };
+      const end = legacyEnd(true).payload;
+      const terminal = isLegacy ? event({ ...end, invocation: { ...end.invocation, arguments: args } }) : typed({ ...typedEnd(true).payload.item, arguments: args });
+      return { name: 'scoped MCP original attachment arguments ' + label + ' ' + (isLegacy ? 'legacy' : 'typed'),
+        rows: [response({ ...scoped.payload, arguments: text }), terminal, receipt],
+        main: [[matches ? 'mcp_call' : 'other_tool_call', matches ? 'failed' : 'completed', matches ? [3, 4, 5] : [3, 5]]],
+        detached: matches ? [] : [4], markers: [[4, isLegacy ? 'legacy_terminal_marker' : 'typed_terminal_marker']] };
+    })),
+    ...[true, false].map(foreignTyped => {
+      const image = 'data:image/png;base64,AAAA', other = 'data:image/png;base64,BBBB';
+      const args = value => ({ x: 'prefix ' + value });
+      return { name: 'historical MCP keeps verified original attachment beside foreign ' + (foreignTyped ? 'typed' : 'legacy') + ' outcome',
+        rows: [scopedCustom, historicalMcp('echo', 'mcp__notes', JSON.stringify(args(image))),
+          typed({ ...historicalItem, arguments: args(foreignTyped ? other : image) }),
+          historicalEnd(false, { invocation: { server: 'notes', tool: 'echo', arguments: args(foreignTyped ? image : other) } }), receipt, customReceipt],
+        main: [['other_tool_call', 'completed', [3, 8]], ['mcp_call', foreignTyped ? 'success' : 'failed', [4, foreignTyped ? 6 : 5, 7]]],
+        detached: [foreignTyped ? 5 : 6], markers: [[5, 'historical_typed_marker'], [6, 'historical_legacy_marker']] };
+    }),
+    { name: 'an oversized image-bearing MCP request remains unverified',
+      rows: [response({ ...scoped.payload, arguments: JSON.stringify({ i: 'data:image/png;base64,' + 'A'.repeat(64 * 1024) }) }),
+        typed({ ...typedEnd(true).payload.item, arguments: { i: 'data:image/png;base64,AAAA' } }), receipt],
+      main: [['other_tool_call', 'completed', [3, 5]]], detached: [4], markers: [[4, 'typed_terminal_marker']] },
+    { name: 'a typed terminal omitting arguments cannot verify a request containing a nonfinite JSON number',
+      rows: [response({ ...scoped.payload, arguments: '{"n":1e9999}' }), typed({ ...typedEnd(true).payload.item, arguments: undefined }), receipt],
+      main: [['other_tool_call', 'completed', [3, 5]]], detached: [4], markers: [[4, 'typed_terminal_marker']] },
+    ...[['invalid JSON', '{', false], ['writer whitespace', ' \t\n', true], ['nonfinite number', '{"n":1e9999}', false]].map(([label, text, matches]) => {
+      const end = legacyEnd(true).payload;
+      return { name: 'scoped MCP invocation parses ' + label,
+        rows: [response({ ...scoped.payload, arguments: text }), typed({ ...typedEnd(true).payload.item, arguments: null }),
+          event({ ...end, invocation: { server: 'notes', tool, environment_id: environment } })],
+        main: [[matches ? 'mcp_call' : 'other_tool_call', matches ? 'failed' : 'incomplete', matches ? [3, 4, 5] : [3]]],
+        detached: matches ? [] : [4, 5], markers: [[4, 'typed_terminal_marker'], [5, 'legacy_terminal_marker']] };
+    }),
     { name: 'a foreign response stamp leaves the typed failure and current receipt searchable',
       rows: [scoped, oldReceipt, typedEnd(true), stamped(receipt, TURN)],
       main: [['mcp_call', 'failed', [3, 5, 6]]], detached: [4],
@@ -529,7 +644,7 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       const local = environmentId === environment;
       return { name: `a typed item with no tool and environment ${environmentId} is checked by physical item ID`,
         rows: [scoped, typedEnd(true), typed({ type: 'McpToolCall', id: call_id, environmentId, server: 'notes',
-          status: 'completed', arguments: { query: 'partial_marker' } }), receipt],
+          status: 'completed', arguments: {}, result: { content: [{ type: 'text', text: 'partial_marker' }] } }), receipt],
         main: local ? [['other_tool_call', 'completed', [3, 6]]] : [['mcp_call', 'failed', [3, 4, 6]]],
         detached: local ? [4, 5] : [5], markers: [[4, 'typed_terminal_marker'], [5, 'partial_marker']] };
     }),
@@ -1172,6 +1287,17 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       rows: [scopedCustom, historicalMcp(), typed({ ...historicalItem, environmentId: environment }), receipt, customReceipt],
       main: [['other_tool_call', 'completed', [3, 7]], ['mcp_call', 'completed', [4, 6]]], detached: [5],
       markers: [[5, 'historical_typed_marker'], [6, 'current_function_marker']] },
+    ...[true, false].map(withTerminal => ({
+      name: 'historical MCP beside duplicate scoped custom requests ' + (withTerminal ? 'retains its failure' : 'keeps its qualified name'),
+      rows: [scopedCustom, historicalMcp('shell_command', 'mcp__notes'), scopedCustom,
+        ...(withTerminal ? [typed({ ...historicalItem, tool: 'shell_command' })] : []), receipt, customReceipt],
+      main: [['other_tool_call', 'incomplete', [3]], ['mcp_call', withTerminal ? 'failed' : 'completed', withTerminal ? [4, 6, 7] : [4, 6]],
+        ['other_tool_call', 'incomplete', [5]]], detached: [withTerminal ? 8 : 7], functionName: 'mcp__notes__shell_command',
+      markers: [...(withTerminal ? [[6, 'historical_typed_marker']] : []), [withTerminal ? 8 : 7, 'scoped_custom_marker']] })),
+    { name: 'a verified patch end on the disputed custom channel leaves the historical MCP failure intact',
+      rows: [scopedCustom, historicalMcp(), patch, patchEnd, typed(historicalItem), receipt, customReceipt],
+      main: [['other_tool_call', 'incomplete', [3]], ['mcp_call', 'failed', [4, 7, 8]], ['other_tool_call', 'incomplete', [5]]],
+      detached: [6, 9], markers: [[6, 'synthetic patch applied'], [7, 'historical_typed_marker'], [9, 'scoped_custom_marker']] },
     { name: 'historical MCP spelling with an exact independent dynamic completion',
       rows: [scopedCustom, historicalMcp('shell_command', 'mcp__notes'), typed({ type: 'DynamicToolCall', id: call_id,
         namespace: 'mcp__notes', tool: 'shell_command', status: 'failed', success: false, error: 'dynamic_failure_marker' }), receipt, customReceipt],
@@ -1323,7 +1449,7 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
         const ref = owner.rawRefs.find(r => r.line === line);
         const raw = session.rawEvents.find(r => r.rawId === ref.rawId);
         if (line === scenario.imageLine) assert.deepEqual(raw.embeddedImages.map(image => image.mimeType), ['image/png']);
-        assert.deepEqual(JSON.parse((await codex.readIndexedCodexRawRecord(index, session, raw)).raw), f.records[line - 1]);
+        assert.equal((await codex.readIndexedCodexRawRecord(index, session, raw)).raw, JSON.stringify(f.records[line - 1]));
       }
       for (const [line, marker] of scenario.markers) {
         const owner = owners.get(line);

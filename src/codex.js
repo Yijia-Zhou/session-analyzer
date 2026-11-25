@@ -5151,6 +5151,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       }
       const embeddedImages = [];
       const canonicalDigest = includeCanonicalRawDigests ? canonicalRawRecordDigest(record) : '';
+      codexMessageEvidence.captureMcpArgumentEvidence(record, line);
       const attachmentSummary = codexMessageEvidence.summarizeCodexAttachments(
         codexMessageEvidence.typedItemRecord(record, session.id)?.payload || record.payload,
       );

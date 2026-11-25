@@ -115,6 +115,10 @@ On both `00b1075` and the compatibility candidate, a pending search highlight co
 
 The final local build passed `build:check`. The full Node suite passed 2,973 tests and skipped 24. The full Chromium suite passed 461 tests and skipped two, including passes for both navigation orderings above. Neither suite reported a failure. Remote CI was not run for these local commits. / 本地最终构建通过 `build:check`。Node 全套通过 2,973 项，跳过 24 项。Chromium 全套通过 461 项，跳过 2 项，上述两种导航时序均通过。两套测试均为零失败。本轮本地提交尚无远端 CI 结果。
 
+### Cross-channel terminal ownership after `a7cfb66` / `a7cfb66` 后的跨通道终态归属
+
+The MCP reader compares recorded JSON arguments before joining or disputing a terminal and preserves the unique historical function when the custom channel repeats a call ID. Four-path tests check nested arguments, the i64/u64 limits and physical Raw text. A separate cold/warm probe checked an inherited Zstd request and a typed failure for 9007199254740993 beside a child legacy result for 9007199254740992. Review also reproduced distinct inline images collapsing to the same display text. The regression checks their identity before display and keeps a literal placeholder distinct. / MCP 读取器先核对记录的 JSON 参数，再决定终态归属或争议。custom 通道重复使用 ID 时，唯一的历史函数仍保留原有身份。四路径测试核对嵌套参数、i64/u64 边界和物理 Raw 原文。另用冷、暖读取探针核验了 Zstd 祖先中参数为 9007199254740993 的请求及带类型失败，以及子文件中参数为 9007199254740992 的旧式结果。复核还复现了不同内联图片被替换成相同展示文本。回归用例核验展示前的身份，并区分正文原本就是占位符的情况。
+
 ## Acceptance units and remaining scope / 验收单元与后续范围
 
 The first seven rows describe the accepted foundation fixes. The last three are open and independently scoped. Convert the smallest case from the linked manual probes into a focused regression **before** changing production behavior. Validate Raw identity, event counts and actual search results on uncompacted, compact, cold materialized and verified reuse paths. For Main/detail changes, add bilingual Timeline/Trajectory and History CLI checks, with an older input as a negative control. / 前七项为本轮基础修复，最后三项继续独立规划。先将最小反例转成回归，再改生产逻辑；四条读取路径均验物理 Raw、事件数与检索结果。涉及主层或详情时验双语两种视图、CLI 及旧输入对照。

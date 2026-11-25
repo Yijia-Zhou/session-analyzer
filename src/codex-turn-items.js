@@ -164,20 +164,136 @@ function scopedRequestToolName(raw) {
   return `${call.namespace}__${call.name}`;
 }
 
-// null means the registration cannot be checked; false means a different registration.
-function matchesScopedMcpCall(raw, server, tool, environmentId) {
+const invalidMcpArguments = Symbol('invalid MCP arguments');
+const unverifiedMcpArguments = Symbol('unverified MCP arguments');
+const physicalMcpArguments = new WeakMap();
+// externalizeEmbeddedImages replaces this header anywhere in a string, including an empty payload.
+const externalizedImageHeader = /data:image\/(?:png|jpeg|gif|webp|avif);base64,/i;
+// An optional identity check must not parse or encode a multi-megabyte tool result again.
+const MCP_ARGUMENT_EVIDENCE_MAX_CHARS = 64 * 1024;
+
+function mcpArgumentTraits(value) {
+  const pending = [value];
+  let wide = false, image = false;
+  while (pending.length) {
+    const next = pending.pop();
+    if (typeof next === 'number') {
+      if (!Number.isFinite(next)) return { invalid: true };
+      if (Number.isInteger(next) && !Number.isSafeInteger(next)) wide = true;
+    }
+    if (!image && typeof next === 'string' && externalizedImageHeader.test(next)) image = true;
+    if (next && typeof next === 'object') {
+      for (const key of Object.keys(next)) {
+        if (!image && externalizedImageHeader.test(key)) image = true;
+        pending.push(next[key]);
+      }
+    }
+  }
+  return { wide, image };
+}
+
+function preciseMcpNumber(key, value, context) {
+  if (typeof value !== 'number') return value;
+  if (!Number.isFinite(value)) throw new RangeError('MCP argument outside the supported number range');
+  if (!Number.isInteger(value) || Number.isSafeInteger(value) || !/^-?\d+$/.test(context.source)) return value;
+  // serde_json stores integer tokens as i64 or u64. Limit conversion to those widths.
+  if (context.source.length > 20) throw new RangeError('MCP integer outside the supported range');
+  const integer = BigInt(context.source);
+  if (integer < -9223372036854775808n || integer > 18446744073709551615n) throw new RangeError('MCP integer outside the supported range');
+  return integer;
+}
+
+function mcpCarrier(payload) {
+  if (payload?.type === 'item_completed' && payload.item?.type === 'McpToolCall') return payload.item;
+  if (payload?.invocation && toolLifecycleDescriptorFor(payload.type)?.family === TOOL_LIFECYCLE_FAMILY.MCP_TOOL) return payload.invocation;
+}
+
+function digestMcpArguments(value) {
+  // JSON objects are unordered. Keep null fields, array order and exact integers
+  // when hashing bounded image-bearing arguments before display redaction.
+  function encode(v) {
+    if (typeof v === 'bigint') return v.toString() + 'n';
+    if (Object.is(v, -0)) return '-0';
+    if (Array.isArray(v)) return '[' + v.map(encode).join(',') + ']';
+    if (v && typeof v === 'object') return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + encode(v[k])).join(',') + '}';
+    return JSON.stringify(v);
+  }
+  return createHash('sha256').update(encode(value)).digest('hex');
+}
+
+function mcpArgumentEvidence(value, traits, inputLength, readExact) {
+  if (traits.invalid) return invalidMcpArguments;
+  const evidence = traits.image ? { image: unverifiedMcpArguments } : { value };
+  if (traits.wide) evidence.exact = unverifiedMcpArguments;
+  if (inputLength > MCP_ARGUMENT_EVIDENCE_MAX_CHARS) return evidence;
+  try {
+    if (traits.image) evidence.image = digestMcpArguments(value);
+    if (traits.wide) evidence.exact = traits.image ? digestMcpArguments(readExact()) : readExact();
+  } catch { /* A candidate with unverified identity stays in Protocol. */ }
+  return evidence;
+}
+
+function captureMcpArgumentEvidence(record, line) {
+  const p = record.payload;
+  if (record.type === 'response_item' && p?.type === 'function_call' && typeof p.arguments === 'string'
+      && ((typeof p.namespace === 'string' && (scopedToolNamespace.test(p.namespace) || p.namespace.startsWith('mcp__')))
+        || (typeof p.name === 'string' && p.name.startsWith('mcp__')))
+      && externalizedImageHeader.test(p.arguments)) {
+    // An inline URL inside the serialized request can also be replaced for
+    // display. Retain just its identity. A complete image is never cached.
+    physicalMcpArguments.set(p, p.arguments.length > MCP_ARGUMENT_EVIDENCE_MAX_CHARS
+      ? { image: unverifiedMcpArguments, unverifiedRequest: true } : mcpRequestArguments(p));
+  }
+  const carrier = mcpCarrier(p);
+  if (!carrier) return;
+  const traits = mcpArgumentTraits(carrier.arguments);
+  if (traits.wide || traits.image || traits.invalid) physicalMcpArguments.set(carrier, mcpArgumentEvidence(carrier.arguments, traits, line.length,
+    () => mcpCarrier(JSON.parse(line, preciseMcpNumber).payload).arguments));
+}
+
+function mcpRequestArguments(payload) {
+  if (physicalMcpArguments.has(payload)) return physicalMcpArguments.get(payload);
+  const text = payload.arguments;
+  if (typeof text !== 'string') return undefined;
+  // The writer uses Rust str::trim and returns before emitting an invocation on a parse error.
+  let value;
+  try { value = /^\p{White_Space}*$/u.test(text) ? null : JSON.parse(text); }
+  catch { return invalidMcpArguments; }
+  return mcpArgumentEvidence(value, mcpArgumentTraits(value), text.length, () => JSON.parse(text, preciseMcpNumber));
+}
+
+function mcpArgumentsMatch(requested, carrier) {
+  if (requested === invalidMcpArguments) return false;
+  const stored = physicalMcpArguments.get(carrier);
+  if (stored === invalidMcpArguments) return false;
+  if (requested?.unverifiedRequest && carrier?.arguments === undefined) return unverifiedMcpArguments;
+  if (requested === undefined || carrier?.arguments === undefined) return true;
+  if (requested.image !== undefined || stored?.image !== undefined) {
+    if (requested.image === undefined || stored?.image === undefined) return false;
+    if (requested.image === unverifiedMcpArguments || stored.image === unverifiedMcpArguments) return unverifiedMcpArguments;
+    if (requested.image !== stored.image) return false;
+  } else if (!isDeepStrictEqual(requested.value, carrier.arguments)) return false;
+  if (requested.exact === undefined) return true;
+  if (requested.exact === unverifiedMcpArguments || stored?.exact === undefined || stored.exact === unverifiedMcpArguments) return unverifiedMcpArguments;
+  return isDeepStrictEqual(requested.exact, stored.exact);
+}
+
+// null means identity cannot be checked; false means an explicit mismatch.
+function matchesScopedMcpCall(raw, server, tool, environmentId, carrier) {
   const call = raw.parsed.payload;
   if (call.type !== 'function_call'
       || typeof call.namespace !== 'string' || call.namespace.length + 2 + call.name.length > 128) return null;
   const registration = scopedToolNamespace.exec(call.namespace);
   if (!registration) return null;
+  const argsMatch = mcpArgumentsMatch(raw.scopedMcpArguments, carrier);
+  if (argsMatch === false) return false;
   const knownServer = typeof server === 'string' && /^[A-Za-z0-9_]{1,128}$/.test(server);
   const knownTool = typeof tool === 'string' && /^[A-Za-z0-9_]{1,128}$/.test(tool);
   if ((knownServer && registration[2] !== server) || (knownTool && call.name !== tool)) return false;
   if (typeof environmentId !== 'string' || !environmentId || environmentId.length > 4096) return null;
   const scope = createHash('sha1').update(environmentId).digest('hex').slice(0, 12);
   if (registration[1] !== scope) return false;
-  return knownServer && knownTool ? true : null;
+  return knownServer && knownTool ? argsMatch : null;
 }
 
 function matchesToolOutput(call, row) {
@@ -217,7 +333,7 @@ function matchesDynamicTool(call, row) {
 function scopedLegacyMcpStatus(call, row) {
   const p = row.parsed?.payload;
   const invocation = p?.invocation;
-  if (!invocation || !matchesScopedMcpCall(call, invocation.server, invocation.tool, invocation.environment_id)) return '';
+  if (!invocation || matchesScopedMcpCall(call, invocation.server, invocation.tool, invocation.environment_id, invocation) !== true) return '';
   return legacyMcpStatus(p);
 }
 
@@ -241,30 +357,25 @@ function historicalMcpRegistration(call) {
     server = namespace.slice(5);
     qualifiedName = namespace + '__' + name;
   }
-  const text = call.parsed.payload.arguments;
-  let args;
-  if (typeof text === 'string') {
-    // The writer accepts Rust str::trim whitespace and returns before creating
-    // an invocation on a JSON parse error. The request still owns its wire name.
-    try { args = /^\p{White_Space}*$/u.test(text) ? null : JSON.parse(text); }
-    catch { return { qualifiedName }; }
-  }
+  const args = mcpRequestArguments(call.parsed.payload);
   return { qualifiedName, server, tool, args };
 }
 
-function matchesHistoricalMcpCall(registration, server, tool, environmentId, recordedArguments) {
+function matchesHistoricalMcpCall(registration, server, tool, environmentId, carrier) {
   if (!registration?.server || environmentId != null) return false;
-  if (registration.args !== undefined && recordedArguments !== undefined && !isDeepStrictEqual(registration.args, recordedArguments)) return false;
+  const argsMatch = mcpArgumentsMatch(registration.args, carrier);
+  if (argsMatch === false) return false;
   const knownServer = typeof server === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(server);
   const knownTool = typeof tool === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(tool);
   if ((knownServer && registration.server !== server) || (knownTool && registration.tool !== tool)) return false;
-  return knownServer && knownTool ? true : null;
+  return knownServer && knownTool ? argsMatch : null;
 }
 
 function historicalMcpPeer(call, row) {
   const invocation = row.parsed.payload.invocation;
   const registration = call.historicalMcpRequest || historicalMcpRegistration(call);
-  if (!matchesHistoricalMcpCall(registration, invocation?.server, invocation?.tool, invocation?.environment_id, invocation?.arguments)) return null;
+  const carrier = row.typedItemType === 'McpToolCall' ? row.originalRaw.parsed.payload.item : invocation;
+  if (matchesHistoricalMcpCall(registration, invocation?.server, invocation?.tool, invocation?.environment_id, carrier) !== true) return null;
   // Only an admitted typed item reaches this dispatch as an MCP lifecycle.
   if (row.typedItemType === 'McpToolCall') return row;
   const status = legacyMcpStatus(row.parsed.payload);
@@ -326,7 +437,7 @@ function scopedLifecycleCarrier(call, row, matchMcp, historical, singleRequest) 
     let family, match, status;
     if (matchMcp && item.type === 'McpToolCall') {
       family = TOOL_LIFECYCLE_FAMILY.MCP_TOOL;
-      match = matchMcp(item.server, item.tool, item.environmentId, item.arguments);
+      match = matchMcp(item.server, item.tool, item.environmentId, item);
       if (['completed', 'failed'].includes(item.status)) status = row.status === 'failed' ? 'failed' : 'success';
     } else if (item.type === 'DynamicToolCall') {
       family = TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL;
@@ -339,20 +450,20 @@ function scopedLifecycleCarrier(call, row, matchMcp, historical, singleRequest) 
     // turn checked by followsToolRequest. Cross-channel joins need explicit IDs.
     const explicitIds = p.thread_id === call.sessionId && typeof p.turn_id === 'string' && p.turn_id.length > 0;
     const canJoin = explicitIds || (singleRequest && item.type === 'DynamicToolCall');
-    if (match !== false && status == null) match = null;
+    if (match === true && status == null) match = null;
     return { row, family, match, status, typed: true, canJoin };
   }
   const descriptor = toolLifecycleDescriptorFor(row.payloadType);
   const terminal = descriptor?.phase === TOOL_LIFECYCLE_PHASE.TERMINAL;
   if (matchMcp && descriptor?.family === TOOL_LIFECYCLE_FAMILY.MCP_TOOL) {
     const i = p.invocation;
-    const match = matchMcp(i?.server, i?.tool, i?.environment_id, i?.arguments);
+    const match = matchMcp(i?.server, i?.tool, i?.environment_id, i);
     let status = terminal ? legacyMcpStatus(p) : '';
     if (historical && terminal && !status) {
       if (p.status === 'completed' || p.status === 'success') status = 'success';
       else if (p.status === 'failed' || p.status === 'declined') status = p.status;
     }
-    return { row, family: descriptor.family, match: match && terminal && !status ? null : match, status };
+    return { row, family: descriptor.family, match: match === true && terminal && !status ? null : match, status };
   }
   if (descriptor?.family !== TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL) return null;
   return { row, family: descriptor.family, match: matchesDynamicTool(call, row), status: terminal ? dynamicOutcome(p) : '' };
@@ -675,15 +786,21 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCw
   const functions = requests.filter(row => row.payloadType === 'function_call');
   if (functions.length !== 1) return;
   const call = functions[0];
-  const custom = requests.length === 2 && requests.find(row => row.payloadType === 'custom_tool_call');
-  const historical = custom && scopedRequestToolName(custom) && historicalMcpRegistration(call);
-  const matchMcp = scopedRequestToolName(call) ? matchesScopedMcpCall.bind(null, call)
+  const customCalls = requests.filter(row => row.payloadType === 'custom_tool_call');
+  const scopedName = scopedRequestToolName(call);
+  // Each group contains a scoped request. If this unique function is historical,
+  // the scoped requests all belong to the independent custom channel.
+  const historical = !scopedName && historicalMcpRegistration(call);
+  if (scopedName) views.set(call, { ...call, toolName: scopedName, scopedRequest: true,
+    scopedMcpArguments: mcpRequestArguments(call.parsed.payload) });
+  const matchMcp = scopedName ? matchesScopedMcpCall.bind(null, views.get(call))
     : historical && matchesHistoricalMcpCall.bind(null, historical);
   const peers = group.filter(row => followsToolRequest(call, row, epochs));
   const eligible = new Set(peers);
   const identified = new Set();
   const mcp = [];
   const unresolvedHistoricalMcp = [];
+  const uncertainArguments = new Map();
   const dynamic = [];
   for (const row of group) {
     if (row.recordType !== 'event_msg') continue;
@@ -692,6 +809,11 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCw
     // Typed rows start in Protocol. Only a unique in-scope owner can claim one.
     if (carrier.typed) views.set(row, { ...row, callId: '' });
     if (!eligible.has(row)) continue;
+    if (carrier.match === unverifiedMcpArguments) {
+      views.set(row, { ...row, callId: '' });
+      uncertainArguments.set(row, carrier);
+      continue;
+    }
     if (carrier.match == null) {
       if (historical && carrier.family === TOOL_LIFECYCLE_FAMILY.MCP_TOOL) unresolvedHistoricalMcp.push(row);
       continue;
@@ -702,15 +824,22 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCw
       family.push(carrier);
     }
   }
-  const competingFamilies = mcp.length > 0 && dynamic.length > 0;
+  const competingFamilies = (mcp.length > 0 || uncertainArguments.size > 0) && dynamic.length > 0;
   for (const carriers of [mcp, dynamic]) {
     const terminals = carriers.filter(carrier => carrier.status);
     const typedItems = carriers.filter(carrier => carrier.typed);
     const outcomes = new Set(terminals.map(carrier => carrier.status));
     outcomes.delete('completed'); // A neutral receipt does not contradict a specific terminal.
+    // Unverified argument evidence stays in Protocol. A different-format row
+    // with the same outcome cannot reverse an independently verified terminal.
+    const legacyTerminals = terminals.filter(carrier => !carrier.typed).length;
+    const argumentDispute = carriers === mcp && [...uncertainArguments.values()].some(candidate => {
+      if (!candidate.typed && toolLifecycleDescriptorFor(candidate.row.payloadType).phase !== TOOL_LIFECYCLE_PHASE.TERMINAL) return false;
+      return (candidate.typed ? typedItems.length : legacyTerminals) > 0 || (outcomes.size > 0 && !outcomes.has(candidate.status));
+    });
     const disputed = outcomes.size > 1 || typedItems.length > 1
-      || (carriers === mcp && unresolvedHistoricalMcp.length > 0)
-      || terminals.filter(carrier => !carrier.typed).length > 1;
+      || argumentDispute || (carriers === mcp && unresolvedHistoricalMcp.length > 0)
+      || legacyTerminals > 1;
     if (competingFamilies || disputed) {
       for (const { row } of competingFamilies ? carriers : terminals) views.set(row, { ...row, callId: '' });
       if (carriers === mcp) for (const row of unresolvedHistoricalMcp) views.set(row, { ...row, callId: '' });
@@ -721,7 +850,7 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCw
     // A request or receipt has its own wire channel. Any remaining unidentified
     // lifecycle needs an independent owner before a typed terminal can join.
     const unresolved = peers.some(row => {
-      if (identified.has(row)) return false;
+      if (identified.has(row) || (carriers === mcp && uncertainArguments.has(row))) return false;
       if (row.recordType === 'response_item' && ['custom_tool_call', 'custom_tool_call_output', 'function_call_output'].includes(row.payloadType)) return false;
       if (isDynamicTransport(row)) {
         // A transport mirror stays in Protocol. It can corroborate the identity
@@ -731,7 +860,7 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCw
         const match = matchesDynamicIdentity(call, p.tool, p.namespace);
         return match !== false && !(match && carriers === dynamic);
       }
-      return !(custom && followsToolRequest(custom, row, epochs) && remainingToolPeer?.(custom, views.get(row) || row));
+      return !customCalls.some(custom => followsToolRequest(custom, row, epochs) && remainingToolPeer?.(custom, views.get(row) || row));
     });
     if (!unresolved) views.set(typed.row, semanticRaw(typed.row));
     else if (historical && carriers === mcp) {
@@ -905,4 +1034,4 @@ function additionalToolsSummary(payload) {
   return { valid: payload?.type === 'additional_tools' && payload.role === 'developer' && Array.isArray(payload.tools), entries: tools.length, count, names, unsupported, incomplete, shortened: incomplete || names.length >= 24 };
 }
 
-module.exports = { collaborationThreadId, typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, toolPeersInTurn, legacyMcpStatus, historicalMcpPeer, matchesToolOutput, dynamicToolPeer, legacyCommandOrPatchMatches };
+module.exports = { captureMcpArgumentEvidence, collaborationThreadId, typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, toolPeersInTurn, legacyMcpStatus, historicalMcpPeer, matchesToolOutput, dynamicToolPeer, legacyCommandOrPatchMatches };
