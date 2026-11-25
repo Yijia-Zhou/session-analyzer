@@ -8,7 +8,7 @@ The [pinned audit and decision matrix](codex-0163-0172-audit.md) compares 0.162.
 
 | Durable evidence / 持久化依据 | Reader decision / 读取行为 |
 | --- | --- |
-| Code Mode pending receipt and wait / 等待回执与调用 | Match the entire native cell ID within the existing execution scope, including the generation after recovery. Preserve ambiguous or unmatched waits as separate evidence. / 在既有执行作用域匹配完整 cell ID，恢复后保留代次。歧义及未匹配 wait 仍有独立依据。 |
+| Code Mode pending receipt and wait / 等待回执与调用 | Match default-namespace exec and wait requests by the entire native cell ID within the existing execution scope, including the generation after recovery. A scoped namesake keeps its own output and Raw references even if typed completion is missing or rejected. / 在既有执行作用域中，按完整 cell ID 匹配默认命名空间的 exec 和 wait，恢复后保留代次。即使带类型的终态缺失或被拒绝，其他命名空间的同名调用仍独立保留其输出与 Raw 引用。 |
 | Submitted input and user-role injections / 提交输入及用户角色注入 | Aligned native text attribution and compatible physical mirrors support one user event. Explicit heartbeat evidence takes precedence. The TUI side boundary requires the owned attached fork and the contiguous pre-turn policy and injection. / 逐项对齐的文本来源与相容物理镜像支持单一用户事件。明确的 heartbeat 依据优先。TUI 旁聊边界要求自有附属分叉及回合前连续的策略与注入记录。 |
 | Archived ancestor / 归档祖先 | Resolve the referenced physical rollout at the child's exclusive byte and ordinal boundary. Compare viable copies at that boundary and retain snapshot-bound Raw references. / 按子工件指定的排他字节及序号边界解析物理 rollout，在该边界比较可用副本，Raw 引用绑定来源快照。 |
 | Generated image / 生成图片 | Completed typed image evidence may carry an attachment-store file ID. Exact compatible call evidence shares its operation. A file ID takes precedence over stale inline bytes. / 带类型的完成记录可携带附件存储文件 ID。相容的调用依据共用操作；文件 ID 优先于过时的内嵌内容。 |

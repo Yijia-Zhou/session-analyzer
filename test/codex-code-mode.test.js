@@ -109,6 +109,47 @@ function fixtureRawEvents(file) {
     });
 }
 
+test('only native exec and wait requests can own a Code Mode phase', () => {
+  for (const namespace of [undefined, null, '', 'functions', 'mcp__106cd32d0170__notes', 'other', 'Functions', false]) {
+    const native = namespace == null || namespace === '' || namespace === 'functions';
+    for (const name of ['exec', 'wait']) {
+      const requests = [execCall(1, 'outer'), execOutput(2, 'outer', 'Script running with cell ID g2:14'),
+        waitCall(3, 'poll', 'g2:14'), waitOutput(4, 'poll', 'Script completed')];
+      if (namespace !== undefined) requests[name === 'exec' ? 0 : 2].parsed.payload.namespace = namespace;
+      const { operations } = projectCodeModeOperations(requests);
+      assert.equal(operations.length, name === 'exec' && !native ? 0 : 1, `${name} namespace ${namespace}`);
+      if (operations.length) {
+        assert.equal(operations[0].observationState, native ? 'terminal' : 'pending');
+        assert.equal(operations[0].phases.length, native ? 2 : 1);
+      }
+    }
+  }
+});
+
+test('a competing scoped request or contradictory output cannot supply native phase evidence', () => {
+  for (const name of ['exec', 'wait']) {
+    const call = name === 'exec' ? execCall(3, 'shared') : waitCall(3, 'shared', '14');
+    const result = name === 'exec' ? execOutput(5, 'shared', 'Script completed')
+      : waitOutput(5, 'shared', 'Script completed');
+    const prefix = name === 'exec' ? [] : [execCall(1, 'outer'), execOutput(2, 'outer', 'Script running with cell ID 14')];
+    const competitor = name === 'exec' ? execCall(4, 'shared') : waitCall(4, 'shared', '14');
+    competitor.parsed.payload.namespace = 'mcp__106cd32d0170__notes';
+    for (const rows of [
+      [...prefix, call, competitor, result],
+      [...prefix, call, { ...result, parsed: { payload: { ...result.parsed.payload, name: 'other' } } }],
+      [...prefix, call, { ...result, parsed: { payload: { ...result.parsed.payload, namespace: 'other' } } }],
+    ]) {
+      const projection = projectCodeModeOperations(rows);
+      assert.equal(projection.operations.length, 1);
+      const [operation] = projection.operations;
+      assert.equal(operation.observationState, name === 'exec' ? 'unknown' : 'pending');
+      assert.equal(operation.phases.length, 1);
+      const facts = deriveCodeModeFacts({ projection, rawEvents: rows, lifecycleTypes: new Set() });
+      assert.ok(!facts.claimedRawIds.includes(result.rawId));
+    }
+  }
+});
+
 test('projects a direct terminal exec without retaining JavaScript or output content', () => {
   const lifecycle = raw(2, {
     recordType: 'event_msg',

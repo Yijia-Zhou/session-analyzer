@@ -1250,7 +1250,29 @@ function createCodexLogicalBuilder(deps) {
     }
     for (const rawId of initialCodeModeFacts.claimedRawIds) consumed.add(rawId);
 
+    const disputedFunctionIds = new Set();
+    for (const rawId of codeModeProjection.isolatedRawIds || []) {
+      const raw = rawById.get(rawId);
+      if (raw.payloadType === 'function_call') disputedFunctionIds.add(raw.callId);
+    }
     for (const raw of rawEvents) {
+      const disputedMcp = raw.recordType === 'event_msg' && disputedFunctionIds.has(raw.callId)
+        && isToolLifecycleFamily(raw.payloadType, TOOL_LIFECYCLE_FAMILY.MCP_TOOL);
+      if (codeModeProjection.isolatedRawIds?.has(raw.rawId) || disputedMcp) {
+        if (consumed.has(raw.rawId)) continue;
+        const request = raw.payloadType === 'custom_tool_call' || raw.payloadType === 'function_call';
+        // Keep each disputed request visible once. Its outputs have physical
+        // evidence, but cannot supply a result to this or any other request.
+        logicalEvents.push(request ? createLogicalEvent({
+          id: `${raw.sessionId}:logical:unpaired-call:${raw.line}`,
+          timestamp: raw.timestamp, turnId: raw.turnId, kind: 'other_tool_call', layer: 'main',
+          role: 'assistant', toolName: raw.toolName, subtype: raw.toolName, label: raw.toolName,
+          preview: raw.preview, searchText: codexSearchValue(raw.output), status: 'incomplete',
+          severity: 'warning', rawRefs: [rawRef(raw)], channels: [raw.recordType],
+        }) : buildProtocolEvent(raw.originalRaw || raw));
+        consumed.add(raw.rawId);
+        continue;
+      }
       if (raw.callId) {
         if (!byCallId.has(raw.callId)) byCallId.set(raw.callId, []);
         byCallId.get(raw.callId).push(raw);

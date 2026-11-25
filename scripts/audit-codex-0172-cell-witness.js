@@ -11,6 +11,12 @@ const { disposeProjectQueryStore } = require('../src/project-query-store');
 const MiB = 1024 ** 2;
 const generation = /^g[1-9][0-9]*:[0-9]+$/;
 
+// Independent witness selector for the pinned writer's default namespace.
+function nativeIdentity(payload, name) {
+  return (payload.name == null || payload.name === name)
+    && (payload.namespace == null || payload.namespace === '' || payload.namespace === 'functions');
+}
+
 async function listPlain(dir, result) {
   for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
     const file = path.join(dir, entry.name);
@@ -38,12 +44,14 @@ function qualifyingChains(rows) {
     if (!inTurn || row.type !== 'response_item' || typeof p?.call_id !== 'string') continue;
     const line = offset + 1;
     if (['function_call', 'custom_tool_call'].includes(p.type)) {
-      calls.set(p.call_id, calls.has(p.call_id) ? null : { epoch, line, name: p.name });
+      const nativeExec = p.type === 'custom_tool_call' && p.name === 'exec' && nativeIdentity(p, 'exec');
+      calls.set(p.call_id, calls.has(p.call_id) ? null : { epoch, line, nativeExec });
     }
     if (['function_call_output', 'custom_tool_call_output'].includes(p.type)) {
-      outputs.set(p.call_id, outputs.has(p.call_id) ? null : { epoch, line });
+      const waitOutput = p.type === 'function_call_output' && nativeIdentity(p, 'wait');
+      outputs.set(p.call_id, outputs.has(p.call_id) ? null : { epoch, line, waitOutput });
     }
-    if (p.type === 'custom_tool_call_output') {
+    if (p.type === 'custom_tool_call_output' && nativeIdentity(p, 'exec')) {
       const header = typeof p.output === 'string' ? p.output : p.output?.[0]?.text;
       const target = typeof header === 'string' && /^Script running with cell ID (g[1-9][0-9]*:[0-9]+)(?:\r?\n|$)/.exec(header)?.[1];
       if (target) {
@@ -51,7 +59,7 @@ function qualifyingChains(rows) {
         receipts.set(key, receipts.has(key) ? null : { epoch, line, id: p.call_id });
       }
     }
-    if (p.type === 'function_call' && p.name === 'wait') {
+    if (p.type === 'function_call' && p.name === 'wait' && nativeIdentity(p, 'wait')) {
       let args;
       try { args = typeof p.arguments === 'string' ? JSON.parse(p.arguments) : p.arguments; } catch { continue; }
       if (generation.test(args?.cell_id)) waits.push({ key: epoch + '/' + args.cell_id, epoch, line, id: p.call_id });
@@ -61,8 +69,9 @@ function qualifyingChains(rows) {
     const receipt = receipts.get(wait.key);
     const exec = receipt && calls.get(receipt.id);
     const output = outputs.get(wait.id);
-    if (!exec || exec.name !== 'exec' || exec.epoch !== wait.epoch || !calls.get(wait.id)
-        || output?.epoch !== wait.epoch || !(exec.line < receipt.line && receipt.line < wait.line && wait.line < output.line)) return [];
+    if (!exec?.nativeExec || exec.epoch !== wait.epoch || !calls.get(wait.id)
+        || outputs.get(receipt.id)?.line !== receipt.line || !output?.waitOutput || output.epoch !== wait.epoch
+        || !(exec.line < receipt.line && receipt.line < wait.line && wait.line < output.line)) return [];
     return [{ exec: exec.line, receipt: receipt.line, wait: wait.line, output: output.line }];
   });
 }

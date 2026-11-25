@@ -152,7 +152,7 @@ function operationSearchableText(operation, rawById) {
   return uniqueSearchableText([outerJavaScript, ...observedOutputs]);
 }
 
-function presentationClaimedRawIds(operations, rawEvents) {
+function presentationClaimedRawIds(operations, rawEvents, isolatedRawIds) {
   const operationKeys = new Set(operations.map((operation) => operationKey(
     operation.sessionId,
     operation.outerCallId,
@@ -160,7 +160,9 @@ function presentationClaimedRawIds(operations, rawEvents) {
   const claimed = new Set(operations.flatMap((operation) => phaseRefs(operation).map((ref) => String(ref.rawId || ''))));
 
   for (const raw of rawEvents) {
-    if (isOuterExecOutput(raw) && operationKeys.has(rawKey(raw))) claimed.add(String(raw.rawId || ''));
+    if (isOuterExecOutput(raw) && operationKeys.has(rawKey(raw)) && !isolatedRawIds?.has(raw.rawId)) {
+      claimed.add(String(raw.rawId || ''));
+    }
   }
 
   const ordered = [];
@@ -201,7 +203,7 @@ function deriveCodeModeFacts({ projection, rawEvents, logicalEvents, lifecycleTy
 
   return {
     claimedRawPolicy: PRESENTATION_CLAIMED_RAW_POLICY,
-    claimedRawIds: presentationClaimedRawIds(operations, raws),
+    claimedRawIds: presentationClaimedRawIds(operations, raws, projection?.isolatedRawIds),
     operationFacts: operations.map((operation) => ({
       operationId: operation.id,
       rawRefs: canonicalPhaseRefs(operation, rawById),

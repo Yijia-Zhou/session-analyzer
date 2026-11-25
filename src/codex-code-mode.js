@@ -176,8 +176,13 @@ function isResponseItem(raw, payloadType) {
   return raw?.recordType === 'response_item' && raw.payloadType === payloadType;
 }
 
+function isDefaultNamespace(namespace) {
+  return namespace == null || namespace === '' || namespace === 'functions';
+}
+
 function isExecCall(raw) {
-  return isResponseItem(raw, 'custom_tool_call') && toolNameFor(raw) === 'exec' && Boolean(callIdFor(raw));
+  return isResponseItem(raw, 'custom_tool_call') && toolNameFor(raw) === 'exec'
+    && isDefaultNamespace(parsedPayload(raw).namespace) && Boolean(callIdFor(raw));
 }
 
 function isExecOutput(raw) {
@@ -185,7 +190,13 @@ function isExecOutput(raw) {
 }
 
 function isWaitCall(raw) {
-  return isResponseItem(raw, 'function_call') && toolNameFor(raw) === 'wait' && Boolean(callIdFor(raw));
+  return isResponseItem(raw, 'function_call') && toolNameFor(raw) === 'wait'
+    && isDefaultNamespace(parsedPayload(raw).namespace) && Boolean(callIdFor(raw));
+}
+
+function matchesNativeOutputIdentity(raw, name) {
+  const payload = parsedPayload(raw);
+  return (payload.name == null || payload.name === name) && isDefaultNamespace(payload.namespace);
 }
 
 function isWaitOutput(raw) {
@@ -266,17 +277,27 @@ function makePhase(kind, callEntry, outputEntry, targetCellId = '') {
   };
 }
 
-function addToBucket(map, key, value) {
-  if (!map.has(key)) map.set(key, []);
-  map.get(key).push(value);
+function addWireEntry(groups, entry, side) {
+  const group = groups.get(callKey(entry.raw));
+  if (group) group[side].push(entry);
 }
 
-function pairingFor(callEntry, callsByKey, outputsByKey) {
-  const key = callKey(callEntry.raw);
-  const calls = callsByKey.get(key) || [];
-  const outputs = outputsByKey.get(key) || [];
+function isolateConflictingIdentities(groups, nativeCall, name, isolatedRawIds) {
+  for (const { calls, outputs } of groups.values()) {
+    if (calls.every(entry => nativeCall(entry.raw))
+        && outputs.every(entry => matchesNativeOutputIdentity(entry.raw, name))) continue;
+    // An unqualified output has no safe owner in a mixed request group. Keep
+    // these physical rows separate through the generic call-id fallback too.
+    for (const entry of calls) isolatedRawIds.add(entry.raw.rawId);
+    for (const entry of outputs) isolatedRawIds.add(entry.raw.rawId);
+  }
+}
+
+function pairingFor(callEntry, groups, isolatedRawIds) {
+  const { calls, outputs } = groups.get(callKey(callEntry.raw));
   if (calls.length !== 1 || outputs.length > 1) return { output: null, reason: 'ambiguous_call_id' };
   if (!outputs.length) return { output: null, reason: 'missing_output' };
+  if (isolatedRawIds.has(callEntry.raw.rawId)) return { output: null, reason: 'conflicting_output_identity' };
   if (outputs[0].position < callEntry.position) return { output: null, reason: 'output_before_call' };
   return { output: outputs[0], reason: '' };
 }
@@ -310,11 +331,15 @@ function projectCodeModeOperations(rawEvents) {
     })
     .map((entry, position) => ({ ...entry, position }));
 
-  const execCallsByKey = new Map();
-  const execOutputsByKey = new Map();
-  const waitCallsByKey = new Map();
-  const waitOutputsByKey = new Map();
+  const customGroups = new Map();
+  const functionGroups = new Map();
   const turnScopes = new Map();
+
+  // Collect peers only for IDs a native Code Mode request could own.
+  for (const { raw } of entries) {
+    if (isExecCall(raw)) customGroups.set(callKey(raw), { calls: [], outputs: [] });
+    else if (isWaitCall(raw)) functionGroups.set(callKey(raw), { calls: [], outputs: [] });
+  }
 
   for (const entry of entries) {
     const key = sessionKey(entry.raw);
@@ -324,12 +349,16 @@ function projectCodeModeOperations(rawEvents) {
     if (turnId) scope.turnId = turnId;
     entry.turnBoundaryEpoch = scope.epoch;
     turnScopes.set(key, scope);
-    if (isExecCall(entry.raw)) addToBucket(execCallsByKey, callKey(entry.raw), entry);
-    if (isExecOutput(entry.raw)) addToBucket(execOutputsByKey, callKey(entry.raw), entry);
-    if (isWaitCall(entry.raw)) addToBucket(waitCallsByKey, callKey(entry.raw), entry);
-    if (isWaitOutput(entry.raw)) addToBucket(waitOutputsByKey, callKey(entry.raw), entry);
+    const { raw } = entry;
+    if (isResponseItem(raw, 'custom_tool_call')) addWireEntry(customGroups, entry, 'calls');
+    else if (isExecOutput(raw)) addWireEntry(customGroups, entry, 'outputs');
+    else if (isResponseItem(raw, 'function_call')) addWireEntry(functionGroups, entry, 'calls');
+    else if (isWaitOutput(raw)) addWireEntry(functionGroups, entry, 'outputs');
   }
 
+  const isolatedRawIds = new Set();
+  isolateConflictingIdentities(customGroups, isExecCall, 'exec', isolatedRawIds);
+  isolateConflictingIdentities(functionGroups, isWaitCall, 'wait', isolatedRawIds);
   const operations = [];
   const operationByExecOutputPosition = new Map();
   const operationByWaitOutputPosition = new Map();
@@ -337,7 +366,7 @@ function projectCodeModeOperations(rawEvents) {
   const unassociatedWaits = [];
 
   for (const entry of entries.filter((candidate) => isExecCall(candidate.raw))) {
-    const pairing = pairingFor(entry, execCallsByKey, execOutputsByKey);
+    const pairing = pairingFor(entry, customGroups, isolatedRawIds);
     const execPhase = makePhase('exec', entry, pairing.output);
     const raw = entry.raw;
     const operation = {
@@ -399,10 +428,10 @@ function projectCodeModeOperations(rawEvents) {
     }
 
     if (isWaitCall(entry.raw)) {
-      const pairing = pairingFor(entry, waitCallsByKey, waitOutputsByKey);
+      const pairing = pairingFor(entry, functionGroups, isolatedRawIds);
       const targetCellId = waitCellId(entry.raw);
       const phase = makePhase('wait', entry, pairing.output, targetCellId);
-      let reason = pairing.reason === 'ambiguous_call_id' ? pairing.reason : '';
+      let reason = ['ambiguous_call_id', 'conflicting_output_identity'].includes(pairing.reason) ? pairing.reason : '';
       const candidates = targetCellId ? pendingOperationsFor(sessionKey(entry.raw), targetCellId) : [];
       if (!reason && !targetCellId) reason = 'invalid_cell_id';
       if (!reason && candidates.length === 0) reason = 'orphan_cell';
@@ -440,6 +469,7 @@ function projectCodeModeOperations(rawEvents) {
   return {
     operations: operations.map(finalizeOperation),
     unassociatedWaits,
+    isolatedRawIds,
   };
 }
 
@@ -450,6 +480,7 @@ module.exports = {
   codeModeAssociableOutputFragments,
   codeModeDisplayOutputText,
   codeModeOutputText,
+  isExecCall,
   projectCodeModeOperations,
   waitCellId,
 };
