@@ -418,6 +418,12 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
     arguments: JSON.stringify({ targets: [child] }) });
   const waitItem = { type: 'CollabAgentToolCall', id: call_id, tool: 'wait', status: 'failed', sender_thread_id: ID,
     receiver_thread_ids: [child], receiver_agents: [{ thread_id: child }], agents_states: { [child]: { errored: 'typed_wait_marker' } } };
+  const emptyWaitItem = { type: 'CollabAgentToolCall', id: call_id, tool: 'wait', status: 'completed', sender_thread_id: ID,
+    receiver_thread_ids: [], receiver_agents: [] };
+  const timeoutItem = { ...emptyWaitItem, agents_states: {} };
+  const pathWait = response({ type: 'function_call', call_id, name: 'wait_agent', arguments: '{"targets":["/root/reviewer"]}' });
+  const waitBegin = (id, fields = {}) => event({ type: 'collab_waiting_begin', call_id, sender_thread_id: ID, receiver_thread_ids: [id], ...fields });
+  const waitEnd = id => event({ type: 'collab_waiting_end', call_id, sender_thread_id: ID, statuses: { [id]: { errored: 'path_end_marker' } } });
   const patchItem = { type: 'FileChange', id: call_id, status: 'failed', changes: { 'synthetic.txt': { type: 'add', content: 'example\n' } },
     stdout: '', stderr: 'typed_patch_marker' };
   const dynamicRequest = event({ type: 'dynamic_tool_call_request', callId: call_id, turnId: TURN, startedAtMs: 1,
@@ -926,6 +932,59 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
         statuses: agrees ? waitItem.agents_states : { [child]: { completed: 'legacy_wait_marker' } } }), receipt, customReceipt],
       main: [['other_tool_call', 'completed', [3, 8]], ['agent_coordination', agrees ? 'failed' : 'success', agrees ? [4, 5, 6, 7] : [4, 7]]],
       detached: agrees ? [] : [5, 6], markers: [[5, 'typed_wait_marker']] })),
+    ...[
+      ['the resolved receiver', [waitBegin(child), waitEnd(child)], [5, 6], [], 6],
+      ['a different receiver', [waitBegin(child), waitEnd(ID)], [5], [6], 6],
+      ['an end without a begin', [waitEnd(child)], [5], [], 5],
+      ['a foreign sender on the begin', [waitBegin(ID, { sender_thread_id: child }), waitEnd(child)], [6], [5], 6],
+      ['duplicate begins', [waitBegin(child), waitBegin(child), waitEnd(child)], [], [5, 6, 7], 7],
+      ['conflicting begins', [waitBegin(child), waitBegin(ID), waitEnd(child)], [], [5, 6, 7], 7],
+      ['a conflicting begin after a matched end', [waitBegin(child), waitEnd(child), waitBegin(ID)], [5, 6], [7], 6],
+      ['a late begin after an end-only fragment', [waitEnd(child), waitBegin(ID)], [5], [6], 5],
+    ].map(([label, lifecycle, owned, detached, endLine]) => ({ name: 'historical path wait with ' + label,
+      rows: [scopedCustom, pathWait, ...lifecycle, receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, lifecycle.length + 6]], ['agent_coordination', 'success', [4, ...owned, lifecycle.length + 5]]],
+      detached, markers: [[endLine, 'path_end_marker']] })),
+    ...[false, true].map(withBegin => {
+      const next = withBegin ? child : ID;
+      const second = event({ ...waitEnd(next).payload, status: 'failed', statuses: { [next]: { errored: 'later_wait_marker' } } });
+      const firstEnd = withBegin ? 6 : 5;
+      return { name: 'a later path-wait lifecycle cannot change the accepted end, initial begin=' + withBegin,
+        rows: [scopedCustom, pathWait, ...(withBegin ? [waitBegin(child)] : []), waitEnd(child), waitBegin(next), second, receipt, customReceipt],
+        main: [['other_tool_call', 'completed', [3, firstEnd + 4]], ['agent_coordination', 'success',
+          [4, ...(withBegin ? [5] : []), firstEnd, firstEnd + 3]]],
+        detached: [firstEnd + 1, firstEnd + 2], markers: [[firstEnd, 'path_end_marker'], [firstEnd + 2, 'later_wait_marker']] };
+    }),
+    { name: 'two eligible legacy ends for one path wait are ambiguous',
+      rows: [scopedCustom, pathWait, waitEnd(child), event({ ...waitEnd(ID).payload, status: 'failed',
+        statuses: { [ID]: { errored: 'competing_wait_marker' } } }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['agent_coordination', 'success', [4, 7]]],
+      detached: [5, 6], markers: [[5, 'path_end_marker'], [6, 'competing_wait_marker']] },
+    ...[true, false].map(timedOut => ({ name: 'historical path wait with conflicting begins and ' + (timedOut ? 'a timeout' : 'an explicit UUID result'),
+      rows: [scopedCustom, response({ ...pathWait.payload, arguments: JSON.stringify({ targets: [ID, '/root/reviewer'] }) }),
+        waitBegin(ID, { receiver_thread_ids: [ID, child] }), waitBegin(ID, { receiver_thread_ids: [ID, ID] }),
+        timedOut ? event({ type: 'collab_waiting_end', call_id, sender_thread_id: ID, statuses: {} }) : waitEnd(ID),
+        receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 9]], ['agent_coordination', 'success', [4, 7, 8]]], detached: [5, 6],
+      markers: timedOut ? [[8, 'current_function_marker']] : [[7, 'path_end_marker']] })),
+    ...[
+      ['a completed empty result', timeoutItem, true], ['failure with no failed child', { ...timeoutItem, status: 'failed' }, false],
+      ['missing states', emptyWaitItem, false], ['malformed states', { ...timeoutItem, agents_states: [] }, false],
+      ['a reported state', { ...timeoutItem, agents_states: waitItem.agents_states }, false],
+      ['receiver metadata', { ...timeoutItem, receiver_agents: waitItem.receiver_agents }, false],
+      ['a foreign sender', { ...timeoutItem, sender_thread_id: child }, false],
+    ].map(([label, item, matches]) => ({ name: 'targeted V1 timeout with ' + label,
+      rows: [scopedCustom, wait, typed(item), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['agent_coordination', 'success', matches ? [4, 5, 6] : [4, 6]]],
+      detached: matches ? [] : [5], markers: [[6, 'current_function_marker']] })),
+    { name: 'targeted V1 timeout with a competing typed completion',
+      rows: [scopedCustom, wait, typed(timeoutItem), typed(waitItem), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['agent_coordination', 'success', [4, 7]]], detached: [5, 6],
+      markers: [[6, 'typed_wait_marker']] },
+    { name: 'targeted V1 timeout without a function receipt',
+      rows: [scopedCustom, wait, typed(timeoutItem), customReceipt],
+      main: [['other_tool_call', 'completed', [3, 6]], ['agent_coordination', 'success', [4, 5]]], detached: [],
+      markers: [[6, 'scoped_custom_marker']] },
     ...[
       ['update', '*** Update File: synthetic.txt\n context\n-before\n+after',
         { type: 'update', unified_diff: '@@ -1,2 +1,2 @@\n context\n-before\n+after\n', move_path: null }, true],

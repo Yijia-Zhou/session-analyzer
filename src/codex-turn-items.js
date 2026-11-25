@@ -359,9 +359,11 @@ function waitMatches(args, item, sessionId) {
       || !Array.isArray(args?.targets) || !args.targets.length) return false;
   const targets = new Set(args.targets.map(collaborationThreadId));
   // multi_agents/wait.rs can finish for a subset of the requested targets.
-  if (targets.has(null) || !Array.isArray(item.receiver_thread_ids) || !item.receiver_thread_ids.length
+  if (targets.has(null) || !Array.isArray(item.receiver_thread_ids)
       || !item.receiver_thread_ids.every(id => targets.has(collaborationThreadId(id)))) return false;
   const returned = new Set(item.receiver_thread_ids.map(collaborationThreadId));
+  // A V1 timeout completes with an explicitly empty state map and no returned threads.
+  if (!returned.size && item.agents_states == null) return false;
   if (item.agents_states != null) {
     const states = item.agents_states;
     if (!states || typeof states !== 'object' || Array.isArray(states) || Object.keys(states).length !== returned.size

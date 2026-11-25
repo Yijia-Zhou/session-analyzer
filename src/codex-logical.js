@@ -1316,7 +1316,7 @@ function createCodexLogicalBuilder(deps) {
       return names.split('/').every(part => part !== 'root' && /^[a-z0-9_]+$/.test(part));
     }
 
-    function waitReceiversMatch(call, row, native) {
+    function waitReceiversMatch(call, row, native, pathWait) {
       const payload = row.parsed.payload;
       const { name, namespace } = call.parsed.payload;
       const args = commandArgsFromRaw(call);
@@ -1361,17 +1361,34 @@ function createCodexLogicalBuilder(deps) {
       // occurrence of a path in that request must resolve to the same UUID.
       if (begin) {
         const resolved = new Map();
-        return targets.every((id, i) => {
+        const matches = targets.every((id, i) => {
           if (id !== null) return id === receiverIds[i];
           const path = declared[i];
           if (!resolved.has(path)) resolved.set(path, receiverIds[i]);
           return resolved.get(path) === receiverIds[i];
         });
+        if (matches && paths.size && pathWait) {
+          if (pathWait.ends.size) {
+            pathWait.closed = true;
+            return false;
+          }
+          pathWait.begins.add(row.rawId);
+          pathWait.receivers = observed;
+        }
+        return matches;
       }
-      // An end reports a subset (possibly empty). Each distinct unresolved
-      // path can account for at most one receiver outside the known UUIDs.
+      // 79ad7b247's wait writer subscribes to the UUIDs recorded in its begin.
+      // Without a begin, each distinct path can still explain one unknown UUID.
       const known = new Set(targets.filter(id => id !== null));
-      return [...observed].filter(id => !known.has(id)).length <= paths.size;
+      const unknown = [...observed].filter(id => !known.has(id));
+      if (unknown.length > paths.size) return false;
+      if (paths.size && pathWait) {
+        if (pathWait.closed) return false;
+        if (unknown.length && pathWait.begins.size && (pathWait.begins.size > 1
+            || !unknown.every(id => pathWait.receivers.has(id)))) return false;
+        pathWait.ends.add(row.rawId);
+      }
+      return true;
     }
 
     function legacyAgentMessageMatches(call, payload) {
@@ -1401,7 +1418,7 @@ function createCodexLogicalBuilder(deps) {
       return [args?.target, args?.id].map(collaborationThreadId).some(id => id !== null && id !== receiver);
     }
 
-    function remainingToolPeer(call, row) {
+    function remainingToolPeer(call, row, pathWait) {
       const { name, namespace } = call.parsed.payload;
       if (typeof name !== 'string' || (namespace != null && typeof namespace !== 'string')) return null;
       const native = namespace == null || namespace === '' || namespace === 'functions';
@@ -1430,7 +1447,7 @@ function createCodexLogicalBuilder(deps) {
         const sender = row.parsed.payload.sender_thread_id;
         if (sender != null && sender !== call.sessionId) return null;
         if ((name === 'wait' || name === 'wait_agent') && ['collab_waiting_begin', 'collab_waiting_end'].includes(row.payloadType)) {
-          return waitReceiversMatch(call, row, native) ? row : null;
+          return waitReceiversMatch(call, row, native, pathWait) ? row : null;
         }
         if (name === 'send_message' && ['collab_agent_interaction_begin', 'collab_agent_interaction_end'].includes(row.payloadType)) {
           return legacyAgentMessageMatches(call, row.parsed.payload) ? row : null;
@@ -1482,7 +1499,11 @@ function createCodexLogicalBuilder(deps) {
       const remaining = requests.filter(raw => !consumed.has(raw.rawId));
       const owner = remaining.length === 1 ? remaining[0] : null;
       const unclaimed = group.filter(raw => !consumed.has(raw.rawId));
-      const eligible = owner ? toolPeersInTurn(owner, unclaimed, epochs, remainingToolPeer) : [];
+      const pathWait = { begins: new Set(), ends: new Set(), closed: false };
+      // Process eligible rows in physical order so a later begin cannot revise an earlier end.
+      let eligible = owner ? toolPeersInTurn(owner, unclaimed, epochs, (call, row) => remainingToolPeer(call, row, pathWait)) : [];
+      if (pathWait.begins.size > 1) eligible = eligible.filter(row => !pathWait.begins.has(row.rawId));
+      if (pathWait.ends.size > 1) eligible = eligible.filter(row => !pathWait.ends.has(row.rawId));
       const outputs = eligible.filter(raw => matchesToolOutput(owner, raw));
       const remainingPeers = owner ? [owner, ...eligible.filter(raw => outputs.length <= 1 || !matchesToolOutput(owner, raw))] : [];
       const ownedIds = new Set(remainingPeers.map(raw => raw.rawId));
