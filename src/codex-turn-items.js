@@ -132,15 +132,51 @@ function turnBoundaryEpochs(rawEvents) {
 // codex-mcp/src/tools.rs prefixes an environment-qualified callable namespace
 // with the first twelve hex digits of SHA-1(environment). Connector aliases,
 // sanitized names and collision suffixes need separate registration evidence.
-function matchesScopedMcpCall(raw, item) {
+function scopedRequestToolName(raw) {
+  if (raw?.recordType !== 'response_item' || !['function_call', 'custom_tool_call'].includes(raw.payloadType)) return '';
+  const call = raw.parsed?.payload;
+  if (typeof call?.namespace !== 'string' || typeof call.name !== 'string'
+      || call.namespace.length + 2 + call.name.length > 128
+      || !/^(?:mcp__)?[a-f0-9]{12}__[A-Za-z0-9_]+$/.test(call.namespace)
+      || !/^[A-Za-z0-9_]+$/.test(call.name)) return '';
+  return `${call.namespace}__${call.name}`;
+}
+
+function matchesScopedMcpCall(raw, server, tool, environmentId) {
   const call = raw.parsed.payload;
-  if (call.type !== 'function_call' || call.name !== item.tool
-      || typeof item.environmentId !== 'string' || !item.environmentId || item.environmentId.length > 4096
-      || !/^[A-Za-z0-9_]{1,128}$/.test(item.server) || !/^[A-Za-z0-9_]{1,128}$/.test(item.tool)
+  if (call.type !== 'function_call' || call.name !== tool
+      || typeof environmentId !== 'string' || !environmentId || environmentId.length > 4096
+      || typeof server !== 'string' || !/^[A-Za-z0-9_]{1,128}$/.test(server)
+      || typeof tool !== 'string' || !/^[A-Za-z0-9_]{1,128}$/.test(tool)
       || typeof call.namespace !== 'string' || call.namespace.length + 2 + call.name.length > 128) return false;
-  const scope = createHash('sha1').update(item.environmentId).digest('hex').slice(0, 12);
-  const namespace = `${scope}__${item.server}`;
+  const scope = createHash('sha1').update(environmentId).digest('hex').slice(0, 12);
+  const namespace = `${scope}__${server}`;
   return call.namespace === namespace || call.namespace === `mcp__${namespace}`;
+}
+
+function scopedLegacyMcpStatus(call, row) {
+  const p = row.parsed?.payload;
+  const invocation = p?.invocation;
+  if (!invocation || !matchesScopedMcpCall(call, invocation.server, invocation.tool, invocation.environment_id)) return '';
+  if (p.type === 'mcp_tool_call_begin') return 'incomplete';
+  if (p.type !== 'mcp_tool_call_end') return '';
+  // McpToolCallEndEvent::is_success (0.172.0) reads the tagged Result.
+  const result = p.result;
+  if (!result || typeof result !== 'object' || Object.keys(result).length !== 1) return '';
+  if (typeof result.Err === 'string') return 'failed';
+  if (!Array.isArray(result.Ok?.content) || (result.Ok.isError != null && typeof result.Ok.isError !== 'boolean')) return '';
+  return result.Ok.isError === true ? 'failed' : 'success';
+}
+
+function scopedRequestPeer(call, row, epochs, repeatedEnd) {
+  if (row === call) return row;
+  if (row.line <= call.line || row.sessionId !== call.sessionId || epochs.get(row.rawId) !== epochs.get(call.rawId)
+      || (row.turnId && call.turnId && row.turnId !== call.turnId)) return null;
+  if (row.typedItemType || (row.recordType === 'response_item' && row.payloadType === call.payloadType + '_output')) return row;
+  if (row.recordType !== 'event_msg' || !['mcp_tool_call_begin', 'mcp_tool_call_end'].includes(row.payloadType)
+      || (repeatedEnd && row.payloadType === 'mcp_tool_call_end')) return null;
+  const status = scopedLegacyMcpStatus(call, row);
+  return status ? { ...row, status } : null;
 }
 
 // Ambiguous repeated identities are inspectable Protocol records. Never choose
@@ -159,8 +195,11 @@ function semanticRawEvents(rawEvents) {
     const key = JSON.stringify([raw.sessionId, item.id]);
     typedCounts.set(key, (typedCounts.get(key) || 0) + 1);
   }
-  const scopedCallNames = new Map();
-  const semantic = rawEvents.map((raw) => {
+  return rawEvents.map((raw) => {
+    // The recorded namespace distinguishes the request from a native namesake
+    // even without a terminal. Only the separate join below can verify MCP status.
+    const scopedName = scopedRequestToolName(raw);
+    if (scopedName) return { ...raw, toolName: scopedName, scopedRequest: true };
     const view = semanticRaw(raw);
     if (view === raw) return raw;
     const key = JSON.stringify([raw.sessionId, raw.parsed.payload.item.id]);
@@ -180,17 +219,18 @@ function semanticRawEvents(rawEvents) {
         const output = peers[1];
         const outputPayload = output?.parsed?.payload;
         if (raw.parsed.payload.thread_id !== raw.sessionId || !view.turnId || !['completed', 'failed'].includes(item.status)
-            || !matchesScopedMcpCall(call, item)
+            || !matchesScopedMcpCall(call, item.server, item.tool, item.environmentId)
             || peers[0] !== call || call.line >= raw.line || peers.length > 2
             || (output && (output.recordType !== 'response_item' || output.payloadType !== 'function_call_output'
               || (outputPayload.name != null && outputPayload.name !== item.tool)
               || (outputPayload.namespace != null && outputPayload.namespace !== call.parsed.payload.namespace)))) {
           return { ...raw, callId: '' };
         }
-        // Use the validated callable identity during projection. Short names like
-        // wait and create_goal also exist in the native tool catalog.
-        scopedCallNames.set(call, `${call.parsed.payload.namespace}__${item.tool}`);
         return view;
+      }
+      if (scopedRequestToolName(calls[0]) && !(item.type === 'DynamicToolCall'
+          && calls[0].parsed.payload.namespace === item.namespace && callName === item.tool)) {
+        return { ...raw, callId: '' };
       }
       const compatible = !callName || callName === view.toolName
         || (item.type === 'CommandExecution' && ['shell', 'exec_command', 'write_stdin', 'functions.exec_command', 'functions.shell_command', 'functions.write_stdin'].includes(callName))
@@ -203,8 +243,6 @@ function semanticRawEvents(rawEvents) {
     }
     return view;
   });
-  return scopedCallNames.size ? semantic.map(raw => scopedCallNames.has(raw)
-    ? { ...raw, toolName: scopedCallNames.get(raw) } : raw) : semantic;
 }
 
 // Startup evidence is deliberately separate from requested tool arguments.
@@ -264,4 +302,4 @@ function additionalToolsSummary(payload) {
   return { valid: payload?.type === 'additional_tools' && payload.role === 'developer' && Array.isArray(payload.tools), entries: tools.length, count, names, unsupported, incomplete, shortened: incomplete || names.length >= 24 };
 }
 
-module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile };
+module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer };

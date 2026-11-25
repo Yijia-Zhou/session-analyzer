@@ -166,6 +166,212 @@ test('verified scoped MCP short names stay distinct from native tools and pendin
   }
 });
 
+test('scoped tool requests use only their own completion evidence across index paths', async (t) => {
+  const scopes = ['mcp__106cd32d0170__notes', '106cd32d0170__notes'];
+  const tools = ['create_goal', 'shell_command', 'apply_patch', 'js_repl', 'spawn_agent', 'request_user_input',
+    'update_plan', 'view_image', 'js_repl_reset'];
+  const cases = [];
+  for (const [i, tool] of tools.entries()) {
+    for (const [j, mode] of ['missing', 'rejected', 'valid'].entries()) {
+      cases.push({ tool, namespace: scopes[(i + j) % 2], mode, kind: mode === 'valid' ? 'mcp_call' : 'other_tool_call',
+        status: mode === 'valid' ? 'failed' : 'completed' });
+    }
+  }
+  cases.push(
+    { tool: 'js_repl', namespace: scopes[0], mode: 'request only', kind: 'other_tool_call', status: 'incomplete' },
+    ...['apply_patch', 'js_repl'].map(tool => ({ tool, namespace: scopes[1], mode: 'missing', custom: true,
+      kind: 'other_tool_call', status: 'completed' })),
+    { tool: 'create_goal', mode: 'native', kind: 'goal', status: 'active' },
+    { tool: 'shell_command', namespace: 'functions', mode: 'native', kind: 'command', status: 'failed' },
+    { tool: 'apply_patch', mode: 'native', custom: true, kind: 'patch', status: 'success' },
+    { tool: 'js_repl', mode: 'native', custom: true, kind: 'js_repl', status: 'success' },
+    ...[undefined, 'collaboration', 'multi_agent_v1', 'agents'].map(namespace => ({ tool: 'spawn_agent', namespace,
+      mode: 'native', kind: 'agent_coordination', status: 'success' })),
+  );
+  const rows = [];
+  for (const [i, scenario] of cases.entries()) {
+    const { tool, namespace, mode, custom } = scenario;
+    const id = `call-${i}`;
+    const request = `request_marker_${i}_end`;
+    const receipt = `receipt_marker_${i}_end`;
+    const args = tool === 'request_user_input' ? { questions: [{ id, header: 'Fixture', question: request, options: [] }] }
+      : { command: request, objective: request };
+    const first = rows.length + 3;
+    scenario.mainLines = [first];
+    scenario.detached = [];
+    scenario.marker = mode === 'request only' ? request : receipt;
+    rows.push(response({ call_id: id, name: tool, ...(namespace ? { namespace } : {}),
+      ...(mode !== 'native' ? { status: 'declined' } : {}), ...(custom ? { type: 'custom_tool_call',
+      input: tool === 'apply_patch' ? `*** Begin Patch\n*** Add File: fixture.txt\n+${request}\n*** End Patch` : request }
+      : { type: 'function_call', arguments: JSON.stringify(args) }) }));
+    if (mode === 'valid' || mode === 'rejected') {
+      rows.push(typed({ type: 'McpToolCall', id, server: 'notes', tool,
+        environmentId: mode === 'valid' ? 'synthetic-registration-scope' : 'conflicting-scope', status: 'failed' }));
+      (mode === 'valid' ? scenario.mainLines : scenario.detached).push(rows.length + 2);
+    }
+    if (mode !== 'request only') {
+      const output = tool === 'shell_command' ? `Exit code: 2\nWall time: 1.25 seconds\nOutput:\n${receipt}`
+        : custom ? JSON.stringify({ output: receipt, metadata: { exit_code: 0 } }) : receipt;
+      rows.push(response({ type: custom ? 'custom_tool_call_output' : 'function_call_output', call_id: id, output }));
+      scenario.mainLines.push(rows.length + 2);
+    }
+    if (tool === 'spawn_agent') {
+      scenario.startup = `activity_model_${i}_end`;
+      rows.push(event({ type: 'sub_agent_activity', event_id: id, kind: 'started',
+        agent_thread_id: 'synthetic-child', model: scenario.startup }));
+      (mode === 'native' ? scenario.mainLines : scenario.detached).push(rows.length + 2);
+    }
+  }
+  const f = await fixture(t, rows);
+  const resident = await codex.__testOnly.buildUncompactedIndexForDetailTests(f.options);
+  const compact = await codex.buildIndex(f.options);
+  const cold = await codex.buildSourceBackedIndex(f.options);
+  const warm = await codex.buildSourceBackedIndex({ ...f.options, previousIndex: cold });
+  assert.equal(warm.totals.reusedFileCount, 1);
+  for (const index of [resident, compact, cold, warm]) {
+    const indexed = index.sessionsById.get(ID);
+    assert.equal(indexed.counts.toolCalls, cases.length);
+    const session = index === cold || index === warm ? await materializeSessionForIndex(index, indexed) : indexed;
+    const main = session.logicalEvents.filter(e => e.layer === 'main');
+    assert.equal(main.length, cases.length);
+    for (const { tool, namespace, mode, custom, kind, status, mainLines, detached, marker, startup } of cases) {
+      const label = `${namespace || 'default'} / ${tool} / ${mode}`;
+      const owner = main.find(e => e.rawRefs[0].line === mainLines[0]);
+      assert.deepEqual([owner?.kind, owner?.status], [kind, status], label);
+      assert.deepEqual(owner.rawRefs.map(r => r.line), mainLines, label);
+      for (const line of detached) {
+        const owners = session.logicalEvents.filter(e => e.rawRefs.some(r => r.line === line));
+        assert.deepEqual(owners.map(e => [e.layer, e.rawRefs.length]), [['protocol', 1]], label);
+      }
+      for (const line of [...mainLines, ...detached]) {
+        const raw = session.rawEvents.find(r => r.source.line === line);
+        const record = await codex.readIndexedCodexRawRecord(index, session, raw);
+        assert.deepEqual(JSON.parse(record.raw), f.records[line - 1], label);
+      }
+      const detail = await codex.buildHydratedEventDetail(index, session, owner.id, 'main', { locale: 'en' });
+      assert.equal(detail.meta.status, status, label);
+      if (mode !== 'native') {
+        const hits = codex.query.getTimeline(index, session, { layer: 'main', q: marker, kind, status });
+        assert.deepEqual(hits.events.filter(e => e.hasSearchHit).map(e => e.id), [owner.id], label);
+        assert.ok(JSON.stringify(detail).includes(marker), label);
+        assert.ok(!detail.timelineSections.some(s => ['collaboration', 'user_input', 'plan_update'].includes(s.type)), label);
+      }
+      if (startup) {
+        const hits = codex.query.getTimeline(index, session, { layer: 'main', q: startup });
+        assert.equal(hits.searchEventCount, mode === 'native' ? 1 : 0, label);
+        assert.equal(JSON.stringify(detail).includes(startup), mode === 'native', label);
+      }
+      if (tool === 'shell_command' || custom) {
+        const raw = await codex.buildHydratedEventDetail(index, session, owner.rawRefs[0].rawId, 'raw', { locale: 'en' });
+        const formatter = { shell_command: 'Command', apply_patch: 'Patch', js_repl: 'JavaScript' }[tool];
+        assert.equal(raw.timelineSections.some(s => s.title === formatter), mode === 'native', label);
+      }
+    }
+    assert.equal(indexed.counts.failedCommands, 1, 'only the native shell exit counts');
+    assert.equal(indexed.counts.patches, 1, 'only the native patch counts');
+  }
+});
+
+test('scoped shell names join matching MCP or dynamic evidence and isolate foreign lifecycle records', async (t) => {
+  const namespace = '106cd32d0170__notes';
+  const tool = 'shell_command';
+  const invocation = { server: 'notes', tool, arguments: {}, environment_id: 'synthetic-registration-scope' };
+  const end = (id, result, fields = {}) => event({ type: 'mcp_tool_call_end', call_id: id,
+    invocation: { ...invocation, ...fields }, result });
+  const cases = [
+    [end('err', { Err: 'synthetic error' }), 'mcp_call', 'failed'],
+    [end('ok-error', { Ok: { content: [], isError: true } }), 'mcp_call', 'failed'],
+    [end('ok', { Ok: { content: [] } }), 'mcp_call', 'success'],
+    [event({ type: 'mcp_tool_call_begin', call_id: 'begin', invocation }), 'mcp_call', 'completed'],
+    [end('wrong-environment', { Err: 'foreign error' }, { environment_id: 'other' }), 'other_tool_call', 'completed', 'detached'],
+    [end('unknown-result', { Ok: { content: [], isError: 'true' } }), 'other_tool_call', 'completed', 'detached'],
+    [event({ type: 'exec_command_end', call_id: 'legacy-command', command: ['example'], exit_code: 9, status: 'failed' }),
+      'other_tool_call', 'completed', 'detached'],
+    ...['hook_completed', 'image_generation_end', 'dynamic_tool_call_end', 'approval_request_begin'].map(type =>
+      [event({ type, call_id: type, status: 'failed' }), 'other_tool_call', 'completed', 'detached']),
+    [typed({ type: 'CommandExecution', id: 'typed-command', command: ['example'], exit_code: 9, status: 'failed' }),
+      'other_tool_call', 'completed', 'detached'],
+    [typed({ type: 'DynamicToolCall', id: 'dynamic', namespace, tool, arguments: {}, status: 'completed',
+      success: true, content_items: [{ type: 'inputText', text: 'dynamic result' }] }), 'other_tool_call', 'success'],
+  ];
+  const f = await fixture(t, cases.flatMap(([row]) => {
+    const id = row.payload.call_id || row.payload.item.id;
+    return [response({ type: 'function_call', call_id: id, namespace, name: tool, arguments: '{}', status: 'failed' }), row,
+      response({ type: 'function_call_output', call_id: id, output: `receipt_${id}_end` })];
+  }));
+  const index = await codex.buildSourceBackedIndex(f.options);
+  const session = await materializeSessionForIndex(index, index.sessionsById.get(ID));
+  const main = session.logicalEvents.filter(e => e.layer === 'main');
+  assert.equal(main.length, cases.length);
+  assert.equal(session.counts.toolCalls, cases.length);
+  assert.equal(session.counts.failedCommands, 0);
+  const names = codex.query.getTimeline(index, session, { layer: 'main', q: namespace + '__' + tool });
+  assert.equal(names.searchEventCount, cases.length);
+  for (const [i, [row, kind, status, detached]] of cases.entries()) {
+    const first = i * 3 + 3;
+    const id = row.payload.call_id || row.payload.item.id;
+    const owner = main.find(e => e.rawRefs.some(r => r.line === first));
+    assert.deepEqual([owner.kind, owner.status], [kind, status], id);
+    assert.deepEqual(owner.rawRefs.map(r => r.line), detached ? [first, first + 2] : [first, first + 1, first + 2], id);
+    const owners = session.logicalEvents.filter(e => e.rawRefs.some(r => r.line === first + 1));
+    assert.deepEqual(owners.map(e => [e.layer, e.rawRefs.length]), detached ? [['protocol', 1]] : [['main', 3]], id);
+    for (let line = first; line <= first + 2; line += 1) {
+      const raw = session.rawEvents.find(r => r.source.line === line);
+      const record = await codex.readIndexedCodexRawRecord(index, session, raw);
+      assert.deepEqual(JSON.parse(record.raw), f.records[line - 1], id);
+    }
+  }
+});
+
+test('scoped requests separate repeated IDs and retain disputed receipts in Protocol', async (t) => {
+  const namespace = 'mcp__106cd32d0170__notes';
+  const call_id = 'shared';
+  const scoped = response({ type: 'function_call', call_id, name: 'shell_command', namespace, arguments: '{"command":"scoped"}' });
+  const native = response({ type: 'function_call', call_id, name: 'shell_command', arguments: '{"command":"native"}' });
+  const end = event({ type: 'mcp_tool_call_end', call_id,
+    invocation: { environment_id: 'synthetic-registration-scope', server: 'notes', tool: 'shell_command', arguments: {} },
+    result: { Err: 'scoped_legacy_error' } });
+  const output = response({ type: 'function_call_output', call_id, output: 'plain_function_receipt' });
+  const patch = response({ type: 'custom_tool_call', call_id, name: 'apply_patch',
+    input: '*** Begin Patch\n*** Add File: synthetic.txt\n+example\n*** End Patch' });
+  const customOutput = response({ type: 'custom_tool_call_output', call_id,
+    output: '{"output":"custom_patch_receipt","metadata":{"exit_code":0}}' });
+  const cases = [
+    ...[[native, scoped], [scoped, native]].map(([first, second]) => ({
+      name: `${first.payload.namespace ? 'scoped' : 'native'} shell first`, rows: [first, second, end, output],
+      main: [['other_tool_call', 'incomplete', [3]], ['other_tool_call', 'incomplete', [4]]],
+      detached: [[5, 'scoped_legacy_error'], [6, 'plain_function_receipt']],
+    })),
+    { name: 'one owner per channel', rows: [scoped, patch, customOutput, output],
+      main: [['other_tool_call', 'completed', [3, 6]], ['patch', 'success', [4, 5]]], detached: [] },
+    { name: 'wrong channel', rows: [scoped, customOutput],
+      main: [['other_tool_call', 'incomplete', [3]]], detached: [[4, 'custom_patch_receipt']] },
+    { name: 'next turn', rows: [scoped, event({ type: 'task_started', turn_id: 'another-turn' }), output],
+      main: [['other_tool_call', 'incomplete', [3]]], detached: [[5, 'plain_function_receipt']] },
+  ];
+  for (const scenario of cases) await t.test(scenario.name, async (t) => {
+    const f = await fixture(t, scenario.rows);
+    const index = await codex.buildSourceBackedIndex(f.options);
+    const session = await materializeSessionForIndex(index, index.sessionsById.get(ID));
+    const main = session.logicalEvents.filter(e => e.layer === 'main').sort((a, b) => a.rawRefs[0].line - b.rawRefs[0].line);
+    assert.equal(session.counts.toolCalls, scenario.main.length);
+    assert.equal(new Set(main.map(e => e.id)).size, scenario.main.length);
+    assert.deepEqual(main.map(e => [e.kind, e.status, e.rawRefs.map(r => r.line)]), scenario.main);
+    for (const owner of main) {
+      const request = f.records[owner.rawRefs[0].line - 1].payload;
+      assert.equal(owner.toolName, request.namespace ? `${request.namespace}__${request.name}` : request.name);
+    }
+    for (const [line, marker] of scenario.detached) {
+      const owners = session.logicalEvents.filter(e => e.rawRefs.some(r => r.line === line));
+      assert.deepEqual(owners.map(e => [e.layer, e.rawRefs.map(r => r.line)]), [['protocol', [line]]]);
+      for (const layer of ['main', 'protocol']) {
+        const hits = codex.query.getTimeline(index, session, { layer, q: marker });
+        assert.deepEqual(hits.events.filter(e => e.hasSearchHit).map(e => e.id), layer === 'protocol' ? [owners[0].id] : []);
+      }
+    }
+  });
+});
+
 test('a scoped wait cannot take ownership of a pending native cell', async (t) => {
   const namespace = 'mcp__106cd32d0170__notes';
   const marker = 'scoped-reader-output';

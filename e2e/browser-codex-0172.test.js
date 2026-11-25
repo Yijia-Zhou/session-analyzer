@@ -6,7 +6,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { buildSourceBackedIndex } = require('../src/codex');
-const { materializeIndexedSession, openApp, switchHiddenLocale, waitForDetailView, writeJsonl } = require('./browser-helpers');
+const { fillSearch, materializeIndexedSession, openApp, switchHiddenLocale, waitForDetailView, writeJsonl } = require('./browser-helpers');
 
 test('Codex 0.172 persisted evidence has the same owners in Timeline and Trajectory', async (t) => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-0172-browser-'));
@@ -18,6 +18,8 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
   const prompt = '<example>submitted question</example>';
   const marker = 'Synthetic side bootstrap evidence';
   const heartbeat = 'Synthetic scheduled heartbeat';
+  const namespace = 'mcp__106cd32d0170__notes';
+  const shellReceipt = 'scoped-shell-receipt';
   const records = [
     { type: 'session_meta', payload: { id, cwd: home, history_mode: 'paginated', attached_thread: true,
       thread_source: 'tui_side_chat', forked_from_id: 'bbbbbbbb-0172-4172-8172-bbbbbbbbbbbb' } },
@@ -35,23 +37,34 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
       channels: { voice_transcript: { role: 'assistant', text: 'spoken fixture answer' } } } },
     completion({ type: 'Extension', kind: 'image_gen.generation', id: 'image', status: 'completed',
       fileId: 'fixture-image', revisedPrompt: 'generated fixture' }),
-    response({ type: 'function_call', name: 'echo', namespace: 'mcp__106cd32d0170__notes', arguments: '{}', call_id: 'tool' }),
-    completion({ type: 'McpToolCall', id: 'tool', tool: 'echo', server: 'notes', environmentId: 'synthetic-registration-scope',
+    response({ type: 'function_call', name: 'shell_command', namespace, arguments: '{}', call_id: 'tool' }),
+    completion({ type: 'McpToolCall', id: 'tool', tool: 'shell_command', server: 'notes', environmentId: 'synthetic-registration-scope',
       status: 'failed', result: { isError: true, content: [{ type: 'text', text: 'fixture failure' }] } }),
     response({ type: 'function_call_output', call_id: 'tool', output: 'fixture failure' }),
     response({ type: 'message', role: 'user', content: [{ type: 'input_text', text: heartbeat }],
       internal_chat_message_metadata_passthrough: { turn_id: turn, content_item_kinds: ['user.heartbeat'],
         content_item_metadata: [{ provenance: { type: 'user' } }] } }),
     completion({ type: 'UserMessage', id: 'scheduled', content: [{ type: 'text', text: heartbeat, text_elements: [] }] }),
-  ];
-  await writeJsonl(path.join(home, 'sessions', `rollout-2026-11-24T00-00-00-${id}.jsonl`), records.map((row, n) => ({
+    response({ type: 'function_call', name: 'shell_command', namespace, arguments: '{"command":"echo synthetic"}', call_id: 'scoped-shell' }),
+    response({ type: 'function_call_output', call_id: 'scoped-shell', output: shellReceipt }),
+    response({ type: 'function_call', name: 'spawn_agent', namespace, arguments: '{}', call_id: 'scoped-agent' }),
+    response({ type: 'function_call_output', call_id: 'scoped-agent', output: 'scoped-agent-receipt' }),
+    response({ type: 'function_call', name: 'shell_command', namespace: 'functions', arguments: '{"command":"echo native"}', call_id: 'native' }),
+    response({ type: 'function_call_output', call_id: 'native', output: 'native-shell-receipt' }),
+  ].map((row, n) => ({
     timestamp: new Date(Date.UTC(2026, 10, 24, 0, 0, n)).toISOString(), ordinal: n, ...row,
-  })));
+  }));
+  await writeJsonl(path.join(home, 'sessions', `rollout-2026-11-24T00-00-00-${id}.jsonl`), records);
   const index = await buildSourceBackedIndex({ repoRoot: home, codexHome: home });
   const session = await materializeIndexedSession(index, id);
   const main = session.logicalEvents.filter(event => event.layer === 'main');
-  assert.deepEqual(main.map(event => event.rawRefs.map(ref => ref.line)), [[5, 6], [7], [8], [9, 10, 11]]);
-  assert.equal(main[3].status, 'failed');
+  assert.deepEqual(main.map(event => event.rawRefs.map(ref => ref.line)), [[5, 6], [7], [8], [9, 10, 11], [14, 15], [16, 17], [18, 19]]);
+  const tools = [
+    [main[3], 'mcp_call', 'failed'],
+    [main[4], 'other_tool_call', 'completed'],
+    [main[5], 'other_tool_call', 'completed'],
+    [main[6], 'command', 'completed'],
+  ];
   const controls = [[marker, [3]], [heartbeat, [12, 13]]].map(([text, lines]) => {
     const event = session.logicalEvents.find(e => e.layer === 'protocol' && e.rawRefs.some(ref => ref.line === lines[0]));
     assert.deepEqual(event.rawRefs.map(ref => ref.line), lines);
@@ -76,6 +89,16 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
         await card.waitFor();
         assert.equal(await card.count(), 1);
       }
+      for (const [event, kind, status] of tools) {
+        const card = page.locator(`#timeline [${attribute}="${event.id}"]`);
+        if (presentation === 'timeline') {
+          assert.ok(await card.evaluate((node, kind) => node.classList.contains('kind-' + kind.replaceAll('_', '-')), kind));
+          assert.equal(await card.locator('.statusChip').textContent(), status);
+        } else {
+          assert.equal(await card.getAttribute('data-kind'), kind);
+          assert.equal(await card.locator('.trajectoryEventStatus').textContent(), status);
+        }
+      }
       assert.match(await page.locator('#timeline').innerText(), /spoken fixture answer/);
       for (const { text } of controls) assert.ok(!(await page.locator('#timeline').innerText()).includes(text));
       const speech = page.locator(`#timeline [${attribute}="${main[1].id}"]`);
@@ -84,6 +107,21 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
       await page.locator('#detail [data-detail-action="raw"]').click();
       await waitForDetailView(page, 'rawRefs');
       await page.waitForFunction(() => document.querySelector('#detail .rawRefsView')?.textContent.includes('spoken fixture answer'));
+
+      await fillSearch(page, shellReceipt);
+      const hit = page.locator(`#timeline .searchHit[${attribute}]`);
+      await hit.locator('.searchMark').first().waitFor();
+      assert.equal(await hit.count(), 1);
+      assert.equal(await page.locator('body').getAttribute('data-main-presentation'), presentation);
+      assert.equal(await hit.getAttribute(attribute), main[4].id);
+      await (presentation === 'timeline' ? hit.locator('.eventKind') : hit).click();
+      await waitForDetailView(page, 'inspector');
+      await page.locator('#detail [data-detail-action="raw"]').click();
+      const raw = page.locator('#detail .rawRefsView pre');
+      await raw.first().waitFor();
+      assert.deepEqual((await raw.allTextContents()).map(text => JSON.parse(text)), records.slice(13, 15));
+      await fillSearch(page, '');
+      await hit.waitFor({ state: 'detached' });
     }
     await page.locator('#layerSelect').selectOption('protocol');
     for (const { text, event } of controls) {

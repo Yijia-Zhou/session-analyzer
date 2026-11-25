@@ -4140,7 +4140,7 @@ function rawToolSections(raw, relatedEvent, session = {}) {
     return { sections: [...detail.timelineSections, ...detail.inspectorSections], omitPayloadKeys };
   }
   sections.push(...recordedTruncationSections([raw]));
-  const toolName = raw.toolName || relatedEvent?.toolName || relatedEvent?.subtype || '';
+  const toolName = codexMessageEvidence.scopedRequestToolName(raw) || raw.toolName || relatedEvent?.toolName || relatedEvent?.subtype || '';
 
   if (raw.recordType === 'response_item' && raw.payloadType === 'function_call' && toolName === 'shell_command') {
     const args = commandArgsFromRaw(raw);

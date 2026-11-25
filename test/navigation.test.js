@@ -44,6 +44,16 @@ test('navigation category helpers keep existing event categories', () => {
   assert.ok(deltaCategories.includes('plans'));
 });
 
+test('Codex MCP navigation follows the logical owner of a scoped tool name', () => {
+  const toolName = 'mcp__106cd32d0170__notes__spawn_agent';
+  const generic = { sourceKind: 'codex', kind: 'other_tool_call', toolName };
+  const verified = { ...generic, kind: 'mcp_call' };
+  const historical = { kind: 'other_tool_call', toolName: 'mcp__notes__echo' };
+  const events = [generic, verified, historical];
+  const categories = navigation.navigationCategoriesForEvent(verified, events);
+  assert.deepEqual(categories.find(category => category.id === 'mcp_calls').matchesInResult, [verified, historical]);
+});
+
 test('temporary referenced events are revealed beside their source without mutating filtered results', () => {
   const events = [
     { id: 'operation', kind: 'other_tool_call' },

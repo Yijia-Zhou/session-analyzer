@@ -7,6 +7,7 @@ function hasExternalizedImage(value) {
 function createCodexLogicalBuilder(deps) {
   const {
     semanticRawEvents = (raws) => raws,
+    scopedRequestPeer,
     resolvedSubAgentStartup = () => null,
     turnBoundaryEpochs = () => new Map(),
     historyFacts = () => null,
@@ -536,6 +537,7 @@ function createCodexLogicalBuilder(deps) {
 
     const protocolToolName = group.find((raw) => raw.toolName)?.toolName || '';
     const toolName = customCall?.toolName || functionCall?.toolName || protocolToolName || '';
+    const scopedRequest = (customCall || functionCall)?.scopedRequest;
     const functionOutputInfo = parseFormattedCommandOutput(functionOutput?.output);
     const customOutputObj = parseOutputEnvelope(customOutput?.output);
     const attachmentSummaries = attachmentSummaryForRawList(group);
@@ -554,9 +556,11 @@ function createCodexLogicalBuilder(deps) {
     let severity = 'normal';
     let touchedFiles = [];
     const outputStats = {};
-    const parts = [];
+    const parts = scopedRequest ? [toolName] : [];
 
-    const outcomeRows = group.filter(isToolOutcomeRow);
+    // A scoped request can carry its own status. Only an admitted lifecycle
+    // describes the tool's outcome; an ordinary response just records a return.
+    const outcomeRows = group.filter(raw => isToolOutcomeRow(raw) && (!scopedRequest || raw.recordType === 'event_msg'));
     const protocolStatus = String(outcomeRows.find((raw) => raw.status)?.status || '').toLowerCase();
     const declined = outcomeRows.some((raw) => /_declined$/.test(raw.payloadType) || String(raw.status || '').toLowerCase() === 'declined');
     const failed = outcomeRows.some((raw) => String(raw.status || '').toLowerCase() === 'failed');
@@ -645,11 +649,12 @@ function createCodexLogicalBuilder(deps) {
       preview = truncate(codexSearchValue(customCall?.output) || codexSearchValue(customOutputObj?.output) || 'js_repl');
       outputStats.exitCode = exitCode;
       outputStats.durationMs = execEnd?.durationMs || Math.round(Number(customOutputObj?.metadata?.duration_seconds || 0) * 1000);
-    } else if (mcpRows.length || toolName.startsWith('mcp__')) {
+    } else if (mcpRows.length || (!scopedRequest && toolName.startsWith('mcp__'))) {
       kind = 'mcp_call';
       label = 'MCP tool';
       preview = truncate(mcpEnd?.preview || group.find((raw) => raw.preview)?.preview || toolName);
       status = declined ? 'declined' : failed ? 'failed' : explicitIncomplete ? 'incomplete' : 'success';
+      if (scopedRequest && !mcpEnd && !declined && !failed) status = completed ? 'completed' : 'incomplete';
       severity = status === 'failed' ? 'error' : status === 'declined' || status === 'incomplete' ? 'warning' : 'normal';
       outputStats.durationMs = mcpEnd?.durationMs || 0;
     } else if (hookRows.length) {
@@ -675,6 +680,10 @@ function createCodexLogicalBuilder(deps) {
       status = 'success';
     } else {
       preview = truncate(first.preview || toolName || 'Other tool call');
+      if (scopedRequest && explicitIncomplete) {
+        status = 'incomplete';
+        severity = 'warning';
+      }
     }
 
     const typedExtension = group.find((raw) => raw.typedItemType === 'Extension')?.originalRaw?.parsed?.payload?.item;
@@ -1250,6 +1259,18 @@ function createCodexLogicalBuilder(deps) {
     }
     for (const rawId of initialCodeModeFacts.claimedRawIds) consumed.add(rawId);
 
+    function keepUnpaired(raw) {
+      const request = raw.recordType === 'response_item' && ['custom_tool_call', 'function_call'].includes(raw.payloadType);
+      logicalEvents.push(request ? createLogicalEvent({
+        id: `${raw.sessionId}:logical:unpaired-call:${raw.line}`,
+        timestamp: raw.timestamp, turnId: raw.turnId, kind: 'other_tool_call', layer: 'main',
+        role: 'assistant', toolName: raw.toolName, subtype: raw.toolName, label: raw.toolName,
+        preview: raw.preview, searchText: uniqueNonEmpty([raw.toolName, codexSearchValue(raw.output)]).join('\n'),
+        status: 'incomplete', severity: 'warning', rawRefs: [rawRef(raw)], channels: [raw.recordType],
+      }) : buildProtocolEvent(raw.originalRaw || raw));
+      consumed.add(raw.rawId);
+    }
+
     const disputedFunctionIds = new Set();
     for (const rawId of codeModeProjection.isolatedRawIds || []) {
       const raw = rawById.get(rawId);
@@ -1260,17 +1281,7 @@ function createCodexLogicalBuilder(deps) {
         && isToolLifecycleFamily(raw.payloadType, TOOL_LIFECYCLE_FAMILY.MCP_TOOL);
       if (codeModeProjection.isolatedRawIds?.has(raw.rawId) || disputedMcp) {
         if (consumed.has(raw.rawId)) continue;
-        const request = raw.payloadType === 'custom_tool_call' || raw.payloadType === 'function_call';
-        // Keep each disputed request visible once. Its outputs have physical
-        // evidence, but cannot supply a result to this or any other request.
-        logicalEvents.push(request ? createLogicalEvent({
-          id: `${raw.sessionId}:logical:unpaired-call:${raw.line}`,
-          timestamp: raw.timestamp, turnId: raw.turnId, kind: 'other_tool_call', layer: 'main',
-          role: 'assistant', toolName: raw.toolName, subtype: raw.toolName, label: raw.toolName,
-          preview: raw.preview, searchText: codexSearchValue(raw.output), status: 'incomplete',
-          severity: 'warning', rawRefs: [rawRef(raw)], channels: [raw.recordType],
-        }) : buildProtocolEvent(raw.originalRaw || raw));
-        consumed.add(raw.rawId);
+        keepUnpaired(raw);
         continue;
       }
       if (raw.callId) {
@@ -1284,8 +1295,45 @@ function createCodexLogicalBuilder(deps) {
       }
     }
 
+    function consumeScopedRequests(callId, group) {
+      const requests = group.filter(raw => raw.recordType === 'response_item'
+        && ['function_call', 'custom_tool_call'].includes(raw.payloadType));
+      const scopedChannels = new Set(requests.filter(raw => raw.scopedRequest).map(raw => raw.payloadType));
+      const repeatedEnd = group.filter(raw => raw.payloadType === 'mcp_tool_call_end').length > 1;
+      for (const channel of scopedChannels) {
+        const calls = requests.filter(raw => raw.payloadType === channel);
+        const outputs = group.filter(raw => raw.recordType === 'response_item' && raw.payloadType === channel + '_output');
+        if (calls.length > 1 || outputs.length > 1) {
+          for (const raw of [...calls, ...outputs]) keepUnpaired(raw);
+          continue;
+        }
+        const call = calls[0];
+        const peers = group.map(raw => scopedRequestPeer(call, raw, epochs, repeatedEnd)).filter(Boolean);
+        const event = buildToolLogicalEvent(callId, peers, [], epochs);
+        if (requests.length > 1) event.id = `${call.sessionId}:logical:scoped-call:${call.line}`;
+        logicalEvents.push(event);
+        for (const raw of peers) consumed.add(raw.rawId);
+        for (const raw of outputs) {
+          if (!consumed.has(raw.rawId)) keepUnpaired(raw);
+        }
+      }
+      // Leave independent requests on the other wire channel to normal dispatch.
+      // A disputed MCP lifecycle cannot belong to a remaining custom request.
+      const remainingRequest = requests.some(raw => !consumed.has(raw.rawId));
+      for (const raw of group) {
+        if (consumed.has(raw.rawId)) continue;
+        const disputedMcp = scopedChannels.has('function_call') && raw.recordType === 'event_msg'
+          && isToolLifecycleFamily(raw.payloadType, TOOL_LIFECYCLE_FAMILY.MCP_TOOL);
+        if (!remainingRequest || disputedMcp) keepUnpaired(raw);
+      }
+    }
+
     for (const [callId, callGroup] of byCallId.entries()) {
-      const group = callGroup.filter((raw) => !consumed.has(raw.rawId)).sort((a, b) => a.line - b.line);
+      let group = callGroup.filter((raw) => !consumed.has(raw.rawId)).sort((a, b) => a.line - b.line);
+      if (group.some(raw => raw.scopedRequest)) {
+        consumeScopedRequests(callId, group);
+        group = group.filter(raw => !consumed.has(raw.rawId));
+      }
       const hasToolShape = group.some(isToolResponseItemRow)
         || group.some((raw) => raw.recordType === 'event_msg' && isToolLifecycleCallGroupType(raw.payloadType));
       if (!hasToolShape) continue;
