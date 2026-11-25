@@ -1317,28 +1317,94 @@ function createCodexLogicalBuilder(deps) {
       return hyphenated.replaceAll('-', '').toLowerCase();
     }
 
-    function collaborationReceiverConflicts(name, args, payload) {
-      if (name === 'wait_agent') {
-        if (!Array.isArray(args?.targets) || !args.targets.length) return false;
-        const targets = new Set(args.targets.map(collaborationThreadId));
-        if (targets.has(null)) return false; // A path or relative name could resolve to any receiver.
-        const foreign = value => {
-          const id = collaborationThreadId(value);
-          return id !== null && !targets.has(id);
-        };
-        if (payload.type === 'collab_waiting_begin') {
-          return (Array.isArray(payload.receiver_thread_ids) && payload.receiver_thread_ids.some(foreign))
-            || (Array.isArray(payload.receiver_agents) && payload.receiver_agents.some(agent => foreign(agent?.thread_id)));
-        }
-        return (payload.statuses && typeof payload.statuses === 'object' && !Array.isArray(payload.statuses)
-            && Object.keys(payload.statuses).some(foreign))
-          || (Array.isArray(payload.agent_statuses) && payload.agent_statuses.some(agent => foreign(agent?.thread_id)));
+    // AgentPath accepts /root descendants and relative references made of
+    // lowercase names. The registry is needed to resolve a valid path to a UUID.
+    function isAgentPathReference(value) {
+      if (typeof value !== 'string') return false;
+      if (value === '/root') return true;
+      const names = value.startsWith('/root/') ? value.slice('/root/'.length) : value;
+      return names.split('/').every(part => part !== 'root' && /^[a-z0-9_]+$/.test(part));
+    }
+
+    function waitReceiversMatch(call, payload, native) {
+      const { name, namespace } = call.parsed.payload;
+      const args = commandArgsFromRaw(call);
+      if (payload.sender_thread_id !== call.sessionId || !args || Array.isArray(args)
+          || (args.timeout_ms != null && !Number.isSafeInteger(args.timeout_ms))) return false;
+
+      // Early bare wait and wait_agent took ids. Later targeted waits took
+      // targets, and the V2 mailbox wait accepts only an optional timeout.
+      const namedV1 = namespace === 'multi_agent_v1';
+      const hasIds = Object.hasOwn(args, 'ids');
+      const hasTargets = Object.hasOwn(args, 'targets');
+      const field = namedV1 || hasTargets ? 'targets' : hasIds ? 'ids' : null;
+      if ((!namedV1 && hasTargets && hasIds)
+          || ((name === 'wait' || !field) && Object.keys(args).some(key => key !== field && key !== 'timeout_ms'))
+          || (name === 'wait' && (!native || field !== 'ids'))
+          || (field === 'ids' && !native)
+          || (field === 'targets' && !native && !namedV1)) return false;
+      const declared = field ? args[field] : [];
+      if (!Array.isArray(declared) || (field && (!declared.length || (args.timeout_ms != null && args.timeout_ms <= 0)))
+          || !declared.every(value => typeof value === 'string' && value.length)) return false;
+      const targets = declared.map(collaborationThreadId);
+      const paths = new Set(declared.filter((value, i) => targets[i] === null));
+      // The earlier bare targets handler could resolve paths or relative names.
+      if (paths.size && (!native || field !== 'targets' || ![...paths].every(isAgentPathReference))) return false;
+
+      const begin = payload.type === 'collab_waiting_begin';
+      const receivers = begin ? payload.receiver_thread_ids
+        : payload.statuses && typeof payload.statuses === 'object' && !Array.isArray(payload.statuses)
+          ? Object.keys(payload.statuses) : null;
+      if (!Array.isArray(receivers) || (begin && receivers.length !== targets.length)) return false;
+      const receiverIds = receivers.map(collaborationThreadId);
+      const observed = new Set(receiverIds);
+      if (observed.has(null)) return false;
+      const metadata = begin ? payload.receiver_agents : payload.agent_statuses;
+      if (metadata !== undefined && (!Array.isArray(metadata)
+          || !metadata.every(agent => observed.has(collaborationThreadId(agent?.thread_id))))) return false;
+
+      // The writer resolves targets in order before emitting the begin. Each
+      // occurrence of a path in that request must resolve to the same UUID.
+      if (begin) {
+        const resolved = new Map();
+        return targets.every((id, i) => {
+          if (id !== null) return id === receiverIds[i];
+          const path = declared[i];
+          if (!resolved.has(path)) resolved.set(path, receiverIds[i]);
+          return resolved.get(path) === receiverIds[i];
+        });
       }
+      // An end reports a subset (possibly empty). Each distinct unresolved
+      // path can account for at most one receiver outside the known UUIDs.
+      const known = new Set(targets.filter(id => id !== null));
+      return [...observed].filter(id => !known.has(id)).length <= paths.size;
+    }
+
+    function legacyAgentMessageMatches(call, payload) {
+      const args = commandArgsFromRaw(call);
+      const receiver = collaborationThreadId(payload.receiver_thread_id);
+      if (call.parsed.payload.namespace === 'multi_agent_v1' || payload.sender_thread_id !== call.sessionId
+          || !receiver || !args || typeof payload.prompt !== 'string') return false;
+      const target = collaborationThreadId(args.target);
+      if (target ? target !== receiver : args.target !== '/morpheus' && !isAgentPathReference(args.target)) return false;
+      // Earlier SendMessage handlers copied the text into a legacy interaction.
+      // A later writer redacted it to ""; the current one emits no interaction.
+      if (Array.isArray(args.items)) {
+        // The first items writer ignored extra fields and decoded interrupt as a boolean.
+        return (!Object.hasOwn(args, 'interrupt') || typeof args.interrupt === 'boolean')
+          && args.items.length > 0 && args.items.every(item => item?.type === 'text' && typeof item.text === 'string')
+          && args.items.map(item => item.text).join('\n') === payload.prompt;
+      }
+      return typeof args.message === 'string' && Boolean(args.message.trim())
+        && Object.keys(args).every(key => key === 'target' || key === 'message')
+        && (payload.prompt === args.message || (payload.prompt === '' && target === receiver));
+    }
+
+    function collaborationReceiverConflicts(name, args, payload) {
       const receiver = collaborationThreadId(payload.receiver_thread_id);
       if (name === 'spawn_agent' || receiver === null) return false;
       // The older send_input and close_agent contracts called the target "id".
-      const declared = name === 'send_message' ? [args?.target] : [args?.target, args?.id];
-      return declared.map(collaborationThreadId).some(id => id !== null && id !== receiver);
+      return [args?.target, args?.id].map(collaborationThreadId).some(id => id !== null && id !== receiver);
     }
 
     function remainingToolPeer(call, row) {
@@ -1369,24 +1435,13 @@ function createCodexLogicalBuilder(deps) {
           && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.COLLABORATION)) {
         const sender = row.parsed.payload.sender_thread_id;
         if (sender != null && sender !== call.sessionId) return null;
-        // The 0.110 wait tool takes agent IDs. The later Code Mode namesake
-        // takes a cell_id and cannot own a collaboration terminal.
-        if (name === 'wait' && native && ['collab_waiting_begin', 'collab_waiting_end'].includes(row.payloadType)) {
-          const args = commandArgsFromRaw(call);
-          if (!Array.isArray(args?.ids) || !args.ids.length || !args.ids.every(id => typeof id === 'string' && id.length > 0)
-              || Object.keys(args).some(key => key !== 'ids' && key !== 'timeout_ms')
-              || (args.timeout_ms != null && !Number.isSafeInteger(args.timeout_ms))) return null;
-          const p = row.parsed.payload;
-          if (p.sender_thread_id !== call.sessionId) return null;
-          const targets = new Set(args.ids);
-          if (row.payloadType === 'collab_waiting_begin') {
-            return Array.isArray(p.receiver_thread_ids) && p.receiver_thread_ids.every(id => targets.has(id)) ? row : null;
-          }
-          return p.statuses && typeof p.statuses === 'object' && !Array.isArray(p.statuses)
-            && Object.keys(p.statuses).every(id => targets.has(id)) ? row : null;
+        if ((name === 'wait' || name === 'wait_agent') && ['collab_waiting_begin', 'collab_waiting_end'].includes(row.payloadType)) {
+          return waitReceiversMatch(call, row.parsed.payload, native) ? row : null;
         }
-        const actions = { spawn_agent: 'collab_agent_spawn', send_input: 'collab_agent_interaction', send_message: 'collab_agent_interaction',
-          wait_agent: 'collab_waiting', close_agent: 'collab_close' };
+        if (name === 'send_message' && ['collab_agent_interaction_begin', 'collab_agent_interaction_end'].includes(row.payloadType)) {
+          return legacyAgentMessageMatches(call, row.parsed.payload) ? row : null;
+        }
+        const actions = { spawn_agent: 'collab_agent_spawn', send_input: 'collab_agent_interaction', close_agent: 'collab_close' };
         if (!Object.hasOwn(actions, name)) return null;
         const action = actions[name];
         if (row.payloadType !== action + '_begin' && row.payloadType !== action + '_end') return null;
