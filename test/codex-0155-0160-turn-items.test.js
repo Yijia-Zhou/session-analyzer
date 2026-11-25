@@ -476,6 +476,19 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       rows: [scoped, event({ ...dynamicRequest.payload, turnId: 'other-turn' }), typedEnd(true), receipt],
       main: [['mcp_call', 'failed', [3, 5, 6]]], detached: [4],
       markers: [[4, 'transport_request_marker'], [5, 'typed_terminal_marker']] },
+    ...[true, false].map(withBoundary => {
+      const first = withBoundary ? 3 : 2;
+      return { name: 'a foreign transport response leaves the local failure and receipt in their turn, opening boundary=' + withBoundary,
+        initialTurn: withBoundary ? event({ type: 'task_started', turn_id: TURN }) : null,
+        rows: [scoped, event({ ...dynamicResponse.payload, turn_id: 'other-turn' }), typedEnd(true), receipt],
+        main: [['mcp_call', 'failed', [first, first + 2, first + 3]]], detached: [first + 1],
+        markers: [[first + 1, 'transport_response_marker'], [first + 2, 'typed_terminal_marker'], [first + 3, 'current_function_marker']] };
+    }),
+    { name: 'a foreign transport response cannot suppress a later real boundary',
+      rows: [scoped, event({ ...dynamicResponse.payload, turn_id: 'other-turn' }),
+        event({ type: 'task_started', turn_id: TURN }), typedEnd(true), receipt],
+      main: [['other_tool_call', 'incomplete', [3]]], detached: [4, 6, 7],
+      markers: [[4, 'transport_response_marker'], [6, 'typed_terminal_marker']] },
     ...[
       [{ namespace: 'functions', name: 'lookup' }, {}],
       [{ name: 'lookup' }, { namespace: 'functions' }],

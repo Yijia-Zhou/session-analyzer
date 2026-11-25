@@ -93,6 +93,10 @@ Ordinary Legacy/Paginated controls surfaced two earlier differences outside coll
 
 Local integration on the reviewed code tree `89a69ae` passed 284 focused turn-item tests. The full Node run passed 2,855 with 24 skips. Chromium passed 460 with two skips, including the English and Chinese Timeline and Trajectory checks. The browser build and generated-asset check passed. Initial sandbox runs hit write-permission errors in evaluation and screenshot directories; both suites were rerun with write access. Remote CI was not run for these local commits. / 已审阅代码树 `89a69ae` 通过 284 项回合条目聚焦测试。完整 Node 回归通过 2,855 项、跳过 24 项；Chromium 通过 460 项、跳过 2 项，涵盖英中两种语言的 Timeline 与 Trajectory。浏览器构建及生成文件检查通过。首次沙箱运行在评估与截图库目录遇到写权限错误，两个套件均在具有写权限的环境中重新执行。本地提交尚未运行远端 CI。
 
+On `00b1075`, an imported dynamic response naming a previous turn separated a scoped call from its local failure and receipt. The four-path regression covers both a complete turn and a fragment without an opening record. A real intervening turn boundary still separates the evidence. / 在 `00b1075` 上，混合导入的一条旧回合动态响应会把限定请求与本地失败和回执隔开。四条读取路径分别验证了完整回合和缺少开始记录的片段；两者之间若出现真正的回合边界，证据仍分开归属。
+
+A separate projection test reproduced the same late response interrupting a pending Code Mode cell. Its local wait now completes the original operation. / 独立的投影用例复现了同一迟到响应中断待等待的 Code Mode cell；本地 wait 现在可完成原操作。
+
 ## Acceptance units and remaining scope / 验收单元与后续范围
 
 The first seven rows describe the accepted foundation fixes. The last three are open and independently scoped. Convert the smallest case from the linked manual probes into a focused regression **before** changing production behavior. Validate Raw identity, event counts and actual search results on uncompacted, compact, cold materialized and verified reuse paths. For Main/detail changes, add bilingual Timeline/Trajectory and History CLI checks, with an older input as a negative control. / 前七项为本轮基础修复，最后三项继续独立规划。先将最小反例转成回归，再改生产逻辑；四条读取路径均验物理 Raw、事件数与检索结果。涉及主层或详情时验双语两种视图、CLI 及旧输入对照。

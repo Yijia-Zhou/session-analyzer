@@ -1,6 +1,7 @@
 'use strict';
 
 const { stripAnsiSequences } = require('./shared/terminal-text');
+const { isDynamicTransport } = require('./codex-tool-lifecycle-contract');
 
 const OBSERVATION_STATES = Object.freeze({
   UNKNOWN: 'unknown',
@@ -344,7 +345,7 @@ function projectCodeModeOperations(rawEvents) {
   for (const entry of entries) {
     const key = sessionKey(entry.raw);
     const scope = turnScopes.get(key) || { epoch: 0, turnId: '' };
-    const turnId = String(entry.raw?.turnId || '');
+    const turnId = isDynamicTransport(entry.raw) ? '' : String(entry.raw?.turnId || '');
     if (isTurnBoundary(entry.raw) || (turnId && scope.turnId && turnId !== scope.turnId)) scope.epoch += 1;
     if (turnId) scope.turnId = turnId;
     entry.turnBoundaryEpoch = scope.epoch;
@@ -398,6 +399,7 @@ function projectCodeModeOperations(rawEvents) {
 
   function markPendingOperationsUnobserved(entry) {
     const raw = entry.raw;
+    if (isDynamicTransport(raw)) return;
     const currentSession = sessionKey(raw);
     for (const operation of operations) {
       if (operation.sessionId !== currentSession || operation.observationState !== OBSERVATION_STATES.PENDING) continue;

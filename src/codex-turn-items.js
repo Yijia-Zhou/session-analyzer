@@ -5,7 +5,7 @@ const { isDeepStrictEqual } = require('node:util');
 const { fileURLToPath } = require('node:url');
 const { fsPathApi, sameRecordedPath } = require('./shared/fs-path');
 const { uniqueArguments } = require('./codex-terminal-continuations');
-const { toolLifecycleDescriptorFor, TOOL_LIFECYCLE_FAMILY, TOOL_LIFECYCLE_PHASE } = require('./codex-tool-lifecycle-contract');
+const { isDynamicTransport, toolLifecycleDescriptorFor, TOOL_LIFECYCLE_FAMILY, TOOL_LIFECYCLE_PHASE } = require('./codex-tool-lifecycle-contract');
 
 function hasGeneratedImageFile(item) {
   return item?.type === 'Extension' && item.kind === 'image_gen.generation'
@@ -121,11 +121,21 @@ function semanticRaw(raw) {
     typedItemType: raw.parsed.payload.item.type, originalRaw: raw };
 }
 
+function transportTurnMatches(row, turnId) {
+  const recorded = row.payloadType === 'dynamic_tool_call_request' ? row.parsed.payload.turnId : row.turnId;
+  return !turnId || typeof recorded !== 'string' || !recorded || recorded === turnId;
+}
+
 function turnBoundaryEpochs(rawEvents) {
   const epochs = new Map();
   let epoch = { number: 0, turnId: '' };
   let turnId = '';
   for (const raw of rawEvents) {
+    // A transport message names the turn of its invocation, even if it arrives later.
+    if (isDynamicTransport(raw)) {
+      epochs.set(raw.rawId, epoch);
+      continue;
+    }
     const boundary = ['task_started', 'task_complete', 'turn_aborted'].includes(raw.canonicalType);
     const turnScope = raw.canonicalType === 'task_started' || raw.recordType === 'turn_context';
     if (boundary || (turnId && raw.turnId && raw.turnId !== turnId)) {
@@ -495,10 +505,8 @@ function resolveNativeTypedTerminal(requests, group, epochs, views, remainingToo
     if (row.payloadType === 'item_completed' && p.item?.type === 'DynamicToolCall') {
       return (p.thread_id == null || p.thread_id === call.sessionId) && matchesDynamicIdentity(call, p.item.tool, p.item.namespace) !== false;
     }
-    if (['dynamic_tool_call_request', 'dynamic_tool_call_response'].includes(row.payloadType)) {
-      const turn = call.turnId || raw.turnId;
-      if (row.payloadType === 'dynamic_tool_call_request' && typeof p.turnId === 'string' && p.turnId && turn && p.turnId !== turn) return false;
-      return matchesDynamicIdentity(call, p.tool, p.namespace) !== false;
+    if (isDynamicTransport(row)) {
+      return transportTurnMatches(row, call.turnId || raw.turnId) && matchesDynamicIdentity(call, p.tool, p.namespace) !== false;
     }
     return toolLifecycleDescriptorFor(row.payloadType)?.family === TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL && matchesDynamicTool(call, row) !== false;
   }) : [];
@@ -568,12 +576,11 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCw
     const unresolved = peers.some(row => {
       if (identified.has(row)) return false;
       if (row.recordType === 'response_item' && ['custom_tool_call', 'custom_tool_call_output', 'function_call_output'].includes(row.payloadType)) return false;
-      if (row.recordType === 'event_msg' && ['dynamic_tool_call_request', 'dynamic_tool_call_response'].includes(row.payloadType)) {
+      if (isDynamicTransport(row)) {
         // A transport mirror stays in Protocol. It can corroborate the identity
         // of a typed dynamic item, but cannot supply an outcome or attest MCP.
         const p = row.parsed.payload;
-        const turn = call.turnId || typed.row.turnId;
-        if (row.payloadType === 'dynamic_tool_call_request' && typeof p.turnId === 'string' && p.turnId && turn && p.turnId !== turn) return false;
+        if (!transportTurnMatches(row, call.turnId || typed.row.turnId)) return false;
         const match = matchesDynamicIdentity(call, p.tool, p.namespace);
         return match !== false && !(match && carriers === dynamic);
       }
