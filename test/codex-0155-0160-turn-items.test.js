@@ -86,7 +86,7 @@ async function fixture(t, rows, initialTurn = event({ type: 'task_started', turn
   await fs.mkdir(root, { recursive: true });
   await fs.mkdir(repoRoot);
   const records = [{ type: 'session_meta', payload: { id: ID, cwd: repoRoot } },
-    ...(initialTurn ? [initialTurn] : []), ...rows].map((row, i) => ({
+    ...(initialTurn ? [initialTurn] : []), ...(typeof rows === 'function' ? rows(repoRoot) : rows)].map((row, i) => ({
     timestamp: new Date(Date.parse('2026-10-02T10:00:00.000Z') + i * 1000).toISOString(), ...row,
   }));
   const file = path.join(root, `rollout-${ID}.jsonl`);
@@ -410,6 +410,16 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
     invocation: { server: 'notes', tool, environment_id: environment, arguments: {} }, reason: 'decline_marker' });
   const foreignTypedEnd = typedEnd(false, 'foreign-environment', 'second_terminal_marker');
   const independentDynamic = response({ type: 'function_call', call_id, namespace: 'fixture', name: 'lookup', arguments: '{}' });
+  const shell = response({ type: 'function_call', call_id, namespace: 'functions', name: 'shell_command',
+    arguments: '{"command":"echo fail"}' });
+  const commandItem = { type: 'CommandExecution', id: call_id, command: ['echo', 'fail'], cwd: 'C:/repo',
+    source: 'agent', status: 'failed', parsed_cmd: [], exit_code: 72, aggregated_output: 'typed_command_marker' };
+  const wait = response({ type: 'function_call', call_id, namespace: 'multi_agent_v1', name: 'wait_agent',
+    arguments: JSON.stringify({ targets: [child] }) });
+  const waitItem = { type: 'CollabAgentToolCall', id: call_id, tool: 'wait', status: 'failed', sender_thread_id: ID,
+    receiver_thread_ids: [child], receiver_agents: [{ thread_id: child }], agents_states: { [child]: { errored: 'typed_wait_marker' } } };
+  const patchItem = { type: 'FileChange', id: call_id, status: 'failed', changes: { 'synthetic.txt': { type: 'add', content: 'example\n' } },
+    stdout: '', stderr: 'typed_patch_marker' };
   const dynamicRequest = event({ type: 'dynamic_tool_call_request', callId: call_id, turnId: TURN, startedAtMs: 1,
     namespace, tool, arguments: { query: 'transport_request_marker' } });
   const dynamicResponse = event({ type: 'dynamic_tool_call_response', call_id, turn_id: TURN, completed_at_ms: 2,
@@ -742,6 +752,178 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
     { name: 'custom patch keeps a matching patch end', rows: [scoped, patch, patchEnd, patchReceipt, receipt],
       main: [['other_tool_call', 'completed', [3, 7]], ['patch', 'success', [4, 5, 6]]], detached: [],
       markers: [[6, 'patch_receipt_marker'], [7, 'current_function_marker']] },
+    ...[
+      ['the direct command', {}, true], ['the native shell wrapper', { command: ['/bin/sh', '-c', 'echo fail'] }, true],
+      ['a different command', { command: ['echo', 'other'] }, false], ['a user shell command', { source: 'user_shell' }, false],
+      ['a unified exec command', { source: 'unified_exec_startup' }, false],
+    ].map(([label, fields, matches]) => ({ name: `native typed shell with ${label}`,
+      rows: [scopedCustom, shell, typed({ ...commandItem, ...fields }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['command', matches ? 'failed' : 'completed', matches ? [4, 5, 6] : [4, 6]]],
+      detached: matches ? [] : [5], markers: [[5, 'typed_command_marker']], commandExit: matches ? 72 : undefined })),
+    ...[
+      ['matching participants', {}, true], ['a foreign sender', { sender_thread_id: child }, false],
+      ['a foreign receiver', { receiver_thread_ids: [ID] }, false],
+      ['a foreign receiver agent', { receiver_agents: [{ thread_id: ID }] }, false],
+      ['a foreign agent state', { agents_states: { [ID]: { errored: 'typed_wait_marker' } } }, false],
+      ['a wrong action', { tool: 'close_agent' }, false],
+      ['failure contradicting a completed child', { agents_states: { [child]: { completed: 'typed_wait_marker' } } }, false],
+      ['completion contradicting an errored child', { status: 'completed' }, false],
+    ].map(([label, fields, matches]) => ({ name: `native typed V1 wait with ${label}`,
+      rows: [scopedCustom, wait, typed({ ...waitItem, ...fields }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['agent_coordination', matches ? 'failed' : 'success', matches ? [4, 5, 6] : [4, 6]]],
+      detached: matches ? [] : [5], markers: [[5, 'typed_wait_marker']] })),
+    ...[
+      ['the requested file', patchItem.changes, true],
+      ['a different path', { 'other.txt': { type: 'add', content: 'example\n' } }, false],
+      ['a different edit', { 'synthetic.txt': { type: 'delete', content: 'example\n' } }, false],
+      ['different contents', { 'synthetic.txt': { type: 'add', content: 'other\n' } }, false],
+    ].map(([label, changes, matches]) => ({ name: `native typed patch with ${label}`,
+      rows: [scoped, patch, typed({ ...patchItem, changes }), patchReceipt, receipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['patch', matches ? 'failed' : 'success', matches ? [4, 5, 6] : [4, 6]]],
+      detached: matches ? [] : [5], markers: [[5, 'typed_patch_marker']] })),
+    { name: 'native typed patch and the other function\'s scoped MCP failure each keep their own terminal',
+      rows: [scoped, patch, typed(patchItem), typedEnd(true), patchReceipt, receipt],
+      main: [['mcp_call', 'failed', [3, 6, 8]], ['patch', 'failed', [4, 5, 7]]], detached: [],
+      markers: [[5, 'typed_patch_marker'], [6, 'typed_terminal_marker']] },
+    { name: 'native typed shell and opposing legacy terminal stay in Protocol',
+      rows: [scopedCustom, shell, typed(commandItem), event({ source: commandItem.source, command: commandItem.command, type: 'exec_command_end',
+        call_id, status: 'completed', exit_code: 0, aggregated_output: 'legacy_command_marker' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['command', 'completed', [4, 7]]], detached: [5, 6],
+      markers: [[5, 'typed_command_marker'], [6, 'legacy_command_marker']] },
+    { name: 'native typed shell and duplicate typed terminals stay in Protocol',
+      rows: [scopedCustom, shell, typed(commandItem), typed({ ...commandItem, aggregated_output: 'second_command_marker' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['command', 'completed', [4, 7]]], detached: [5, 6],
+      markers: [[5, 'typed_command_marker'], [6, 'second_command_marker']] },
+    ...[
+      ['a user shell', { source: 'user_shell' }, true], ['a distinct directory', { cwd: 'C:/other' }, true],
+      ['a distinct command', { command: ['echo', 'another'] }, true], ['an unknown source', { source: 'unknown' }, false],
+    ].map(([label, fields, foreign]) => ({ name: 'native typed shell beside ' + label,
+      rows: [scopedCustom, response({ ...shell.payload, arguments: '{"command":"echo fail","workdir":"C:/repo"}' }),
+        typed(commandItem), typed({ ...commandItem, ...fields, status: 'completed',
+        exit_code: 0, aggregated_output: 'second_command_marker' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['command', foreign ? 'failed' : 'completed', foreign ? [4, 5, 7] : [4, 7]]],
+      detached: foreign ? [6] : [5, 6], markers: [[5, 'typed_command_marker'], [6, 'second_command_marker']] })),
+    ...[false, true].flatMap(reversed => [false, true].map(withLegacy => {
+      const success = typed({ ...commandItem, cwd: '/unrelated', status: 'completed', exit_code: 0, aggregated_output: 'second_command_marker' });
+      const candidates = [typed(commandItem), success];
+      if (reversed) candidates.reverse();
+      const legacy = withLegacy ? [event({ type: 'exec_command_end', call_id, cwd: commandItem.cwd, source: 'agent', command: commandItem.command,
+        status: 'failed', exit_code: 72, aggregated_output: 'legacy_command_marker' })] : [];
+      return { name: 'unspecified workdir with two typed candidates, reversed=' + reversed + ', legacy=' + withLegacy,
+        rows: [scopedCustom, shell, ...candidates, ...legacy, receipt, customReceipt],
+        main: [['other_tool_call', 'completed', [3, 8 + legacy.length]], ['command', 'completed', [4, 7 + legacy.length]]],
+        detached: [5, 6, ...(withLegacy ? [7] : [])], markers: [[reversed ? 6 : 5, 'typed_command_marker'],
+          [reversed ? 5 : 6, 'second_command_marker'], ...(withLegacy ? [[7, 'legacy_command_marker']] : [])] };
+    })),
+    ...[true, false].map(agrees => ({ name: 'unspecified workdir and distinct typed/legacy directories, agreement=' + agrees,
+      rows: [scopedCustom, shell, typed({ ...commandItem, cwd: '/unrelated' }), event({ type: 'exec_command_end', call_id, command: commandItem.command,
+        source: 'agent', cwd: 'C:/repo', status: agrees ? 'failed' : 'completed', exit_code: agrees ? 72 : 0,
+        aggregated_output: 'legacy_command_marker' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['command', 'completed', [4, 7]]], detached: [5, 6],
+      markers: [[5, 'typed_command_marker'], [6, 'legacy_command_marker']] })),
+    { name: 'native typed wait beside a foreign receiver with the same item ID',
+      rows: [scopedCustom, wait, typed(waitItem), typed({ ...waitItem, receiver_thread_ids: [ID], receiver_agents: [{ thread_id: ID }],
+        agents_states: { [ID]: { completed: 'foreign_child_marker' } }, status: 'completed' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['agent_coordination', 'failed', [4, 5, 7]]], detached: [6],
+      markers: [[5, 'typed_wait_marker'], [6, 'foreign_child_marker']] },
+    { name: 'native typed patch beside another patch path with the same item ID',
+      rows: [scoped, patch, typed(patchItem), typed({ ...patchItem, changes: { 'other.txt': { type: 'add', content: 'else\n' } },
+        status: 'completed', stderr: 'foreign_patch_marker' }), patchReceipt, receipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['patch', 'failed', [4, 5, 7]]], detached: [6],
+      markers: [[5, 'typed_patch_marker'], [6, 'foreign_patch_marker']] },
+    ...[
+      ['a foreign namespace', { ...shell.payload, namespace: 'fixture' }, typed(commandItem), 'command'],
+      ['a missing typed turn', shell.payload, event({ type: 'item_completed', thread_id: ID, item: commandItem }), 'command'],
+      ['a foreign thread', shell.payload, typed(commandItem, { thread_id: child }), 'command'],
+      ['a duplicate argument', { ...shell.payload, arguments: '{"command":"other","command":"echo fail"}' }, typed(commandItem), 'command'],
+      ['a wrong lifecycle family', shell.payload, typed(waitItem), 'command'],
+    ].map(([label, request, item, kind]) => ({ name: 'native typed evidence stays Protocol for ' + label,
+      rows: [scopedCustom, response(request), item, receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], [kind, 'completed', [4, 6]]], detached: [5], markers: [] })),
+    { name: 'native typed shell before its request stays in Protocol',
+      rows: [scopedCustom, typed(commandItem), shell, receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['command', 'completed', [5, 6]]], detached: [4], markers: [[4, 'typed_command_marker']] },
+    { name: 'native typed shell excludes a legacy terminal for another command',
+      rows: [scopedCustom, shell, typed(commandItem), event({ type: 'exec_command_end', call_id, command: ['different'],
+        source: 'agent', status: 'completed', exit_code: 0, aggregated_output: 'foreign_command_marker' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['command', 'failed', [4, 5, 7]]], detached: [6],
+      markers: [[5, 'typed_command_marker'], [6, 'foreign_command_marker']], commandExit: 72 },
+    ...['failed', 'completed'].map(status => ({ name: 'native typed shell excludes the ' + status + ' end from another workdir',
+      rows: [scopedCustom, response({ ...shell.payload, arguments: '{"command":"echo fail","workdir":"/work/a"}' }),
+        typed({ ...commandItem, cwd: '/work/a' }), event({ type: 'exec_command_end', call_id, command: commandItem.command,
+          source: 'agent', cwd: '/different', status, exit_code: status === 'failed' ? 72 : 0, aggregated_output: 'foreign_workdir_marker' }),
+        receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['command', 'failed', [4, 5, 7]]], detached: [6],
+      markers: [[5, 'typed_command_marker'], [6, 'foreign_workdir_marker']], commandExit: 72 })),
+    { name: 'native command path and typed file URI identify the same recorded workdir',
+      rows: [scopedCustom, response({ ...shell.payload, arguments: '{"command":"echo fail","workdir":"/work/a"}' }),
+        typed({ ...commandItem, cwd: 'file:///work/a' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['command', 'failed', [4, 5, 6]]], detached: [],
+      markers: [[5, 'typed_command_marker']], commandExit: 72 },
+    ...['agents', 'collaboration'].map(namespace => ({ name: namespace + ' mailbox wait cannot own a V1 targeted terminal',
+      rows: [scopedCustom, response({ ...wait.payload, namespace }), typed(waitItem), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['agent_coordination', 'success', [4, 6]]], detached: [5],
+      markers: [[5, 'typed_wait_marker']] })),
+    ...[true, false].map(matches => ({ name: 'session cwd absolute patch key, matches=' + matches,
+      rows: cwd => [scoped, patch, typed({ ...patchItem,
+        changes: { [path.join(cwd, ...(matches ? [] : ['elsewhere']), 'synthetic.txt')]: { type: 'add', content: 'example\n' } } }),
+        patchReceipt, receipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['patch', matches ? 'failed' : 'success', matches ? [4, 5, 6] : [4, 6]]],
+      detached: matches ? [] : [5], markers: [[5, 'typed_patch_marker']] })),
+    ...[
+      ['current turn', '/work/a', '/work/a/moved.txt', true], ['foreign move', '/work/a', '/other/moved.txt', false],
+      ['missing current cwd', '', '/work/a/moved.txt', false],
+    ].map(([label, cwd, move_path, matches]) => ({ name: 'absolute typed patch with ' + label,
+      rows: [{ type: 'turn_context', payload: { turn_id: TURN, cwd } }, scoped,
+        response({ ...patch.payload, input: '*** Begin Patch\n*** Update File: original.txt\n*** Move to: moved.txt\n-before\n+after\n*** End Patch' }),
+        typed({ ...patchItem, changes: { '/work/a/original.txt': { type: 'update', unified_diff: '@@\n-before\n+after\n', move_path } } }),
+        patchReceipt, receipt],
+      main: [['other_tool_call', 'completed', [4, 8]], ['patch', matches ? 'failed' : 'success', matches ? [5, 6, 7] : [5, 7]]],
+      detached: matches ? [] : [6], markers: [[6, 'typed_patch_marker']] })),
+    { name: 'native typed shell and agreeing legacy evidence both belong to the command',
+      rows: [scopedCustom, shell, typed(commandItem), event({ type: 'exec_command_end', call_id, command: commandItem.command,
+        source: 'agent', status: 'failed', exit_code: 72, aggregated_output: 'typed_command_marker' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['command', 'failed', [4, 5, 6, 7]]], detached: [],
+      markers: [[5, 'typed_command_marker']], commandExit: 72 },
+    { name: 'native typed shell and same-registration typed dynamic outcome are disputed',
+      rows: [scopedCustom, shell, typed(commandItem), typed({ type: 'DynamicToolCall', id: call_id, tool, status: 'completed',
+        arguments: { command: 'echo fail' }, success: true }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['command', 'completed', [4, 7]]], detached: [5, 6], markers: [[5, 'typed_command_marker']] },
+    ...[
+      [typed({ type: 'DynamicToolCall', id: call_id, status: 'failed' }), false],
+      [event({ type: 'dynamic_tool_call_begin', call_id, tool_name: tool }), false],
+      [event({ type: 'dynamic_tool_call_request', call_id, tool, namespace: 'functions' }), false],
+      [event({ type: 'dynamic_tool_call_request', callId: call_id, turnId: 'previous-turn', tool, namespace: 'functions' }), true],
+      [typed({ type: 'DynamicToolCall', id: call_id, tool: 'different', status: 'failed' }), true],
+    ].map(([other, foreign]) => ({ name: 'native typed shell alongside ' + JSON.stringify(other.payload),
+      rows: [scopedCustom, shell, typed(commandItem), other, receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['command', foreign ? 'failed' : 'completed', foreign ? [4, 5, 7] : [4, 7]]],
+      detached: foreign ? [6] : [5, 6], markers: [[5, 'typed_command_marker']] })),
+    ...[
+      ['exec_command', { cmd: 'echo fail' }, { source: 'unified_exec_startup', command: ['/bin/bash', '-lc', 'echo fail'] }],
+      ['shell', { command: ['echo', 'fail'] }, {}],
+      ['shell_command', { command: 'echo fail' }, {}, ''],
+    ].map(([name, args, fields, namespace]) => ({ name: 'native typed failure of ' + name,
+      rows: [scopedCustom, response({ type: 'function_call', call_id, name, ...(namespace === undefined ? {} : { namespace }), arguments: JSON.stringify(args) }),
+        typed({ ...commandItem, ...fields }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['command', 'failed', [4, 5, 6]]], detached: [],
+      markers: [[5, 'typed_command_marker']], commandExit: 72 })),
+    ...[true, false].map(agrees => ({ name: 'native typed V1 wait with legacy states, agreement=' + agrees,
+      rows: [scopedCustom, wait, typed(waitItem), event({ type: 'collab_waiting_end', call_id, sender_thread_id: ID,
+        statuses: agrees ? waitItem.agents_states : { [child]: { completed: 'legacy_wait_marker' } } }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['agent_coordination', agrees ? 'failed' : 'success', agrees ? [4, 5, 6, 7] : [4, 7]]],
+      detached: agrees ? [] : [5, 6], markers: [[5, 'typed_wait_marker']] })),
+    ...[
+      ['update', '*** Update File: synthetic.txt\n context\n-before\n+after',
+        { type: 'update', unified_diff: '@@ -1,2 +1,2 @@\n context\n-before\n+after\n', move_path: null }, true],
+      ['different update context', '*** Update File: synthetic.txt\n context\n-before\n+after',
+        { type: 'update', unified_diff: '@@ -1,2 +1,2 @@\n elsewhere\n-before\n+after\n', move_path: null }, false],
+      ['delete', '*** Delete File: synthetic.txt', { type: 'delete', content: 'before\n' }, true],
+    ].map(([label, hunk, change, matches]) => ({ name: 'native typed patch with ' + label,
+      rows: [scoped, response({ ...patch.payload, input: '*** Begin Patch\n' + hunk + '\n*** End Patch' }),
+        typed({ ...patchItem, changes: { 'synthetic.txt': change } }), patchReceipt, receipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['patch', matches ? 'failed' : 'success', matches ? [4, 5, 6] : [4, 6]]],
+      detached: matches ? [] : [5], markers: [[5, 'typed_patch_marker']] })),
     { name: 'native MCP function keeps only its matching legacy invocation beside a scoped custom call',
       rows: [scopedCustom, response({ type: 'function_call', call_id, name: 'mcp__repo__lookup', arguments: '{}' }),
         event({ type: 'mcp_tool_call_end', call_id, invocation: { server: 'repo', tool: 'lookup', arguments: {} },
@@ -823,7 +1005,8 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       const session = index === cold || index === warm ? await materializeSessionForIndex(index, indexed) : indexed;
       const main = session.logicalEvents.filter(e => e.layer === 'main').sort((a, b) => a.rawRefs[0].line - b.rawRefs[0].line);
       assert.deepEqual(main.map(e => [e.kind, e.status, e.rawRefs.map(r => r.line)]), scenario.main);
-      assert.equal(indexed.counts.failedCommands, 0);
+      assert.equal(indexed.counts.failedCommands, scenario.main.filter(([kind, status]) => kind === 'command' && status === 'failed').length);
+      if (scenario.commandExit !== undefined) assert.equal(main.find(e => e.kind === 'command').outputStats.exitCode, scenario.commandExit);
       assert.equal(indexed.counts.patches, scenario.main.filter(([kind]) => kind === 'patch').length);
       for (const status of new Set(scenario.main.map(([, status]) => status))) {
         const timeline = codex.query.getTimeline(index, session, { layer: 'main', status });

@@ -9,6 +9,7 @@ function createCodexLogicalBuilder(deps) {
     semanticRawEvents = (raws) => raws,
     scopedRequestPeer,
     toolPeersInTurn,
+    collaborationThreadId,
     legacyMcpStatus,
     matchesToolOutput,
     dynamicToolPeer,
@@ -1290,7 +1291,7 @@ function createCodexLogicalBuilder(deps) {
     for (const raw of rawEvents) {
       const disputedMcp = raw.recordType === 'event_msg' && disputedFunctionIds.has(raw.callId)
         && isToolLifecycleFamily(raw.payloadType, TOOL_LIFECYCLE_FAMILY.MCP_TOOL);
-      if (codeModeProjection.isolatedRawIds?.has(raw.rawId) || disputedMcp) {
+      if (codeModeProjection.isolatedRawIds?.has(raw.rawId) || disputedMcp || raw.detachedNativeTerminal) {
         if (consumed.has(raw.rawId)) continue;
         keepUnpaired(raw);
         continue;
@@ -1306,17 +1307,6 @@ function createCodexLogicalBuilder(deps) {
       }
     }
 
-    function collaborationThreadId(value) {
-      // ThreadId::from_string uses uuid 1.20's simple, hyphenated, braced and URN formats.
-      if (typeof value !== 'string') return null;
-      if (/^[0-9a-f]{32}$/i.test(value)) return value.toLowerCase();
-      let hyphenated = value;
-      if (value.startsWith('urn:uuid:')) hyphenated = value.slice(9);
-      else if (value.startsWith('{') && value.endsWith('}')) hyphenated = value.slice(1, -1);
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(hyphenated)) return null;
-      return hyphenated.replaceAll('-', '').toLowerCase();
-    }
-
     // AgentPath accepts /root descendants and relative references made of
     // lowercase names. The registry is needed to resolve a valid path to a UUID.
     function isAgentPathReference(value) {
@@ -1326,7 +1316,8 @@ function createCodexLogicalBuilder(deps) {
       return names.split('/').every(part => part !== 'root' && /^[a-z0-9_]+$/.test(part));
     }
 
-    function waitReceiversMatch(call, payload, native) {
+    function waitReceiversMatch(call, row, native) {
+      const payload = row.parsed.payload;
       const { name, namespace } = call.parsed.payload;
       const args = commandArgsFromRaw(call);
       if (payload.sender_thread_id !== call.sessionId || !args || Array.isArray(args)
@@ -1352,14 +1343,17 @@ function createCodexLogicalBuilder(deps) {
       if (paths.size && (!native || field !== 'targets' || ![...paths].every(isAgentPathReference))) return false;
 
       const begin = payload.type === 'collab_waiting_begin';
-      const receivers = begin ? payload.receiver_thread_ids
+      // A verified paginated end lists its returned threads directly. A legacy
+      // end records the same subset as the keys of its statuses map.
+      const listsReceivers = begin || row.typedItemType === 'CollabAgentToolCall';
+      const receivers = listsReceivers ? payload.receiver_thread_ids
         : payload.statuses && typeof payload.statuses === 'object' && !Array.isArray(payload.statuses)
           ? Object.keys(payload.statuses) : null;
       if (!Array.isArray(receivers) || (begin && receivers.length !== targets.length)) return false;
       const receiverIds = receivers.map(collaborationThreadId);
       const observed = new Set(receiverIds);
       if (observed.has(null)) return false;
-      const metadata = begin ? payload.receiver_agents : payload.agent_statuses;
+      const metadata = listsReceivers ? payload.receiver_agents : payload.agent_statuses;
       if (metadata !== undefined && (!Array.isArray(metadata)
           || !metadata.every(agent => observed.has(collaborationThreadId(agent?.thread_id))))) return false;
 
@@ -1436,7 +1430,7 @@ function createCodexLogicalBuilder(deps) {
         const sender = row.parsed.payload.sender_thread_id;
         if (sender != null && sender !== call.sessionId) return null;
         if ((name === 'wait' || name === 'wait_agent') && ['collab_waiting_begin', 'collab_waiting_end'].includes(row.payloadType)) {
-          return waitReceiversMatch(call, row.parsed.payload, native) ? row : null;
+          return waitReceiversMatch(call, row, native) ? row : null;
         }
         if (name === 'send_message' && ['collab_agent_interaction_begin', 'collab_agent_interaction_end'].includes(row.payloadType)) {
           return legacyAgentMessageMatches(call, row.parsed.payload) ? row : null;

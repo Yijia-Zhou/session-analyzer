@@ -24,6 +24,8 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
   const foreignEnd = 'another-environment-terminal';
   const foreignTyped = 'foreign-typed-completion';
   const foreignBegin = 'foreign-dynamic-start';
+  const oldTurnReceipt = 'old-turn-tool-receipt';
+  const transport = 'dynamic-transport-only';
   const records = [
     { type: 'session_meta', payload: { id, cwd: home, history_mode: 'paginated', attached_thread: true,
       thread_source: 'tui_side_chat', forked_from_id: 'bbbbbbbb-0172-4172-8172-bbbbbbbbbbbb' } },
@@ -65,6 +67,16 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
       status: 'completed', result: { content: [{ type: 'text', text: foreignTyped }] } }),
     { type: 'event_msg', payload: { type: 'dynamic_tool_call_begin', call_id: 'tool',
       tool_name: namespace + '.other', message: foreignBegin } },
+    response({ type: 'function_call_output', call_id: 'tool', output: oldTurnReceipt,
+      internal_chat_message_metadata_passthrough: { turn_id: 'earlier-turn' } }),
+    { type: 'event_msg', payload: { type: 'dynamic_tool_call_request', callId: 'scoped-shell', turnId: turn,
+      namespace, tool: 'shell_command', arguments: { query: transport } } },
+    completion({ type: 'DynamicToolCall', id: 'scoped-shell', namespace, tool: 'shell_command',
+      arguments: { command: 'echo synthetic' }, status: 'failed', success: false, error: 'typed dynamic failure' }),
+    response({ type: 'custom_tool_call', name: 'custom', namespace, call_id: 'native', input: 'independent request' }),
+    completion({ type: 'CommandExecution', id: 'native', source: 'agent', command: ['/bin/sh', '-c', 'echo native'],
+      cwd: 'file:///synthetic/project', parsed_cmd: [], status: 'failed', exit_code: 72, aggregated_output: 'native failure' }),
+    response({ type: 'custom_tool_call_output', call_id: 'native', output: 'independent custom receipt' }),
   ].map((row, n) => ({
     timestamp: new Date(Date.UTC(2026, 10, 24, 0, 0, n)).toISOString(), ordinal: n, ...row,
   }));
@@ -72,15 +84,17 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
   const index = await buildSourceBackedIndex({ repoRoot: home, codexHome: home });
   const session = await materializeIndexedSession(index, id);
   const main = session.logicalEvents.filter(event => event.layer === 'main');
-  assert.deepEqual(main.map(event => event.rawRefs.map(ref => ref.line)), [[5, 6], [7], [8], [9, 10, 11], [14, 15, 22], [16, 17], [18, 19]]);
+  assert.deepEqual(main.map(event => event.rawRefs.map(ref => ref.line)),
+    [[5, 6], [7], [8], [9, 10, 11], [14, 15, 22, 27], [16, 17], [18, 19, 29], [28, 30]]);
   const tools = [
     [main[3], 'mcp_call', 'failed'],
     [main[4], 'other_tool_call', 'failed'],
     [main[5], 'other_tool_call', 'completed'],
-    [main[6], 'command', 'completed'],
+    [main[6], 'command', 'failed'],
+    [main[7], 'other_tool_call', 'completed'],
   ];
   const controls = [[marker, [3]], [heartbeat, [12, 13]], [foreignReceipt, [20]], [foreignEnd, [21]],
-    [foreignTyped, [23]], [foreignBegin, [24]]].map(([text, lines]) => {
+    [foreignTyped, [23]], [foreignBegin, [24]], [oldTurnReceipt, [25]], [transport, [26]]].map(([text, lines]) => {
     const event = session.logicalEvents.find(e => e.layer === 'protocol' && e.rawRefs.some(ref => ref.line === lines[0]));
     assert.deepEqual(event.rawRefs.map(ref => ref.line), lines);
     return { text, event };
@@ -137,7 +151,7 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
       await page.locator('#detail [data-detail-action="raw"]').click();
       const raw = page.locator('#detail .rawRefsView pre');
       await raw.first().waitFor();
-      assert.deepEqual((await raw.allTextContents()).map(text => JSON.parse(text)), [records[13], records[14], records[21]]);
+      assert.deepEqual((await raw.allTextContents()).map(text => JSON.parse(text)), [records[13], records[14], records[21], records[26]]);
       await fillSearch(page, '');
       await hit.waitFor({ state: 'detached' });
     }

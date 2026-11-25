@@ -1,6 +1,10 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
+const { fileURLToPath } = require('node:url');
+const { fsPathApi, sameRecordedPath } = require('./shared/fs-path');
+const { uniqueArguments } = require('./codex-terminal-continuations');
 const { toolLifecycleDescriptorFor, TOOL_LIFECYCLE_FAMILY, TOOL_LIFECYCLE_PHASE } = require('./codex-tool-lifecycle-contract');
 
 function hasGeneratedImageFile(item) {
@@ -290,9 +294,238 @@ function scopedLifecycleCarrier(call, row, scopedFunction, singleRequest) {
   return { row, family: descriptor.family, match: matchesDynamicTool(call, row), status: terminal ? dynamicOutcome(p) : '' };
 }
 
+function collaborationThreadId(value) {
+  // ThreadId::from_string uses uuid 1.20's simple, hyphenated, braced and URN formats.
+  if (typeof value !== 'string') return null;
+  if (/^[0-9a-f]{32}$/i.test(value)) return value.toLowerCase();
+  let hyphenated = value;
+  if (value.startsWith('urn:uuid:')) hyphenated = value.slice(9);
+  else if (value.startsWith('{') && value.endsWith('}')) hyphenated = value.slice(1, -1);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(hyphenated)) return null;
+  return hyphenated.replaceAll('-', '').toLowerCase();
+}
+
+function recordedCommandDirectory(value) {
+  if (typeof value !== 'string' || !value.startsWith('file:')) return value;
+  try {
+    const url = new URL(value);
+    if (url.search || url.hash) return '';
+    return fileURLToPath(url, { windows: Boolean(url.hostname) || /^\/[A-Za-z]:\//.test(url.pathname) });
+  } catch { return ''; }
+}
+
+function sameCommandDirectory(left, right) {
+  if (typeof left !== 'string' || !left || typeof right !== 'string' || !right) return null;
+  if (left === right) return true;
+  const a = recordedCommandDirectory(left), b = recordedCommandDirectory(right);
+  return sameRecordedPath(a, a) && sameRecordedPath(b, b) ? sameRecordedPath(a, b) : null;
+}
+
+function commandMatches(args, name, item) {
+  const argv = item.command;
+  if (!args || !Array.isArray(argv) || !argv.length || !argv.every(arg => typeof arg === 'string')) return false;
+  if ([args.workdir, args.cwd].some(cwd => cwd != null && sameCommandDirectory(cwd, item.cwd) !== true)) return false;
+  if (item.exit_code != null && (!Number.isInteger(item.exit_code) || item.exit_code < -2147483648 || item.exit_code > 2147483647
+      || (item.status === 'completed' && item.exit_code !== 0) || (item.status === 'failed' && item.exit_code === 0))) return false;
+  if (name === 'shell') return item.source === 'agent' && Array.isArray(args.command)
+    && args.command.length === argv.length && args.command.every((arg, i) => arg === argv[i]);
+  const exec = name === 'exec_command';
+  if ((!exec && name !== 'shell_command') || item.source !== (exec ? 'unified_exec_startup' : 'agent')) return false;
+  const command = exec ? args.cmd : args.command;
+  if (typeof command !== 'string' || !command) return false;
+  if (args.shell != null && args.shell !== argv[0]) return false;
+  if (argv.every(arg => /^[A-Za-z0-9_./:-]+$/.test(arg)) && argv.join(' ') === command) return true;
+  // core/src/shell.rs::derive_exec_args preserves the command as one argument.
+  if (argv.at(-1) !== command) return false;
+  const shell = argv[0].split(/[\\/]/).at(-1).toLowerCase().replace(/\.exe$/, '');
+  if (['sh', 'bash', 'zsh'].includes(shell)) return argv.length === 3 && ['-c', '-lc'].includes(argv[1]);
+  if (shell === 'cmd') return argv.length === 3 && argv[1] === '/c';
+  return ['powershell', 'pwsh'].includes(shell)
+    && ((argv.length === 3 && argv[1] === '-Command') || (argv.length === 4 && argv[1] === '-NoProfile' && argv[2] === '-Command'));
+}
+
+function waitMatches(args, item, sessionId) {
+  if (item.tool !== 'wait' || item.sender_thread_id !== sessionId || !collaborationThreadId(sessionId)
+      || !Array.isArray(args?.targets) || !args.targets.length) return false;
+  const targets = new Set(args.targets.map(collaborationThreadId));
+  // multi_agents/wait.rs can finish for a subset of the requested targets.
+  if (targets.has(null) || !Array.isArray(item.receiver_thread_ids) || !item.receiver_thread_ids.length
+      || !item.receiver_thread_ids.every(id => targets.has(collaborationThreadId(id)))) return false;
+  const returned = new Set(item.receiver_thread_ids.map(collaborationThreadId));
+  if (item.agents_states != null) {
+    const states = item.agents_states;
+    if (!states || typeof states !== 'object' || Array.isArray(states) || Object.keys(states).length !== returned.size
+        || !Object.keys(states).every(id => returned.has(collaborationThreadId(id)))) return false;
+    // multi_agents/wait.rs::wait_tool_call_status derives the terminal from these states.
+    const failed = Object.values(states).some(state => state === 'not_found' || (state && typeof state.errored === 'string'));
+    if (item.status !== (failed ? 'failed' : 'completed')) return false;
+  }
+  return (item.receiver_agents === undefined || (Array.isArray(item.receiver_agents)
+      && item.receiver_agents.every(agent => returned.has(collaborationThreadId(agent?.thread_id)))));
+}
+
+function patchPath(value, cwd) {
+  if (!cwd || !sameRecordedPath(cwd, cwd) || typeof value !== 'string' || !value) return value;
+  const api = fsPathApi(cwd);
+  if (value.split(api.sep === '\\' ? /[\\/]/ : '/').includes('..')) return value;
+  if (api.isAbsolute(value)) return api.normalize(value);
+  if (/^(?:[A-Za-z]:|[\\/])/.test(value)) return value;
+  return api.join(cwd, value);
+}
+
+function patchMatches(input, changes, cwd) {
+  if (typeof input !== 'string' || !changes || typeof changes !== 'object' || Array.isArray(changes)) return false;
+  const lines = input.replaceAll('\r\n', '\n').trimEnd().split('\n');
+  if (lines.shift() !== '*** Begin Patch' || lines.pop() !== '*** End Patch') return false;
+  const byPath = new Map(Object.entries(changes).map(([path, change]) => [patchPath(path, cwd), change]));
+  if (byPath.size !== Object.keys(changes).length) return false;
+  const seen = new Set();
+  for (let i = 0; i < lines.length;) {
+    const header = /^\*\*\* (Add|Delete|Update) File: (.+)$/.exec(lines[i++]);
+    if (!header) return false;
+    const path = patchPath(header[2], cwd);
+    if (seen.has(path) || !byPath.has(path)) return false;
+    seen.add(path);
+    const change = byPath.get(path);
+    if (change?.type !== header[1].toLowerCase()) return false;
+    const move = change.type === 'update' && lines[i]?.startsWith('*** Move to: ') ? lines[i++].slice('*** Move to: '.length) : null;
+    if (patchPath(change.move_path ?? null, cwd) !== patchPath(move, cwd)) return false;
+    const start = i;
+    while (i < lines.length && !lines[i].startsWith('*** ')) i++;
+    const body = lines.slice(start, i);
+    if (change.type === 'add' && (!body.every(line => line.startsWith('+'))
+        || body.map(line => line.slice(1) + '\n').join('') !== change.content)) return false;
+    if (change.type === 'delete' && (body.length || typeof change.content !== 'string')) return false;
+    if (change.type === 'update') {
+      if (typeof change.unified_diff !== 'string') return false;
+      const diff = change.unified_diff.split(/\r?\n/);
+      const hunk = diff.findIndex(line => line.startsWith('@@'));
+      // Compare unanchored hunks including their context. Extra context, rewritten
+      // hunks or unrelated edits do not establish byte-comparable patch identity.
+      if (body.some(line => !/^(?:[ +\-]|@@$)/.test(line))) return false;
+      const expected = body.filter(line => line !== '@@');
+      const actual = (hunk < 0 ? diff : diff.slice(hunk)).filter(line => /^[ +\-]/.test(line));
+      if ((!move && !expected.some(line => /^[+-]/.test(line))) || expected.length !== actual.length
+          || !expected.every((line, j) => line === actual[j])) return false;
+      if (lines[i] === '*** End of File') i++;
+    }
+  }
+  return seen.size > 0 && seen.size === Object.keys(changes).length;
+}
+
+const nativeItemTypes = new Set(['CommandExecution', 'FileChange', 'CollabAgentToolCall']);
+
+// Only the opposite wire channel of a scoped request uses these stronger checks.
+function nativeTypedRequestMatches(call, item, patchCwd) {
+  const p = call.parsed.payload;
+  const native = p.namespace == null || p.namespace === '' || p.namespace === 'functions';
+  if (typeof p.name !== 'string' || !['completed', 'failed', 'declined'].includes(item.status)) return false;
+  const name = p.name.replace(/^functions\./, '');
+  if (item.type === 'FileChange') return native && p.type === 'custom_tool_call' && name === 'apply_patch' && patchMatches(p.input, item.changes, patchCwd);
+  if (p.type !== 'function_call') return false;
+  const args = uniqueArguments(p.arguments);
+  if (item.type === 'CommandExecution') return native && commandMatches(args, name, item);
+  return item.type === 'CollabAgentToolCall' && ['completed', 'failed'].includes(item.status) && p.name === 'wait_agent'
+    && p.namespace === 'multi_agent_v1' && waitMatches(args, item, call.sessionId);
+}
+
+// Only exclude a second candidate when a recorded identity field rules it out.
+// Malformed fields and incomplete identities can still dispute a verified item.
+function foreignNativeCarrier(call, item, other, patchCwd) {
+  if (item.type === 'CommandExecution') {
+    const args = uniqueArguments(call.parsed.payload.arguments);
+    return (['agent', 'user_shell', 'unified_exec_startup', 'unified_exec_interaction'].includes(other.source) && other.source !== item.source)
+      || [args.workdir, args.cwd].some(cwd => sameCommandDirectory(other.cwd, cwd) === false)
+      || (Array.isArray(other.command) && other.command.length && other.command.every(arg => typeof arg === 'string')
+        && !nativeTypedRequestMatches(call, { ...item, command: other.command }));
+  }
+  if (item.type === 'CollabAgentToolCall') {
+    if (['spawn_agent', 'send_input', 'resume_agent', 'close_agent', 'send_message', 'followup_task', 'interrupt_agent', 'list_agents'].includes(other.tool)) return true;
+    if (collaborationThreadId(other.sender_thread_id) && other.sender_thread_id !== item.sender_thread_id) return true;
+    const targets = new Set(uniqueArguments(call.parsed.payload.arguments).targets.map(collaborationThreadId));
+    const outside = id => collaborationThreadId(id) !== null && !targets.has(collaborationThreadId(id));
+    return (Array.isArray(other.receiver_thread_ids) && other.receiver_thread_ids.some(outside))
+      || (Array.isArray(other.receiver_agents) && other.receiver_agents.some(agent => outside(agent?.thread_id)))
+      || (other.agents_states && Object.keys(other.agents_states).some(outside));
+  }
+  if (!other.changes || typeof other.changes !== 'object' || Array.isArray(other.changes)) return false;
+  const known = new Map(Object.entries(item.changes).map(([key, change]) => [patchPath(key, patchCwd), change]));
+  return Object.entries(other.changes).some(([key, change]) => {
+    if (!key || !['add', 'update', 'delete'].includes(change?.type)) return false;
+    const path = patchPath(key, patchCwd);
+    const expected = known.get(path);
+    if (expected) return expected.type !== change.type || (change.type === 'add' && typeof change.content === 'string' && change.content !== expected.content);
+    // An absolute and a relative key might still refer to the same file if cwd is missing.
+    return [...known.keys()].every(value => fsPathApi(value).isAbsolute(value) === fsPathApi(path).isAbsolute(path));
+  });
+}
+
+function resolveNativeTypedTerminal(requests, group, epochs, views, remainingToolPeer, patchCwds) {
+  if (requests.length !== 2 || requests[0].payloadType === requests[1].payloadType) return;
+  const independent = requests.filter(call => !scopedRequestToolName(call));
+  if (independent.length !== 1) return;
+  const call = independent[0];
+  const patchCwd = patchCwds.get(call);
+  const peers = group.filter(row => followsToolRequest(call, row, epochs));
+  const typed = peers.filter(row => row.recordType === 'event_msg' && row.payloadType === 'item_completed'
+    && nativeItemTypes.has(row.parsed.payload.item?.type) && row.parsed.payload.item.id === call.callId
+    && (row.parsed.payload.thread_id == null || row.parsed.payload.thread_id === call.sessionId));
+  const candidates = typed.filter(row => {
+    const p = row.parsed.payload;
+    return p.thread_id === call.sessionId && typeof p.turn_id === 'string' && p.turn_id.length > 0 && nativeTypedRequestMatches(call, p.item, patchCwd);
+  });
+  if (!candidates.length) return;
+  const raw = candidates[0];
+  const item = raw.parsed.payload.item;
+  const view = semanticRaw(raw);
+  if (view === raw) return;
+  const family = toolLifecycleDescriptorFor(view.payloadType).family;
+  const terminals = [];
+  for (const row of peers) {
+    const descriptor = toolLifecycleDescriptorFor(row.payloadType);
+    if (descriptor?.phase !== TOOL_LIFECYCLE_PHASE.TERMINAL || !remainingToolPeer?.(call, row)) continue;
+    const p = row.parsed.payload;
+    if (descriptor.family === family && foreignNativeCarrier(call, item, p, patchCwd)) views.set(row, { ...row, detachedNativeTerminal: true });
+    else terminals.push(row);
+  }
+  // A registered dynamic tool may use the same callable name as a native tool.
+  const dynamicPeers = call.payloadType === 'function_call' ? peers.filter(row => {
+    if (row.recordType !== 'event_msg') return false;
+    const p = row.parsed.payload;
+    if (row.payloadType === 'item_completed' && p.item?.type === 'DynamicToolCall') {
+      return (p.thread_id == null || p.thread_id === call.sessionId) && matchesDynamicIdentity(call, p.item.tool, p.item.namespace) !== false;
+    }
+    if (['dynamic_tool_call_request', 'dynamic_tool_call_response'].includes(row.payloadType)) {
+      const turn = call.turnId || raw.turnId;
+      if (row.payloadType === 'dynamic_tool_call_request' && typeof p.turnId === 'string' && p.turnId && turn && p.turnId !== turn) return false;
+      return matchesDynamicIdentity(call, p.tool, p.namespace) !== false;
+    }
+    return toolLifecycleDescriptorFor(row.payloadType)?.family === TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL && matchesDynamicTool(call, row) !== false;
+  }) : [];
+  const disputed = candidates.length > 1 || typed.some(row => row !== raw && row.parsed.payload.item.type === item.type
+    && !foreignNativeCarrier(call, item, row.parsed.payload.item, patchCwd)) || terminals.length > 1
+    || dynamicPeers.length > 0
+    || terminals.some(row => {
+      const p = row.parsed.payload;
+      const status = row.payloadType.endsWith('_declined') ? 'declined' : p.status
+        || (typeof p.success === 'boolean' ? (p.success ? 'completed' : 'failed') : null);
+      return toolLifecycleDescriptorFor(row.payloadType).family !== family || (status != null && status !== item.status)
+        || (item.type === 'CommandExecution' && sameCommandDirectory(p.cwd, item.cwd) === false)
+        || (item.type === 'FileChange' && p.changes && !isDeepStrictEqual(p.changes, item.changes))
+        || (item.type === 'CollabAgentToolCall' && p.statuses && !isDeepStrictEqual(p.statuses, item.agents_states))
+        || (typeof item.exit_code === 'number' && typeof p.exit_code === 'number' && item.exit_code !== p.exit_code);
+    });
+  if (disputed) {
+    for (const row of [...terminals, ...dynamicPeers]) views.set(row, { ...row, detachedNativeTerminal: true });
+    return;
+  }
+  views.set(raw, view);
+}
+
 // Compare physical carriers before projecting either format into a logical event.
-function resolveScopedTerminals(group, epochs, views, remainingToolPeer) {
+function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCwds) {
   const requests = group.filter(row => row.recordType === 'response_item' && ['function_call', 'custom_tool_call'].includes(row.payloadType));
+  resolveNativeTypedTerminal(requests, group, epochs, views, remainingToolPeer, patchCwds);
   const functions = requests.filter(row => row.payloadType === 'function_call');
   if (functions.length !== 1) return;
   const call = functions[0];
@@ -344,7 +577,7 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer) {
         const match = matchesDynamicIdentity(call, p.tool, p.namespace);
         return match !== false && !(match && carriers === dynamic);
       }
-      return !(custom && followsToolRequest(custom, row, epochs) && remainingToolPeer?.(custom, row));
+      return !(custom && followsToolRequest(custom, row, epochs) && remainingToolPeer?.(custom, views.get(row) || row));
     });
     if (!unresolved) views.set(typed.row, semanticRaw(typed.row));
   }
@@ -385,7 +618,22 @@ function semanticRawEvents(rawEvents, remainingToolPeer) {
   const scopedCallIds = new Set();
   const ungroupedTyped = [];
   const epochs = turnBoundaryEpochs(rawEvents);
+  const patchCwds = new Map();
+  let sessionCwd = '', contextSession = '', turnCwd = '', contextEpoch;
   for (const raw of rawEvents) {
+    const p = raw.parsed?.payload;
+    if (raw.recordType === 'session_meta') {
+      contextSession = p?.id;
+      sessionCwd = p?.cwd;
+      contextEpoch = null;
+    } else if (raw.recordType === 'turn_context' && raw.sessionId === contextSession) {
+      turnCwd = p?.cwd;
+      contextEpoch = epochs.get(raw.rawId);
+      if (turnCwd !== sessionCwd) sessionCwd = ''; // An older default no longer proves a later turn's cwd.
+    } else if (raw.payloadType === 'custom_tool_call' && ['apply_patch', 'functions.apply_patch'].includes(p?.name)
+        && raw.sessionId === contextSession) {
+      patchCwds.set(raw, contextEpoch === epochs.get(raw.rawId) ? turnCwd : sessionCwd);
+    }
     if (raw.callId) {
       if (!byCall.has(raw.callId)) byCall.set(raw.callId, []);
       byCall.get(raw.callId).push(raw);
@@ -395,7 +643,8 @@ function semanticRawEvents(rawEvents, remainingToolPeer) {
     if (raw.payloadType !== 'item_completed' || typeof item?.id !== 'string') continue;
     const key = JSON.stringify([raw.sessionId, item.id]);
     typedCounts.set(key, (typedCounts.get(key) || 0) + 1);
-    if (!raw.callId && raw.recordType === 'event_msg' && ['McpToolCall', 'DynamicToolCall'].includes(item.type)) ungroupedTyped.push(raw);
+    if (!raw.callId && raw.recordType === 'event_msg'
+        && (['McpToolCall', 'DynamicToolCall'].includes(item.type) || nativeItemTypes.has(item.type))) ungroupedTyped.push(raw);
   }
   const scopedViews = new Map();
   // An incomplete item may have no semantic callId yet still compete for its
@@ -404,7 +653,7 @@ function semanticRawEvents(rawEvents, remainingToolPeer) {
     const id = raw.parsed.payload.item.id;
     if (scopedCallIds.has(id)) byCall.get(id).push(raw);
   }
-  for (const id of scopedCallIds) resolveScopedTerminals(byCall.get(id), epochs, scopedViews, remainingToolPeer);
+  for (const id of scopedCallIds) resolveScopedTerminals(byCall.get(id), epochs, scopedViews, remainingToolPeer, patchCwds);
   return rawEvents.map((raw) => {
     if (scopedViews.has(raw)) return scopedViews.get(raw);
     // The recorded namespace distinguishes the request from a native namesake
@@ -499,4 +748,4 @@ function additionalToolsSummary(payload) {
   return { valid: payload?.type === 'additional_tools' && payload.role === 'developer' && Array.isArray(payload.tools), entries: tools.length, count, names, unsupported, incomplete, shortened: incomplete || names.length >= 24 };
 }
 
-module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, toolPeersInTurn, legacyMcpStatus, matchesToolOutput, dynamicToolPeer };
+module.exports = { collaborationThreadId, typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, toolPeersInTurn, legacyMcpStatus, matchesToolOutput, dynamicToolPeer };
