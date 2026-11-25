@@ -382,10 +382,9 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
   const legacyEnd = (failed, environmentId = environment, server = 'notes') => event({ type: 'mcp_tool_call_end', call_id,
     invocation: { server, tool, environment_id: environmentId, arguments: {} },
     result: failed ? { Err: 'legacy_terminal_marker' } : { Ok: { content: [{ type: 'text', text: 'legacy_terminal_marker' }] } } });
-  const typedEnd = (failed, environmentId = environment) => typed({ type: 'McpToolCall', id: call_id, server: 'notes', tool, environmentId,
+  const typedEnd = (failed, environmentId = environment, marker = 'typed_terminal_marker') => typed({ type: 'McpToolCall', id: call_id, server: 'notes', tool, environmentId,
     arguments: {}, status: failed ? 'failed' : 'completed',
-    ...(failed ? { error: { message: 'typed_terminal_marker' } }
-      : { result: { content: [{ type: 'text', text: 'typed_terminal_marker' }], isError: false } }) });
+    ...(failed ? { error: { message: marker } } : { result: { content: [{ type: 'text', text: marker }], isError: false } }) });
   const patch = response({ type: 'custom_tool_call', call_id, name: 'apply_patch',
     input: '*** Begin Patch\n*** Add File: synthetic.txt\n+example\n*** End Patch' });
   const patchReceipt = response({ type: 'custom_tool_call_output', call_id,
@@ -406,7 +405,139 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
     status: 'failed', success: false, error: 'dynamic_failure_marker' });
   const typedDynamicSuccess = typed({ type: 'DynamicToolCall', id: call_id, namespace, tool, arguments: {},
     status: 'completed', success: true, content_items: [{ type: 'inputText', text: 'dynamic_success_marker' }] });
+  const dynamicDecline = event({ type: 'dynamic_tool_call_declined', call_id, ...qualifiedDynamic, reason: 'decline_marker' });
+  const mcpDecline = event({ type: 'mcp_tool_call_declined', call_id,
+    invocation: { server: 'notes', tool, environment_id: environment, arguments: {} }, reason: 'decline_marker' });
+  const foreignTypedEnd = typedEnd(false, 'foreign-environment', 'second_terminal_marker');
+  const independentDynamic = response({ type: 'function_call', call_id, namespace: 'fixture', name: 'lookup', arguments: '{}' });
   const cases = [
+    ...[
+      [{ namespace: 'functions', name: 'lookup' }, {}],
+      [{ name: 'lookup' }, { namespace: 'functions' }],
+      [{ name: 'fixture.lookup' }, { namespace: 'fixture' }],
+    ].map(([request, registration]) => ({ name: `independent dynamic failure keeps its registered name for ${JSON.stringify(request)}`,
+      rows: [scopedCustom, response({ type: 'function_call', call_id, ...request, arguments: '{}' }),
+        typed({ type: 'DynamicToolCall', id: call_id, ...registration, tool: 'lookup', status: 'failed', success: false,
+          error: 'dynamic_failure_marker' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['other_tool_call', 'failed', [4, 5, 6]]], detached: [],
+      markers: [[5, 'dynamic_failure_marker'], [6, 'current_function_marker']] })),
+    { name: 'a lone legacy qualified function retains its same-turn dynamic failure without a typed thread ID',
+      rows: [scoped, event({ type: 'item_completed', turn_id: TURN, item: typedDynamicFailure.payload.item }), receipt],
+      main: [['other_tool_call', 'failed', [3, 4, 5]]], detached: [],
+      markers: [[4, 'dynamic_failure_marker'], [5, 'current_function_marker']] },
+    { name: 'a lone qualified function retains its in-scope dynamic failure without a typed turn ID',
+      rows: [scoped, event({ type: 'item_completed', thread_id: ID, item: typedDynamicFailure.payload.item }), receipt],
+      main: [['other_tool_call', 'failed', [3, 4, 5]]], detached: [],
+      markers: [[4, 'dynamic_failure_marker'], [5, 'current_function_marker']] },
+    ...[false, true].map(withCustom => ({ name: `a typed failure missing its thread ID disputes legacy success (custom=${withCustom})`,
+      rows: [scoped, event({ type: 'item_completed', turn_id: TURN, item: typedDynamicFailure.payload.item }),
+        dynamicEnd(qualifiedDynamic, dynamicSuccess), receipt, ...(withCustom ? [scopedCustom, customReceipt] : [])],
+      main: [['other_tool_call', 'completed', [3, 6]], ...(withCustom ? [['other_tool_call', 'completed', [7, 8]]] : [])],
+      detached: [4, 5], markers: [[4, 'dynamic_failure_marker'], [5, 'dynamic_end_marker'], [6, 'current_function_marker']] })),
+    ...[environment, 'foreign-environment'].map(environmentId => {
+      const local = environmentId === environment;
+      return { name: `a typed item with no tool and environment ${environmentId} is checked by physical item ID`,
+        rows: [scoped, typedEnd(true), typed({ type: 'McpToolCall', id: call_id, environmentId, server: 'notes',
+          status: 'completed', arguments: { query: 'partial_marker' } }), receipt],
+        main: local ? [['other_tool_call', 'completed', [3, 6]]] : [['mcp_call', 'failed', [3, 4, 6]]],
+        detached: local ? [4, 5] : [5], markers: [[4, 'typed_terminal_marker'], [5, 'partial_marker']] };
+    }),
+    ...[
+      [typed({ type: 'DynamicToolCall', id: call_id, namespace: 'foreign', status: 'failed' }), true],
+      [typed({ type: 'DynamicToolCall', id: call_id, namespace, status: 'failed' }), false],
+      [typed({ type: 'McpToolCall', id: call_id, environmentId: environment, server: 'other', status: 'failed' }), true],
+      [typed({ type: 'McpToolCall', id: call_id, environmentId: environment, tool: 'other', status: 'failed' }), true],
+      [typed({ type: 'McpToolCall', id: call_id, server: 'other', status: 'failed' }), true],
+      [event({ type: 'dynamic_tool_call_request', call_id, namespace: 'foreign' }), true],
+      [event({ type: 'dynamic_tool_call_request', call_id, namespace }), false],
+    ].map(([partial, foreign]) => ({ name: `partial ${JSON.stringify(partial.payload.item || partial.payload)} beside verified MCP failure`,
+      rows: [scoped, partial, typedEnd(true), receipt],
+      main: foreign ? [['mcp_call', 'failed', [3, 5, 6]]] : [['other_tool_call', 'completed', [3, 6]]],
+      detached: foreign ? [4] : [4, 5], markers: [[5, 'typed_terminal_marker']] })),
+    ...['dynamic_tool_call_request', 'dynamic_tool_call_response'].map(type => ({
+      name: `foreign ${type} remains Protocol beside an exact typed MCP failure`,
+      rows: [scoped, event({ type, call_id, turn_id: TURN, namespace: 'foreign', tool: 'other',
+        arguments: { query: 'transport_marker' } }), typedEnd(true), receipt],
+      main: [['mcp_call', 'failed', [3, 5, 6]]], detached: [4],
+      markers: [[4, 'transport_marker'], [5, 'typed_terminal_marker']] })),
+    ...[
+      ['false without status', { success: false }, 'failed'],
+      ['an unknown success flag', { success: 'unknown' }, 'completed'],
+      ['a neutral completion', { status: 'completed' }, 'completed'],
+    ].map(([label, outcome, status]) => ({ name: `an independent dynamic function reports ${label}`,
+      rows: [scopedCustom, independentDynamic,
+        dynamicEnd({ tool_name: 'fixture.lookup' }, { ...outcome, result: 'dynamic_end_marker' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['other_tool_call', status, [4, 5, 6]]], detached: [],
+      markers: [[5, 'dynamic_end_marker'], [6, 'current_function_marker'], [7, 'scoped_custom_marker']] })),
+    { name: 'opposing ends of the independent dynamic function stay disputed',
+      rows: [scopedCustom, independentDynamic, dynamicEnd({ tool_name: 'fixture.lookup' }, dynamicSuccess),
+        dynamicEnd({ tool_name: 'fixture.lookup' }, { success: false, result: 'second_terminal_marker' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['other_tool_call', 'completed', [4, 7]]], detached: [5, 6],
+      markers: [[5, 'dynamic_end_marker'], [6, 'second_terminal_marker'], [7, 'current_function_marker'], [8, 'scoped_custom_marker']] },
+    { name: 'an exact scoped dynamic begin without an end or receipt stays incomplete',
+      rows: [scoped, event({ type: 'dynamic_tool_call_begin', call_id, ...qualifiedDynamic, arguments: { query: 'begin_marker' } })],
+      main: [['other_tool_call', 'incomplete', [3, 4]]], detached: [], markers: [[4, 'begin_marker']] },
+    { name: 'an in-progress typed dynamic item keeps its request and physical evidence',
+      rows: [scoped, typed({ type: 'DynamicToolCall', id: call_id, namespace, tool, status: 'in_progress', arguments: {} })],
+      main: [['other_tool_call', 'incomplete', [3, 4]]], detached: [], markers: [] },
+    ...[
+      event({ ...dynamicDecline.payload, success: false }),
+      dynamicEnd(qualifiedDynamic, { status: 'declined', success: false, result: 'decline_marker' }),
+      typed({ type: 'DynamicToolCall', id: call_id, namespace, tool, arguments: {}, status: 'declined', success: false,
+        content_items: [{ type: 'inputText', text: 'decline_marker' }] }),
+    ].map(decline => ({ name: `a false success flag preserves explicit decline on ${decline.payload.type}`,
+      rows: [scoped, decline, receipt], main: [['other_tool_call', 'declined', [3, 4, 5]]], detached: [],
+      markers: [[4, 'decline_marker'], [5, 'current_function_marker']] })),
+    ...[['dynamic', dynamicDecline, 'other_tool_call'], ['MCP', mcpDecline, 'mcp_call']].flatMap(([family, decline, kind]) =>
+      [false, true].map(withReceipt => ({ name: `an exact scoped ${family} decline ${withReceipt ? 'with' : 'without'} a receipt`,
+        rows: withReceipt ? [scoped, decline, receipt] : [scoped, decline],
+        main: [[kind, 'declined', withReceipt ? [3, 4, 5] : [3, 4]]], detached: [],
+        markers: withReceipt ? [[4, 'decline_marker'], [5, 'current_function_marker']] : [[4, 'decline_marker']] }))),
+    ...[
+      [dynamicDecline, typedDynamicFailure, 'dynamic_failure_marker'],
+      [dynamicDecline, dynamicEnd(qualifiedDynamic, dynamicSuccess), 'dynamic_end_marker'],
+      [mcpDecline, typedEnd(true), 'typed_terminal_marker'],
+      [mcpDecline, legacyEnd(false), 'legacy_terminal_marker'],
+    ].map(([decline, other, marker]) => ({ name: `${decline.payload.type} conflicts with ${marker}`,
+      rows: [scoped, decline, other, receipt], main: [['other_tool_call', 'completed', [3, 6]]], detached: [4, 5],
+      markers: [[4, 'decline_marker'], [5, marker], [6, 'current_function_marker']] })),
+    ...[false, true].map(foreignFirst => ({ name: `an explicitly foreign typed MCP terminal comes ${foreignFirst ? 'before' : 'after'} the exact terminal`,
+      rows: [scoped, ...(foreignFirst ? [foreignTypedEnd, typedEnd(true)] : [typedEnd(true), foreignTypedEnd]), receipt],
+      main: [['mcp_call', 'failed', [3, foreignFirst ? 5 : 4, 6]]], detached: [foreignFirst ? 4 : 5],
+      markers: [[foreignFirst ? 5 : 4, 'typed_terminal_marker'], [foreignFirst ? 4 : 5, 'second_terminal_marker'], [6, 'current_function_marker']] })),
+    ...[['a repeated registration', environment], ['an unknown registration', null]].map(([label, otherEnvironment]) => ({
+      name: `typed MCP candidates remain disputed with ${label}`,
+      rows: [scoped, typedEnd(true), typedEnd(true, otherEnvironment, 'second_terminal_marker'), receipt],
+      main: [['other_tool_call', 'completed', [3, 6]]], detached: [4, 5],
+      markers: [[4, 'typed_terminal_marker'], [5, 'second_terminal_marker'], [6, 'current_function_marker']] })),
+    ...['begin', 'update', 'declined'].map(phase => ({ name: `a foreign dynamic ${phase} preserves an exact typed MCP failure`,
+      rows: [scoped, event({ type: 'dynamic_tool_call_' + phase, call_id, tool_name: namespace + '.other', message: 'foreign_phase_marker' }),
+        typedEnd(true), receipt], main: [['mcp_call', 'failed', [3, 5, 6]]], detached: [4],
+      markers: [[4, 'foreign_phase_marker'], [5, 'typed_terminal_marker'], [6, 'current_function_marker']] })),
+    ...[
+      ['send_input', 'matching id', { id: child }, true], ['send_input', 'different id', { id: ID }, false],
+      ['send_input', 'matching target UUID', { target: child }, true], ['send_input', 'different target UUID', { target: ID }, false],
+      ['send_input', 'matching compact id', { id: child.replaceAll('-', '').toUpperCase() }, true],
+      ['send_input', 'different compact id', { id: ID.replaceAll('-', '') }, false],
+      ['send_input', 'a path target', { target: '/root/reviewer' }, true],
+      ['close_agent', 'different id', { id: ID }, false], ['send_message', 'different target', { target: ID }, false],
+      ['close_agent', 'matching braced target', { target: '{' + child + '}' }, true],
+      ['close_agent', 'different braced target', { target: '{' + ID + '}' }, false],
+      ['close_agent', 'an opaque braced compact target', { target: '{' + ID.replaceAll('-', '') + '}' }, true],
+      ['wait_agent', 'a requested subset', { targets: [ID, child] }, true], ['wait_agent', 'a foreign target', { targets: [ID] }, false],
+      ['wait_agent', 'matching URN target', { targets: ['urn:uuid:' + child.toUpperCase()] }, true],
+      ['wait_agent', 'different URN target', { targets: ['urn:uuid:' + ID] }, false],
+      ['wait_agent', 'an opaque uppercase URN prefix', { targets: ['URN:UUID:' + ID] }, true],
+      ['wait_agent', 'a UUID and an alias', { targets: [ID, '/root/reviewer'] }, true],
+    ].map(([name, label, args, matches]) => ({ name: `native ${name} with ${label} beside a scoped custom request`,
+      rows: [scopedCustom, response({ type: 'function_call', call_id, name,
+        arguments: JSON.stringify(['send_input', 'send_message'].includes(name) ? { ...args, message: 'synthetic input' } : args) }),
+        event({ call_id, sender_thread_id: ID, status: 'failed', ...(name === 'wait_agent'
+          ? { type: 'collab_waiting_end', statuses: { [child]: { errored: 'receiver_marker' } } }
+          : { type: name === 'close_agent' ? 'collab_close_end' : 'collab_agent_interaction_end',
+            receiver_thread_id: child, receiver_agent_nickname: 'receiver_marker' }) }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['agent_coordination', matches ? 'failed' : 'success', matches ? [4, 5, 6] : [4, 6]]],
+      detached: matches ? [] : [5], markers: [[5, 'receiver_marker'], [6, 'current_function_marker'], [7, 'scoped_custom_marker']] })),
     ...[[scoped, receipt], [scopedCustom, customReceipt]].flatMap(([call, output]) =>
       [{ name: 'other' }, { namespace: namespace + '_other' }].map(identity => ({
         name: `${call.payload.type} keeps a compatible receipt beside an explicit foreign ${Object.keys(identity)[0]}`,
@@ -586,6 +717,10 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       assert.deepEqual(main.map(e => [e.kind, e.status, e.rawRefs.map(r => r.line)]), scenario.main);
       assert.equal(indexed.counts.failedCommands, 0);
       assert.equal(indexed.counts.patches, scenario.main.filter(([kind]) => kind === 'patch').length);
+      for (const status of new Set(scenario.main.map(([, status]) => status))) {
+        const timeline = codex.query.getTimeline(index, session, { layer: 'main', status });
+        assert.deepEqual(timeline.events.map(e => e.id).sort(), main.filter(e => e.status === status).map(e => e.id).sort());
+      }
       for (const owner of main) {
         const detail = await codex.buildHydratedEventDetail(index, session, owner.id, 'main');
         assert.equal(detail.meta.status, owner.status);

@@ -22,6 +22,8 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
   const shellReceipt = 'scoped-shell-receipt';
   const foreignReceipt = 'another-tool-receipt';
   const foreignEnd = 'another-environment-terminal';
+  const foreignTyped = 'foreign-typed-completion';
+  const foreignBegin = 'foreign-dynamic-start';
   const records = [
     { type: 'session_meta', payload: { id, cwd: home, history_mode: 'paginated', attached_thread: true,
       thread_source: 'tui_side_chat', forked_from_id: 'bbbbbbbb-0172-4172-8172-bbbbbbbbbbbb' } },
@@ -59,6 +61,10 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
       result: { Ok: { content: [{ type: 'text', text: foreignEnd }] } } } },
     { type: 'event_msg', payload: { type: 'dynamic_tool_call_end', call_id: 'scoped-shell',
       tool_name: namespace + '.shell_command', success: false } },
+    completion({ type: 'McpToolCall', id: 'tool', server: 'notes', tool: 'shell_command', environmentId: 'other-environment',
+      status: 'completed', result: { content: [{ type: 'text', text: foreignTyped }] } }),
+    { type: 'event_msg', payload: { type: 'dynamic_tool_call_begin', call_id: 'tool',
+      tool_name: namespace + '.other', message: foreignBegin } },
   ].map((row, n) => ({
     timestamp: new Date(Date.UTC(2026, 10, 24, 0, 0, n)).toISOString(), ordinal: n, ...row,
   }));
@@ -73,7 +79,8 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
     [main[5], 'other_tool_call', 'completed'],
     [main[6], 'command', 'completed'],
   ];
-  const controls = [[marker, [3]], [heartbeat, [12, 13]], [foreignReceipt, [20]], [foreignEnd, [21]]].map(([text, lines]) => {
+  const controls = [[marker, [3]], [heartbeat, [12, 13]], [foreignReceipt, [20]], [foreignEnd, [21]],
+    [foreignTyped, [23]], [foreignBegin, [24]]].map(([text, lines]) => {
     const event = session.logicalEvents.find(e => e.layer === 'protocol' && e.rawRefs.some(ref => ref.line === lines[0]));
     assert.deepEqual(event.rawRefs.map(ref => ref.line), lines);
     return { text, event };

@@ -1,6 +1,7 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
+const { toolLifecycleDescriptorFor, TOOL_LIFECYCLE_FAMILY, TOOL_LIFECYCLE_PHASE } = require('./codex-tool-lifecycle-contract');
 
 function hasGeneratedImageFile(item) {
   return item?.type === 'Extension' && item.kind === 'image_gen.generation'
@@ -132,12 +133,14 @@ function turnBoundaryEpochs(rawEvents) {
 // codex-mcp/src/tools.rs prefixes an environment-qualified callable namespace
 // with the first twelve hex digits of SHA-1(environment). Connector aliases,
 // sanitized names and collision suffixes need separate registration evidence.
+const scopedToolNamespace = /^(?:mcp__)?([a-f0-9]{12})__([A-Za-z0-9_]+)$/;
+
 function scopedRequestToolName(raw) {
   if (raw?.recordType !== 'response_item' || !['function_call', 'custom_tool_call'].includes(raw.payloadType)) return '';
   const call = raw.parsed?.payload;
   if (typeof call?.namespace !== 'string' || typeof call.name !== 'string'
       || call.namespace.length + 2 + call.name.length > 128
-      || !/^(?:mcp__)?[a-f0-9]{12}__[A-Za-z0-9_]+$/.test(call.namespace)
+      || !scopedToolNamespace.test(call.namespace)
       || !/^[A-Za-z0-9_]+$/.test(call.name)) return '';
   return `${call.namespace}__${call.name}`;
 }
@@ -146,14 +149,16 @@ function scopedRequestToolName(raw) {
 function matchesScopedMcpCall(raw, server, tool, environmentId) {
   const call = raw.parsed.payload;
   if (call.type !== 'function_call'
-      || typeof environmentId !== 'string' || !environmentId || environmentId.length > 4096
       || typeof call.namespace !== 'string' || call.namespace.length + 2 + call.name.length > 128) return null;
+  const registration = scopedToolNamespace.exec(call.namespace);
+  if (!registration) return null;
+  const knownServer = typeof server === 'string' && /^[A-Za-z0-9_]{1,128}$/.test(server);
+  const knownTool = typeof tool === 'string' && /^[A-Za-z0-9_]{1,128}$/.test(tool);
+  if ((knownServer && registration[2] !== server) || (knownTool && call.name !== tool)) return false;
+  if (typeof environmentId !== 'string' || !environmentId || environmentId.length > 4096) return null;
   const scope = createHash('sha1').update(environmentId).digest('hex').slice(0, 12);
-  const namespace = call.namespace.replace(/^mcp__/, '');
-  if (!namespace.startsWith(scope + '__')) return false;
-  if (typeof server !== 'string' || !/^[A-Za-z0-9_]{1,128}$/.test(server)
-      || typeof tool !== 'string' || !/^[A-Za-z0-9_]{1,128}$/.test(tool)) return null;
-  return call.name === tool && namespace === scope + '__' + server;
+  if (registration[1] !== scope) return false;
+  return knownServer && knownTool ? true : null;
 }
 
 function matchesToolOutput(call, row) {
@@ -164,12 +169,29 @@ function matchesToolOutput(call, row) {
     && (namespace == null || (namespace === '' ? 'functions' : namespace) === (request.namespace || 'functions'));
 }
 
+function dynamicNamespace(namespace) {
+  return namespace == null || namespace === 'functions' ? '' : namespace;
+}
+
+function matchesDynamicIdentity(call, tool, namespace) {
+  const request = call.parsed.payload;
+  const requestedScope = dynamicNamespace(request.namespace);
+  const registeredScope = dynamicNamespace(namespace);
+  if (typeof requestedScope !== 'string' || typeof registeredScope !== 'string') return null;
+  if (requestedScope && typeof namespace === 'string' && requestedScope !== registeredScope) return false;
+  if (typeof request.name !== 'string' || typeof tool !== 'string' || !tool) return null;
+  if (requestedScope === registeredScope) return request.name === tool;
+  // Older calls carried the entire qualified name in the default namespace.
+  if (requestedScope || !registeredScope || request.name !== registeredScope + '.' + tool) return false;
+  return registeredScope.includes('.') || tool.includes('.') ? null : true;
+}
+
 function matchesDynamicTool(call, row) {
-  if (call.payloadType !== 'function_call' || row.recordType !== 'event_msg') return false;
   const { name, namespace } = call.parsed.payload;
   const { tool_name: tool, namespace: recordedNamespace } = row.parsed.payload;
-  if (typeof name !== 'string' || (namespace != null && typeof namespace !== 'string')
-      || (recordedNamespace != null && recordedNamespace !== namespace)) return false;
+  if (typeof name !== 'string' || (namespace != null && typeof namespace !== 'string')) return null;
+  if (typeof recordedNamespace === 'string' && dynamicNamespace(recordedNamespace) !== dynamicNamespace(namespace)) return false;
+  if ((recordedNamespace != null && typeof recordedNamespace !== 'string') || typeof tool !== 'string' || !tool) return null;
   return tool === (namespace && namespace !== 'functions' ? namespace + '.' + name : name);
 }
 
@@ -181,7 +203,8 @@ function scopedLegacyMcpStatus(call, row) {
 }
 
 function legacyMcpStatus(p) {
-  if (p.type === 'mcp_tool_call_begin') return 'incomplete';
+  if (p.type === 'mcp_tool_call_declined') return 'declined';
+  if (['mcp_tool_call_begin', 'mcp_tool_call_update', 'mcp_tool_call_delta'].includes(p.type)) return 'incomplete';
   if (p.type !== 'mcp_tool_call_end') return '';
   // McpToolCallEndEvent::is_success (0.172.0) reads the tagged Result.
   const result = p.result;
@@ -196,93 +219,121 @@ function followsToolRequest(call, row, epochs) {
     && (!row.turnId || !call.turnId || row.turnId === call.turnId);
 }
 
-// Compare the physical carriers while both are still visible. A disputed end
-// must not become the only outcome just because its opposite lost a typed join.
-function resolveScopedTerminals(group, epochs, typedCounts, views, remainingToolPeer) {
+// match is false for an identified foreign owner and null for an unresolved identity.
+function scopedLifecycleCarrier(call, row, scopedFunction, singleRequest) {
+  const p = row.parsed.payload;
+  const item = p.item;
+  if (row.payloadType === 'item_completed') {
+    if (item?.id !== call.callId) return null;
+    let family, match, status;
+    if (scopedFunction && item.type === 'McpToolCall') {
+      family = TOOL_LIFECYCLE_FAMILY.MCP_TOOL;
+      match = matchesScopedMcpCall(call, item.server, item.tool, item.environmentId);
+      if (['completed', 'failed'].includes(item.status)) status = row.status === 'failed' ? 'failed' : 'success';
+    } else if (item.type === 'DynamicToolCall') {
+      family = TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL;
+      match = matchesDynamicIdentity(call, item.tool, item.namespace);
+      if (['completed', 'failed', 'declined', 'interrupted'].includes(item.status)) status = dynamicOutcome(item);
+      if (item.status === 'in_progress') status = '';
+    } else return null;
+    if (p.thread_id != null && p.thread_id !== call.sessionId) match = false;
+    // A lone historical dynamic request already has the physical session and
+    // turn checked by followsToolRequest. Cross-channel joins need explicit IDs.
+    const explicitIds = p.thread_id === call.sessionId && typeof p.turn_id === 'string' && p.turn_id.length > 0;
+    const canJoin = explicitIds || (singleRequest && item.type === 'DynamicToolCall');
+    if (match !== false && status == null) match = null;
+    return { row, family, match, status, typed: true, canJoin };
+  }
+  // These transport messages stay in Protocol. Explicit registration fields
+  // can exclude a foreign peer without assigning any outcome to the request.
+  if (['dynamic_tool_call_request', 'dynamic_tool_call_response'].includes(row.payloadType)) {
+    return matchesDynamicIdentity(call, p.tool, p.namespace) === false
+      ? { row, family: TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL, match: false } : null;
+  }
+  const descriptor = toolLifecycleDescriptorFor(row.payloadType);
+  const terminal = descriptor?.phase === TOOL_LIFECYCLE_PHASE.TERMINAL;
+  if (scopedFunction && descriptor?.family === TOOL_LIFECYCLE_FAMILY.MCP_TOOL) {
+    const i = p.invocation;
+    const match = matchesScopedMcpCall(call, i?.server, i?.tool, i?.environment_id);
+    const status = terminal ? legacyMcpStatus(p) : '';
+    return { row, family: descriptor.family, match: match && terminal && !status ? null : match, status };
+  }
+  if (descriptor?.family !== TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL) return null;
+  return { row, family: descriptor.family, match: matchesDynamicTool(call, row), status: terminal ? dynamicOutcome(p) : '' };
+}
+
+// Compare physical carriers before projecting either format into a logical event.
+function resolveScopedTerminals(group, epochs, views, remainingToolPeer) {
   const requests = group.filter(row => row.recordType === 'response_item' && ['function_call', 'custom_tool_call'].includes(row.payloadType));
-  const calls = requests.filter(row => row.payloadType === 'function_call');
-  if (calls.length !== 1 || !scopedRequestToolName(calls[0])) return;
-  const call = calls[0];
+  const functions = requests.filter(row => row.payloadType === 'function_call');
+  if (functions.length !== 1) return;
+  const call = functions[0];
+  const scopedFunction = Boolean(scopedRequestToolName(call));
   const peers = group.filter(row => followsToolRequest(call, row, epochs));
-  const terminals = new Map();
-  const items = group.filter(row => row.recordType === 'event_msg' && row.payloadType === 'item_completed'
-    && row.parsed.payload.item?.type === 'McpToolCall');
-  for (const row of items) {
-    views.set(row, { ...row, callId: '' });
-    const { item, thread_id, turn_id } = row.parsed.payload;
-    if (item.id === call.callId && followsToolRequest(call, row, epochs) && thread_id === call.sessionId && typeof turn_id === 'string' && turn_id
-        && ['completed', 'failed'].includes(item.status) && matchesScopedMcpCall(call, item.server, item.tool, item.environmentId)) {
-      terminals.set(row, row.status === 'failed' ? 'failed' : 'success');
+  const eligible = new Set(peers);
+  const identified = new Set();
+  const mcp = [];
+  const dynamic = [];
+  for (const row of group) {
+    if (row.recordType !== 'event_msg') continue;
+    const carrier = scopedLifecycleCarrier(call, row, scopedFunction, requests.length === 1);
+    if (!carrier) continue;
+    // Typed rows start in Protocol. Only a unique in-scope owner can claim one.
+    if (carrier.typed) views.set(row, { ...row, callId: '' });
+    if (!eligible.has(row) || carrier.match == null) continue;
+    identified.add(row);
+    if (carrier.match) {
+      const family = carrier.family === TOOL_LIFECYCLE_FAMILY.MCP_TOOL ? mcp : dynamic;
+      family.push(carrier);
     }
   }
-  const identifiedLegacy = new Set();
-  const mcpBegins = [];
-  const legacyDynamic = peers.filter(row => row.payloadType === 'dynamic_tool_call_end' && matchesDynamicTool(call, row));
-  const typedDynamic = peers.filter(row => {
-    const p = row.parsed.payload;
-    return row.recordType === 'event_msg' && row.payloadType === 'item_completed'
-      && (p.thread_id == null || p.thread_id === call.sessionId) && p.item?.type === 'DynamicToolCall'
-      && p.item.id === call.callId && p.item.tool === call.parsed.payload.name && p.item.namespace === call.parsed.payload.namespace
-      && ['completed', 'failed', 'declined', 'interrupted'].includes(p.item.status);
-  });
-  for (const row of peers) {
-    if (row.recordType !== 'event_msg' || !['mcp_tool_call_begin', 'mcp_tool_call_end'].includes(row.payloadType)) continue;
-    const p = row.parsed.payload;
-    const invocation = p.invocation;
-    const match = matchesScopedMcpCall(call, invocation?.server, invocation?.tool, invocation?.environment_id);
-    const status = match && legacyMcpStatus(p);
-    if (match === false || status) identifiedLegacy.add(row);
-    if (status && row.payloadType === 'mcp_tool_call_end') terminals.set(row, status);
-    if (status && row.payloadType === 'mcp_tool_call_begin') mcpBegins.push(row);
-  }
-  const dynamic = [...legacyDynamic, ...typedDynamic];
-  if (dynamic.length && (terminals.size || mcpBegins.length)) {
-    for (const row of [...terminals.keys(), ...mcpBegins, ...dynamic]) views.set(row, { ...row, callId: '' });
-    return;
-  }
-  if (new Set(terminals.values()).size > 1) {
-    for (const row of terminals.keys()) views.set(row, { ...row, callId: '' });
-    return;
-  }
-  const dynamicOutcomes = new Set(dynamic.map(row => dynamicOutcome(row.payloadType === 'item_completed' ? row.parsed.payload.item : row.parsed.payload)));
-  dynamicOutcomes.delete('completed'); // A return without a stated outcome can accompany either success or failure.
-  if (legacyDynamic.length > 1 || dynamicOutcomes.size > 1) {
-    for (const row of dynamic) views.set(row, { ...row, callId: '' });
-  } else if (typedDynamic.length === 1 && typedCounts.get(JSON.stringify([call.sessionId, call.callId])) === 1) {
-    // The dynamic handler accepts a Function payload. A custom request on the
-    // other channel cannot compete for this attested function terminal.
-    const row = typedDynamic[0];
-    if (row.parsed.payload.thread_id === call.sessionId && row.turnId) views.set(row, semanticRaw(row));
-  }
-  const item = items[0];
-  if (!terminals.has(item) || typedCounts.get(JSON.stringify([call.sessionId, call.callId])) !== 1 || terminals.size > 2) return;
+  const competingFamilies = mcp.length > 0 && dynamic.length > 0;
   const custom = requests.length === 2 && requests.find(row => row.payloadType === 'custom_tool_call');
-  // The wire channel identifies requests and receipts independently. An unnamed
-  // competing lifecycle still needs an owner before the typed item can join.
-  if (peers.some(row => {
-    if (row === item || identifiedLegacy.has(row)) return false;
-    if (row.recordType === 'response_item' && ['custom_tool_call', 'custom_tool_call_output', 'function_call_output'].includes(row.payloadType)) return false;
-    if (row.recordType === 'event_msg' && row.payloadType === 'dynamic_tool_call_end'
-        && typeof row.parsed.payload.tool_name === 'string' && row.parsed.payload.tool_name) return false;
-    return !(custom && followsToolRequest(custom, row, epochs) && remainingToolPeer?.(custom, row));
-  })) return;
-  views.set(item, semanticRaw(item));
+  for (const carriers of [mcp, dynamic]) {
+    const terminals = carriers.filter(carrier => carrier.status);
+    const typedItems = carriers.filter(carrier => carrier.typed);
+    const outcomes = new Set(terminals.map(carrier => carrier.status));
+    outcomes.delete('completed'); // A neutral receipt does not contradict a specific terminal.
+    const disputed = outcomes.size > 1 || typedItems.length > 1
+      || terminals.filter(carrier => !carrier.typed).length > 1;
+    if (competingFamilies || disputed) {
+      for (const { row } of competingFamilies ? carriers : terminals) views.set(row, { ...row, callId: '' });
+      continue;
+    }
+    const typed = typedItems[0];
+    if (!typed?.canJoin) continue;
+    // A request or receipt has its own wire channel. Any remaining unidentified
+    // lifecycle needs an independent owner before a typed terminal can join.
+    const unresolved = peers.some(row => !identified.has(row)
+      && !(row.recordType === 'response_item' && ['custom_tool_call', 'custom_tool_call_output', 'function_call_output'].includes(row.payloadType))
+      && !(custom && followsToolRequest(custom, row, epochs) && remainingToolPeer?.(custom, row)));
+    if (!unresolved) views.set(typed.row, semanticRaw(typed.row));
+  }
 }
 
 function dynamicOutcome(p) {
-  if (p.success === false || p.error || p.status === 'failed') return 'failed';
+  if (p.type === 'dynamic_tool_call_declined') return 'declined';
   if (p.status === 'declined' || p.status === 'interrupted') return p.status;
+  if (p.success === false || p.error || p.status === 'failed') return 'failed';
   return p.success === true || p.status === 'success' ? 'success' : 'completed';
+}
+
+function dynamicToolPeer(call, row) {
+  if (call.payloadType !== 'function_call' || row.recordType !== 'event_msg') return null;
+  const phase = toolLifecycleDescriptorFor(row.payloadType);
+  if (phase?.family !== TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL) return null;
+  if (row.typedItemType !== 'DynamicToolCall' && !matchesDynamicTool(call, row)) return null;
+  return phase.phase === TOOL_LIFECYCLE_PHASE.TERMINAL
+    ? { ...row, dynamicTerminalStatus: dynamicOutcome(row.originalRaw?.parsed.payload.item || row.parsed.payload) } : row;
 }
 
 function scopedRequestPeer(call, row) {
   if (row.typedItemType === 'McpToolCall') return call.payloadType === 'function_call' ? row : null;
-  if (row.typedItemType === 'DynamicToolCall' && call.payloadType !== 'function_call') return null;
-  if (row.payloadType === 'dynamic_tool_call_end' && (row.typedItemType === 'DynamicToolCall' || matchesDynamicTool(call, row))) {
-    return { ...row, status: dynamicOutcome(row.parsed.payload) };
-  }
-  if (row.typedItemType === 'DynamicToolCall' || matchesToolOutput(call, row)) return row;
-  if (row.recordType !== 'event_msg' || !['mcp_tool_call_begin', 'mcp_tool_call_end'].includes(row.payloadType)) return null;
+  if (matchesToolOutput(call, row)) return row;
+  if (row.recordType !== 'event_msg') return null;
+  const family = toolLifecycleDescriptorFor(row.payloadType)?.family;
+  if (family === TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL) return dynamicToolPeer(call, row);
+  if (family !== TOOL_LIFECYCLE_FAMILY.MCP_TOOL) return null;
   const status = scopedLegacyMcpStatus(call, row);
   return status ? { ...row, status } : null;
 }
@@ -292,22 +343,29 @@ function scopedRequestPeer(call, row) {
 function semanticRawEvents(rawEvents, remainingToolPeer) {
   const typedCounts = new Map();
   const byCall = new Map();
-  const scopedTerminalIds = new Set();
+  const scopedCallIds = new Set();
+  const ungroupedTyped = [];
   const epochs = turnBoundaryEpochs(rawEvents);
   for (const raw of rawEvents) {
     if (raw.callId) {
       if (!byCall.has(raw.callId)) byCall.set(raw.callId, []);
       byCall.get(raw.callId).push(raw);
-      if (raw.recordType === 'event_msg' && raw.payloadType === 'dynamic_tool_call_end') scopedTerminalIds.add(raw.callId);
+      if (scopedRequestToolName(raw)) scopedCallIds.add(raw.callId);
     }
     const item = raw.parsed?.payload?.item;
     if (raw.payloadType !== 'item_completed' || typeof item?.id !== 'string') continue;
     const key = JSON.stringify([raw.sessionId, item.id]);
     typedCounts.set(key, (typedCounts.get(key) || 0) + 1);
-    if (raw.recordType === 'event_msg' && ['McpToolCall', 'DynamicToolCall'].includes(item.type) && raw.callId) scopedTerminalIds.add(raw.callId);
+    if (!raw.callId && raw.recordType === 'event_msg' && ['McpToolCall', 'DynamicToolCall'].includes(item.type)) ungroupedTyped.push(raw);
   }
   const scopedViews = new Map();
-  for (const id of scopedTerminalIds) resolveScopedTerminals(byCall.get(id), epochs, typedCounts, scopedViews, remainingToolPeer);
+  // An incomplete item may have no semantic callId yet still compete for its
+  // physical item.id. Keep it visible to scope and uniqueness checks.
+  for (const raw of ungroupedTyped) {
+    const id = raw.parsed.payload.item.id;
+    if (scopedCallIds.has(id)) byCall.get(id).push(raw);
+  }
+  for (const id of scopedCallIds) resolveScopedTerminals(byCall.get(id), epochs, scopedViews, remainingToolPeer);
   return rawEvents.map((raw) => {
     if (scopedViews.has(raw)) return scopedViews.get(raw);
     // The recorded namespace distinguishes the request from a native namesake
@@ -402,4 +460,4 @@ function additionalToolsSummary(payload) {
   return { valid: payload?.type === 'additional_tools' && payload.role === 'developer' && Array.isArray(payload.tools), entries: tools.length, count, names, unsupported, incomplete, shortened: incomplete || names.length >= 24 };
 }
 
-module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, legacyMcpStatus, matchesToolOutput, matchesDynamicTool };
+module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, legacyMcpStatus, matchesToolOutput, dynamicToolPeer };

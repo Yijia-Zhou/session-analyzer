@@ -11,7 +11,7 @@ function createCodexLogicalBuilder(deps) {
     followsToolRequest,
     legacyMcpStatus,
     matchesToolOutput,
-    matchesDynamicTool,
+    dynamicToolPeer,
     resolvedSubAgentStartup = () => null,
     turnBoundaryEpochs = () => new Map(),
     historyFacts = () => null,
@@ -695,10 +695,13 @@ function createCodexLogicalBuilder(deps) {
     // A typed dynamic end records completion, not necessarily success. Keep
     // explicit failure precedence, and require a boolean true for success.
     const typedDynamic = group.find((raw) => raw.typedItemType === 'DynamicToolCall')?.parsed?.payload;
-    if (scopedRequest && dynamicRows.some(row => row.payloadType === 'dynamic_tool_call_end')) {
-      const ends = dynamicRows.filter(row => row.payloadType === 'dynamic_tool_call_end');
-      status = ends.find(row => row.status !== 'completed')?.status || 'completed';
+    const dynamicEnds = dynamicRows.filter(row => row.dynamicTerminalStatus);
+    if (dynamicEnds.length) {
+      status = dynamicEnds.find(row => row.dynamicTerminalStatus !== 'completed')?.dynamicTerminalStatus || 'completed';
       severity = status === 'failed' ? 'error' : ['declined', 'interrupted'].includes(status) ? 'warning' : 'normal';
+    } else if (scopedRequest && dynamicRows.length) {
+      status = completed ? 'completed' : 'incomplete';
+      severity = completed ? 'normal' : 'warning';
     } else if (typedDynamic && typedDynamic.success !== true && status === 'success') status = 'completed';
     if (collabRows.some((raw) => raw.status === 'interrupted')) {
       status = 'interrupted';
@@ -1303,6 +1306,41 @@ function createCodexLogicalBuilder(deps) {
       }
     }
 
+    function collaborationThreadId(value) {
+      // ThreadId::from_string uses uuid 1.20's simple, hyphenated, braced and URN formats.
+      if (typeof value !== 'string') return null;
+      if (/^[0-9a-f]{32}$/i.test(value)) return value.toLowerCase();
+      let hyphenated = value;
+      if (value.startsWith('urn:uuid:')) hyphenated = value.slice(9);
+      else if (value.startsWith('{') && value.endsWith('}')) hyphenated = value.slice(1, -1);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(hyphenated)) return null;
+      return hyphenated.replaceAll('-', '').toLowerCase();
+    }
+
+    function collaborationReceiverConflicts(name, args, payload) {
+      if (name === 'wait_agent') {
+        if (!Array.isArray(args?.targets) || !args.targets.length) return false;
+        const targets = new Set(args.targets.map(collaborationThreadId));
+        if (targets.has(null)) return false; // A path or relative name could resolve to any receiver.
+        const foreign = value => {
+          const id = collaborationThreadId(value);
+          return id !== null && !targets.has(id);
+        };
+        if (payload.type === 'collab_waiting_begin') {
+          return (Array.isArray(payload.receiver_thread_ids) && payload.receiver_thread_ids.some(foreign))
+            || (Array.isArray(payload.receiver_agents) && payload.receiver_agents.some(agent => foreign(agent?.thread_id)));
+        }
+        return (payload.statuses && typeof payload.statuses === 'object' && !Array.isArray(payload.statuses)
+            && Object.keys(payload.statuses).some(foreign))
+          || (Array.isArray(payload.agent_statuses) && payload.agent_statuses.some(agent => foreign(agent?.thread_id)));
+      }
+      const receiver = collaborationThreadId(payload.receiver_thread_id);
+      if (name === 'spawn_agent' || receiver === null) return false;
+      // The older send_input and close_agent contracts called the target "id".
+      const declared = name === 'send_message' ? [args?.target] : [args?.target, args?.id];
+      return declared.map(collaborationThreadId).some(id => id !== null && id !== receiver);
+    }
+
     function remainingToolPeer(call, row) {
       const { name, namespace } = call.parsed.payload;
       if (typeof name !== 'string' || (namespace != null && typeof namespace !== 'string')) return null;
@@ -1351,10 +1389,11 @@ function createCodexLogicalBuilder(deps) {
           wait_agent: 'collab_waiting', close_agent: 'collab_close' };
         if (!Object.hasOwn(actions, name)) return null;
         const action = actions[name];
-        return row.payloadType === action + '_begin' || row.payloadType === action + '_end' ? row : null;
+        if (row.payloadType !== action + '_begin' && row.payloadType !== action + '_end') return null;
+        return collaborationReceiverConflicts(name, commandArgsFromRaw(call), row.parsed.payload) ? null : row;
       }
       if (fn && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL)) {
-        return matchesDynamicTool(call, row) ? row : null;
+        return dynamicToolPeer(call, row);
       }
       if (fn && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.IMAGE_GENERATION)) {
         return imageRequest ? row : null;
@@ -1385,9 +1424,7 @@ function createCodexLogicalBuilder(deps) {
           keepUnpaired(call);
           continue;
         }
-        const legacyEnd = raw => raw.payloadType === 'mcp_tool_call_end' && !raw.typedItemType;
-        const repeatedEnd = eligible.filter(legacyEnd).length > 1;
-        const peers = [call, ...eligible.filter(raw => !repeatedEnd || !legacyEnd(raw))];
+        const peers = [call, ...eligible];
         const event = buildToolLogicalEvent(callId, peers, [], epochs);
         if (requests.length > 1) event.id = `${call.sessionId}:logical:scoped-call:${call.line}`;
         logicalEvents.push(event);
