@@ -331,27 +331,53 @@ function sameCommandDirectory(left, right) {
   return sameRecordedPath(a, a) && sameRecordedPath(b, b) ? sameRecordedPath(a, b) : null;
 }
 
-function commandMatches(args, name, item) {
-  const argv = item.command;
+function selectedExecShellMatches(selector, executable, shell, cwd) {
+  // detect_shell_type repeatedly takes the file stem until it finds a known type.
+  const parts = selector.split(executable.startsWith('/') ? '/' : /[\\/]/).filter(part => part && part !== '.');
+  const selected = (parts.at(-1) || '').split('.')[0];
+  const powershell = ['pwsh', 'powershell'];
+  if (powershell.includes(selected)) return powershell.includes(shell);
+  if (['sh', 'bash', 'zsh', 'cmd'].includes(selected)) return selected === shell;
+
+  // An unknown type takes ultimate_fallback_shell. Its executable is literal,
+  // and an absolute recorded directory can rule out the opposite platform.
+  const directory = recordedCommandDirectory(cwd);
+  const known = sameRecordedPath(directory, directory);
+  const windows = known && /^(?:[A-Za-z]:[\\/]|[\\/]{2})/.test(directory);
+  return (executable === '/bin/sh' && !windows) || (executable === 'cmd.exe' && (!known || windows));
+}
+
+function commandArgvMatches(args, name, argv, cwd) {
   if (!args || !Array.isArray(argv) || !argv.length || !argv.every(arg => typeof arg === 'string')) return false;
-  if ([args.workdir, args.cwd].some(cwd => cwd != null && sameCommandDirectory(cwd, item.cwd) !== true)) return false;
-  if (item.exit_code != null && (!Number.isInteger(item.exit_code) || item.exit_code < -2147483648 || item.exit_code > 2147483647
-      || (item.status === 'completed' && item.exit_code !== 0) || (item.status === 'failed' && item.exit_code === 0))) return false;
-  if (name === 'shell') return item.source === 'agent' && Array.isArray(args.command)
+  if (name === 'shell') return Array.isArray(args.command)
     && args.command.length === argv.length && args.command.every((arg, i) => arg === argv[i]);
-  const exec = name === 'exec_command';
-  if ((!exec && name !== 'shell_command') || item.source !== (exec ? 'unified_exec_startup' : 'agent')) return false;
-  const command = exec ? args.cmd : args.command;
+  const command = name === 'exec_command' ? args.cmd : args.command;
   if (typeof command !== 'string' || !command) return false;
-  if (args.shell != null && args.shell !== argv[0]) return false;
-  if (argv.every(arg => /^[A-Za-z0-9_./:-]+$/.test(arg)) && argv.join(' ') === command) return true;
+  if (args.login != null && typeof args.login !== 'boolean') return false;
+  if (args.login == null && args.shell == null && argv.every(arg => /^[A-Za-z0-9_./:-]+$/.test(arg)) && argv.join(' ') === command) return true;
   // core/src/shell.rs::derive_exec_args preserves the command as one argument.
   if (argv.at(-1) !== command) return false;
   const shell = argv[0].split(/[\\/]/).at(-1).toLowerCase().replace(/\.exe$/, '');
-  if (['sh', 'bash', 'zsh'].includes(shell)) return argv.length === 3 && ['-c', '-lc'].includes(argv[1]);
+  if (args.shell != null) {
+    // get_shell_by_model_provided_path selects a type, then discovers the executable.
+    if (typeof args.shell !== 'string') return false;
+    if (name === 'exec_command' ? !selectedExecShellMatches(args.shell, argv[0], shell, cwd) : args.shell !== argv[0]) return false;
+  }
+  if (['sh', 'bash', 'zsh'].includes(shell)) return argv.length === 3
+    && ((argv[1] === '-c' && args.login !== true) || (argv[1] === '-lc' && args.login !== false));
   if (shell === 'cmd') return argv.length === 3 && argv[1] === '/c';
   return ['powershell', 'pwsh'].includes(shell)
-    && ((argv.length === 3 && argv[1] === '-Command') || (argv.length === 4 && argv[1] === '-NoProfile' && argv[2] === '-Command'));
+    && ((argv.length === 3 && argv[1] === '-Command' && args.login !== false)
+      || (argv.length === 4 && argv[1] === '-NoProfile' && argv[2] === '-Command' && args.login !== true));
+}
+
+function commandMatches(args, name, item, legacy = false) {
+  if (!['shell', 'shell_command', 'exec_command'].includes(name)) return false;
+  if ((!legacy || item.source !== undefined) && item.source !== (name === 'exec_command' ? 'unified_exec_startup' : 'agent')) return false;
+  if ((!legacy || item.cwd !== undefined) && [args?.workdir, args?.cwd].some(cwd => cwd != null && sameCommandDirectory(cwd, item.cwd) !== true)) return false;
+  if (!legacy && item.exit_code != null && (!Number.isInteger(item.exit_code) || item.exit_code < -2147483648 || item.exit_code > 2147483647
+      || (item.status === 'completed' && item.exit_code !== 0) || (item.status === 'failed' && item.exit_code === 0))) return false;
+  return (legacy && item.command === undefined) || commandArgvMatches(args, name, item.command, item.cwd);
 }
 
 function waitMatches(args, item, sessionId) {
@@ -385,7 +411,32 @@ function patchPath(value, cwd) {
   return api.join(cwd, value);
 }
 
-function patchMatches(input, changes, cwd) {
+function patchEditBlocks(lines) {
+  const blocks = [];
+  for (let i = 0; i < lines.length;) {
+    const start = i++;
+    if (!/^[+-]/.test(lines[start])) continue;
+    while (i < lines.length && /^[+-]/.test(lines[i])) i++;
+    const before = lines[start - 1], after = lines[i];
+    blocks.push({ edits: lines.slice(start, i), before: before?.startsWith(' ') ? before : null, after: after?.startsWith(' ') ? after : null });
+  }
+  return blocks;
+}
+
+function legacyPatchUpdateMatches(body, diff, move) {
+  const requested = patchEditBlocks(body), recorded = patchEditBlocks(diff);
+  if ((!move && !requested.length) || requested.length !== recorded.length) return false;
+  // The writer regenerates radius-one context. Compare the immediate neighbours
+  // of each edit when both sides retain them. A hunk header always breaks a run.
+  return requested.every((block, i) => {
+    const other = recorded[i];
+    return (block.before === null || other.before === null || block.before === other.before)
+      && (block.after === null || other.after === null || block.after === other.after)
+      && isDeepStrictEqual(block.edits, other.edits);
+  });
+}
+
+function patchMatches(input, changes, cwd, legacy = false) {
   if (typeof input !== 'string' || !changes || typeof changes !== 'object' || Array.isArray(changes)) return false;
   const lines = input.replaceAll('\r\n', '\n').trimEnd().split('\n');
   if (lines.shift() !== '*** Begin Patch' || lines.pop() !== '*** End Patch') return false;
@@ -412,17 +463,44 @@ function patchMatches(input, changes, cwd) {
       if (typeof change.unified_diff !== 'string') return false;
       const diff = change.unified_diff.split(/\r?\n/);
       const hunk = diff.findIndex(line => line.startsWith('@@'));
-      // Compare unanchored hunks including their context. Extra context, rewritten
-      // hunks or unrelated edits do not establish byte-comparable patch identity.
-      if (body.some(line => !/^(?:[ +\-]|@@$)/.test(line))) return false;
-      const expected = body.filter(line => line !== '@@');
-      const actual = (hunk < 0 ? diff : diff.slice(hunk)).filter(line => /^[ +\-]/.test(line));
-      if ((!move && !expected.some(line => /^[+-]/.test(line))) || expected.length !== actual.length
-          || !expected.every((line, j) => line === actual[j])) return false;
+      const valid = legacy ? /^(?:[ +\-]|@@(?: |$))/ : /^(?:[ +\-]|@@$)/;
+      if (body.some(line => !valid.test(line))) return false;
+      const hunks = hunk < 0 ? diff : diff.slice(hunk);
+      if (legacy) {
+        if (!legacyPatchUpdateMatches(body, hunks, move)) return false;
+      } else {
+        const expected = body.filter(line => line !== '@@');
+        const actual = hunks.filter(line => /^[ +\-]/.test(line));
+        if ((!move && !expected.some(line => /^[+-]/.test(line))) || !isDeepStrictEqual(expected, actual)) return false;
+      }
       if (lines[i] === '*** End of File') i++;
     }
   }
   return seen.size > 0 && seen.size === Object.keys(changes).length;
+}
+
+function legacyCommandOrPatchMatches(call, row, patchCwd) {
+  const request = call.parsed.payload;
+  const name = request.name.replace(/^functions\./, '');
+  const p = row.parsed.payload;
+  if (toolLifecycleDescriptorFor(row.payloadType)?.family === TOOL_LIFECYCLE_FAMILY.PATCH) {
+    if (name !== 'apply_patch') return false;
+    // Older patch ends can omit changes, which serde defaults to an empty map.
+    if (p.changes === undefined || (p.changes && typeof p.changes === 'object' && !Array.isArray(p.changes) && !Object.keys(p.changes).length)) return true;
+    const input = request.type === 'function_call' ? uniqueArguments(request.arguments)?.input : request.input;
+    return patchMatches(input, p.changes, patchCwd, true);
+  }
+  if (request.type !== 'function_call') return false;
+  // A write_stdin interaction reports the running program's argv.
+  if (name === 'write_stdin') {
+    if (p.source !== undefined && p.source !== 'unified_exec_interaction') return false;
+    const args = uniqueArguments(request.arguments);
+    if (p.process_id != null && (!Number.isInteger(args?.session_id) || args.session_id < -2147483648 || args.session_id > 2147483647
+        || p.process_id !== String(args.session_id))) return false;
+    return p.interaction_input == null || (args && typeof p.interaction_input === 'string'
+      && p.interaction_input === (args.chars === undefined ? '' : args.chars));
+  }
+  return commandMatches(uniqueArguments(request.arguments), name, p, true);
 }
 
 const nativeItemTypes = new Set(['CommandExecution', 'FileChange', 'CollabAgentToolCall']);
@@ -495,7 +573,11 @@ function resolveNativeTypedTerminal(requests, group, epochs, views, remainingToo
   const terminals = [];
   for (const row of peers) {
     const descriptor = toolLifecycleDescriptorFor(row.payloadType);
-    if (descriptor?.phase !== TOOL_LIFECYCLE_PHASE.TERMINAL || !remainingToolPeer?.(call, row)) continue;
+    if (descriptor?.phase !== TOOL_LIFECYCLE_PHASE.TERMINAL) continue;
+    // Ambiguous same-family terminals can still dispute a verified typed item,
+    // even when their malformed identity is insufficient for a legacy-only join.
+    const commandOrPatch = item.type === 'CommandExecution' || item.type === 'FileChange';
+    if (!(descriptor.family === family && commandOrPatch) && !remainingToolPeer?.(call, row)) continue;
     const p = row.parsed.payload;
     if (descriptor.family === family && foreignNativeCarrier(call, item, p, patchCwd)) views.set(row, { ...row, detachedNativeTerminal: true });
     else terminals.push(row);
@@ -621,13 +703,12 @@ function scopedRequestPeer(call, row) {
 
 // Ambiguous repeated identities are inspectable Protocol records. Never choose
 // one call owner from duplicate items, conflicting turns or copied histories.
-function semanticRawEvents(rawEvents, remainingToolPeer) {
+function semanticRawEvents(rawEvents, remainingToolPeer, patchCwds = new Map()) {
   const typedCounts = new Map();
   const byCall = new Map();
   const scopedCallIds = new Set();
   const ungroupedTyped = [];
   const epochs = turnBoundaryEpochs(rawEvents);
-  const patchCwds = new Map();
   let sessionCwd = '', contextSession = '', turnCwd = '', contextEpoch;
   for (const raw of rawEvents) {
     const p = raw.parsed?.payload;
@@ -639,7 +720,7 @@ function semanticRawEvents(rawEvents, remainingToolPeer) {
       turnCwd = p?.cwd;
       contextEpoch = epochs.get(raw.rawId);
       if (turnCwd !== sessionCwd) sessionCwd = ''; // An older default no longer proves a later turn's cwd.
-    } else if (raw.payloadType === 'custom_tool_call' && ['apply_patch', 'functions.apply_patch'].includes(p?.name)
+    } else if (['custom_tool_call', 'function_call'].includes(raw.payloadType) && ['apply_patch', 'functions.apply_patch'].includes(p?.name)
         && raw.sessionId === contextSession) {
       patchCwds.set(raw, contextEpoch === epochs.get(raw.rawId) ? turnCwd : sessionCwd);
     }
@@ -757,4 +838,4 @@ function additionalToolsSummary(payload) {
   return { valid: payload?.type === 'additional_tools' && payload.role === 'developer' && Array.isArray(payload.tools), entries: tools.length, count, names, unsupported, incomplete, shortened: incomplete || names.length >= 24 };
 }
 
-module.exports = { collaborationThreadId, typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, toolPeersInTurn, legacyMcpStatus, matchesToolOutput, dynamicToolPeer };
+module.exports = { collaborationThreadId, typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, toolPeersInTurn, legacyMcpStatus, matchesToolOutput, dynamicToolPeer, legacyCommandOrPatchMatches };

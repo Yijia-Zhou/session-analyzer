@@ -11,6 +11,7 @@ function createCodexLogicalBuilder(deps) {
     toolPeersInTurn,
     collaborationThreadId,
     legacyMcpStatus,
+    legacyCommandOrPatchMatches,
     matchesToolOutput,
     dynamicToolPeer,
     resolvedSubAgentStartup = () => null,
@@ -1174,7 +1175,8 @@ function createCodexLogicalBuilder(deps) {
 
   function buildLogicalEvents(rawEvents, initialOwnedHeader = rawEvents[0]) {
     const sideBoundary = sideChatBoundary(rawEvents, initialOwnedHeader);
-    rawEvents = semanticRawEvents(rawEvents, remainingToolPeer);
+    const patchCwds = new Map();
+    rawEvents = semanticRawEvents(rawEvents, remainingToolPeer, patchCwds);
     const typedMirrors = new Map();
     const omittedTyped = new Set();
     const responseById = new Map();
@@ -1466,11 +1468,11 @@ function createCodexLogicalBuilder(deps) {
       }
       if (!native) return null;
       if (fn && name === 'view_image' && row.payloadType === 'view_image_tool_call') return row;
-      if (isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.PATCH)) {
-        return name === 'apply_patch' || name === 'functions.apply_patch' ? row : null;
+      if (isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.PATCH)
+          || isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.COMMAND)) {
+        return legacyCommandOrPatchMatches(call, row, patchCwds.get(call)) ? row : null;
       }
-      return fn && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.COMMAND)
-        && ['shell', 'shell_command', 'exec_command', 'write_stdin', 'functions.shell_command', 'functions.exec_command', 'functions.write_stdin'].includes(name) ? row : null;
+      return null;
     }
 
     function consumeScopedRequests(callId, group) {
