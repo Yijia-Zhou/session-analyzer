@@ -379,8 +379,8 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
   const tool = 'shell_command';
   const scoped = response({ type: 'function_call', call_id, namespace, name: tool, arguments: '{}' });
   const receipt = response({ type: 'function_call_output', call_id, output: 'current_function_marker' });
-  const legacyEnd = failed => event({ type: 'mcp_tool_call_end', call_id,
-    invocation: { server: 'notes', tool, environment_id: environment, arguments: {} },
+  const legacyEnd = (failed, environmentId = environment, server = 'notes') => event({ type: 'mcp_tool_call_end', call_id,
+    invocation: { server, tool, environment_id: environmentId, arguments: {} },
     result: failed ? { Err: 'legacy_terminal_marker' } : { Ok: { content: [{ type: 'text', text: 'legacy_terminal_marker' }] } } });
   const typedEnd = (failed, environmentId = environment) => typed({ type: 'McpToolCall', id: call_id, server: 'notes', tool, environmentId,
     arguments: {}, status: failed ? 'failed' : 'completed',
@@ -398,7 +398,93 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
   const customReceipt = response({ type: 'custom_tool_call_output', call_id, output: 'scoped_custom_marker' });
   const child = 'bbbbbbbb-0110-4110-8110-bbbbbbbbbbbb';
   const orphan = response({ type: 'function_call_output', call_id, output: 'orphan_receipt_marker' });
+  const dynamicEnd = (identity, outcome) => event({ type: 'dynamic_tool_call_end', call_id, ...identity, ...outcome });
+  const qualifiedDynamic = { tool_name: namespace + '.' + tool };
+  const dynamicSuccess = { success: true, status: 'completed', result: 'dynamic_end_marker' };
+  const dynamicCompleted = dynamicEnd(qualifiedDynamic, { status: 'completed', result: 'dynamic_end_marker' });
+  const typedDynamicFailure = typed({ type: 'DynamicToolCall', id: call_id, namespace, tool, arguments: {},
+    status: 'failed', success: false, error: 'dynamic_failure_marker' });
+  const typedDynamicSuccess = typed({ type: 'DynamicToolCall', id: call_id, namespace, tool, arguments: {},
+    status: 'completed', success: true, content_items: [{ type: 'inputText', text: 'dynamic_success_marker' }] });
   const cases = [
+    ...[[scoped, receipt], [scopedCustom, customReceipt]].flatMap(([call, output]) =>
+      [{ name: 'other' }, { namespace: namespace + '_other' }].map(identity => ({
+        name: `${call.payload.type} keeps a compatible receipt beside an explicit foreign ${Object.keys(identity)[0]}`,
+        rows: [call, response({ ...output.payload, ...identity, output: 'foreign_receipt_marker' }),
+          response({ ...output.payload, name: call.payload.name, namespace })],
+        main: [['other_tool_call', 'completed', [3, 5]]], detached: [4],
+        markers: [[4, 'foreign_receipt_marker'], [5, output.payload.output]],
+      }))),
+    { name: 'a foreign receipt leaves an exact legacy failure with its request',
+      rows: [scoped, legacyEnd(true), response({ ...receipt.payload, name: 'other' })],
+      main: [['mcp_call', 'failed', [3, 4]]], detached: [5],
+      markers: [[4, 'legacy_terminal_marker'], [5, 'current_function_marker']] },
+    ...['notes', 'other-notes'].map(server => ({ name: `a foreign legacy success from ${server} does not contradict local typed failure`,
+      rows: [scoped, typedEnd(true), legacyEnd(false, 'other-environment', server), receipt],
+      main: [['mcp_call', 'failed', [3, 4, 6]]], detached: [5],
+      markers: [[4, 'typed_terminal_marker'], [5, 'legacy_terminal_marker'], [6, 'current_function_marker']] })),
+    { name: 'an independent custom patch preserves a scoped function typed failure',
+      rows: [scoped, patch, typedEnd(true), patchEnd, patchReceipt, receipt],
+      main: [['mcp_call', 'failed', [3, 5, 8]], ['patch', 'success', [4, 6, 7]]], detached: [],
+      markers: [[5, 'typed_terminal_marker'], [7, 'patch_receipt_marker'], [8, 'current_function_marker']] },
+    { name: 'scoped requests on two channels give the typed MCP row only to its function owner',
+      rows: [response({ ...scopedCustom.payload, name: tool }), scoped, typedEnd(true), customReceipt, receipt],
+      main: [['other_tool_call', 'completed', [3, 6]], ['mcp_call', 'failed', [4, 5, 7]]], detached: [],
+      markers: [[5, 'typed_terminal_marker'], [6, 'scoped_custom_marker'], [7, 'current_function_marker']] },
+    ...[
+      ['exact identity', qualifiedDynamic, true],
+      ['missing name', {}, false],
+      ['different tool', { tool_name: namespace + '.other' }, false],
+      ['different explicit namespace', { ...qualifiedDynamic, namespace: 'elsewhere' }, false],
+    ].map(([label, fields, matches]) => ({ name: `scoped legacy dynamic failure with ${label}`,
+      rows: [scoped, dynamicEnd(fields, { status: 'failed', success: false, error: 'dynamic_end_marker' }), receipt],
+      main: [['other_tool_call', matches ? 'failed' : 'completed', matches ? [3, 4, 5] : [3, 5]]], detached: matches ? [] : [4],
+      markers: [[4, 'dynamic_end_marker'], [5, 'current_function_marker']] })),
+    { name: 'a scoped legacy dynamic end reports failure through success alone',
+      rows: [scoped, dynamicEnd(qualifiedDynamic, { success: false, result: 'dynamic_end_marker' }), receipt],
+      main: [['other_tool_call', 'failed', [3, 4, 5]]], detached: [],
+      markers: [[4, 'dynamic_end_marker'], [5, 'current_function_marker']] },
+    { name: 'an independent custom patch preserves a scoped typed dynamic failure',
+      rows: [scoped, patch, typedDynamicFailure, patchEnd, patchReceipt, receipt],
+      main: [['other_tool_call', 'failed', [3, 5, 8]], ['patch', 'success', [4, 6, 7]]], detached: [],
+      markers: [[5, 'dynamic_failure_marker'], [7, 'patch_receipt_marker'], [8, 'current_function_marker']] },
+    ...[
+      [typedDynamicFailure, 'dynamic_failure_marker', dynamicSuccess],
+      [typedDynamicSuccess, 'dynamic_success_marker', { success: false, error: 'dynamic_end_marker' }],
+    ].map(([typedTerminal, marker, legacyOutcome]) => ({ name: `a custom patch cannot resolve a ${typedTerminal.payload.item.status} typed dynamic conflict`,
+      rows: [scoped, patch, typedTerminal, dynamicEnd(qualifiedDynamic, legacyOutcome), patchEnd, patchReceipt, receipt],
+      main: [['other_tool_call', 'completed', [3, 9]], ['patch', 'success', [4, 7, 8]]], detached: [5, 6],
+      markers: [[5, marker], [6, 'dynamic_end_marker'], [8, 'patch_receipt_marker'], [9, 'current_function_marker']] })),
+    ...[
+      ['legacy', dynamicEnd(qualifiedDynamic, { success: false, error: 'dynamic_failure_marker' })],
+      ['typed', typedDynamicFailure],
+    ].map(([source, failure]) => ({ name: `a ${source} dynamic failure conflicts with an exact legacy dynamic success`,
+      rows: [scoped, failure, dynamicEnd(qualifiedDynamic, dynamicSuccess), receipt],
+      main: [['other_tool_call', 'completed', [3, 6]]], detached: [4, 5],
+      markers: [[4, 'dynamic_failure_marker'], [5, 'dynamic_end_marker'], [6, 'current_function_marker']] })),
+    { name: 'a legacy dynamic completion preserves the explicit failure of its typed mirror',
+      rows: [scoped, typedDynamicFailure, dynamicCompleted, receipt],
+      main: [['other_tool_call', 'failed', [3, 4, 5, 6]]], detached: [],
+      markers: [[4, 'dynamic_failure_marker'], [5, 'dynamic_end_marker'], [6, 'current_function_marker']] },
+    { name: 'a scoped legacy dynamic completion without an outcome stays completed',
+      rows: [scoped, dynamicCompleted, receipt], main: [['other_tool_call', 'completed', [3, 4, 5]]], detached: [],
+      markers: [[4, 'dynamic_end_marker'], [5, 'current_function_marker']] },
+    { name: 'a scoped typed MCP failure and exact legacy dynamic success dispute their common request',
+      rows: [scoped, typedEnd(true), dynamicEnd(qualifiedDynamic, dynamicSuccess), receipt],
+      main: [['other_tool_call', 'completed', [3, 6]]], detached: [4, 5],
+      markers: [[4, 'typed_terminal_marker'], [5, 'dynamic_end_marker'], [6, 'current_function_marker']] },
+    ...[['foreign name', { tool_name: namespace + '.other' }], ['foreign namespace', { ...qualifiedDynamic, namespace: 'elsewhere' }]]
+      .map(([label, identity]) => ({ name: `a legacy dynamic end with ${label} leaves an exact typed MCP failure intact`,
+        rows: [scoped, typedEnd(true), dynamicEnd(identity, dynamicSuccess), receipt],
+        main: [['mcp_call', 'failed', [3, 4, 6]]], detached: [5],
+        markers: [[4, 'typed_terminal_marker'], [5, 'dynamic_end_marker'], [6, 'current_function_marker']] })),
+    ...[['missing', {}, true], ['same', { sender_thread_id: ID }, true], ['foreign', { sender_thread_id: child }, false]]
+      .map(([label, fields, matches]) => ({ name: `native spawn beside a scoped custom call with ${label} sender`,
+        rows: [scopedCustom, response({ type: 'function_call', call_id, namespace: 'collaboration', name: 'spawn_agent', arguments: '{}' }),
+          event({ type: 'collab_agent_spawn_end', call_id, new_thread_id: 'spawn_child_marker', status: 'failed', ...fields }),
+          receipt, customReceipt],
+        main: [['other_tool_call', 'completed', [3, 7]], ['agent_coordination', matches ? 'failed' : 'success', matches ? [4, 5, 6] : [4, 6]]],
+        detached: matches ? [] : [5], markers: [[5, 'spawn_child_marker'], [6, 'current_function_marker'], [7, 'scoped_custom_marker']] })),
     { name: 'typed failure followed by legacy success', rows: [scoped, typedEnd(true), legacyEnd(false), receipt],
       main: [['other_tool_call', 'completed', [3, 6]]], detached: [4, 5],
       markers: [[4, 'typed_terminal_marker'], [5, 'legacy_terminal_marker'], [6, 'current_function_marker']] },
@@ -570,15 +656,25 @@ test('a scoped wait cannot take ownership of a pending native cell', async (t) =
           assert.equal(operation.codeModeOperation.observationState, 'pending');
           assert.equal(operation.codeModeOperation.cellId, cellId);
           assert.deepEqual(operation.rawRefs.map(r => r.line), [3, 4]);
-          assert.equal(foreign.kind, completion === 'valid' ? 'mcp_call' : 'other_tool_call');
-          assert.equal(foreign.status, completion === 'valid' ? 'failed' : 'completed');
+          const verified = completion === 'valid' || completion === 'conflicting output';
+          assert.equal(foreign.kind, verified ? 'mcp_call' : 'other_tool_call');
+          assert.equal(foreign.status, verified ? 'failed' : 'completed');
           const outputLine = f.records.length;
-          assert.deepEqual(foreign.rawRefs.map(r => r.line), completion === 'valid' ? [5, 6, 7] : [5, outputLine]);
+          const detachedOutput = completion === 'conflicting output';
+          const expectedLines = [5];
+          if (verified) expectedLines.push(6);
+          if (!detachedOutput) expectedLines.push(outputLine);
+          assert.deepEqual(foreign.rawRefs.map(r => r.line), expectedLines);
+          const outputOwners = session.logicalEvents.filter(e => e.rawRefs.some(r => r.line === outputLine));
+          assert.equal(outputOwners.length, 1);
+          const [outputOwner] = outputOwners;
+          assert.equal(outputOwner.layer, detachedOutput ? 'protocol' : 'main');
           const owners = [operation, foreign];
-          if (completion.startsWith('conflicting')) {
-            const protocol = session.logicalEvents.find(e => e.layer === 'protocol' && e.rawRefs.some(r => r.line === 6));
-            assert.deepEqual(protocol.rawRefs.map(r => r.line), [6]);
-            owners.push(protocol);
+          if (detachedOutput || completion === 'conflicting environment') {
+            const line = detachedOutput ? outputLine : 6;
+            const matches = session.logicalEvents.filter(e => e.rawRefs.some(r => r.line === line));
+            assert.deepEqual(matches.map(e => [e.layer, e.rawRefs.map(r => r.line)]), [['protocol', [line]]]);
+            owners.push(matches[0]);
           }
           for (const owner of owners) {
             for (const ref of owner.rawRefs) {
@@ -587,14 +683,15 @@ test('a scoped wait cannot take ownership of a pending native cell', async (t) =
               assert.deepEqual(JSON.parse(readback.raw), f.records[ref.line - 1]);
             }
           }
-          const hits = codex.query.getTimeline(index, session, { layer: 'main', q: marker });
-          assert.equal(hits.searchEventCount, 1);
-          assert.equal(hits.events.find(e => e.hasSearchHit).id, foreign.id);
+          for (const layer of ['main', 'protocol']) {
+            const hits = codex.query.getTimeline(index, session, { layer, q: marker });
+            assert.deepEqual(hits.events.filter(e => e.hasSearchHit).map(e => e.id), layer === outputOwner.layer ? [outputOwner.id] : []);
+          }
           const detail = await codex.buildHydratedEventDetail(index, session, operation.id, 'main');
           assert.equal(JSON.stringify(detail).includes(marker), false);
           const foreignDetail = await codex.buildHydratedEventDetail(index, session, foreign.id, 'main');
           assert.equal(foreignDetail.meta.status, foreign.status);
-          assert.ok(JSON.stringify(foreignDetail).includes(marker));
+          assert.equal(JSON.stringify(foreignDetail).includes(marker), !detachedOutput);
         }
       });
     }
@@ -685,14 +782,7 @@ test('scoped MCP registration rejects incompatible peer rows and names outside p
   const cases = [
     make('minus', 'my-notes', 'echo'), make('long', 'notes', 'x'.repeat(103)),
     make('cmd', 'notes', 'echo', { type: 'exec_command_end', exit_code: 0 }),
-    make('collision', 'notes', 'echo', { type: 'mcp_tool_call_end',
-      invocation: { server: 'notes', tool: 'echo', environment_id: 'other' } }),
   ];
-  for (const conflict of [{ name: 'different' }, { namespace: 'functions' }]) {
-    const rows = make('output-' + Object.keys(conflict)[0], 'notes', 'echo');
-    Object.assign(rows.at(-1).payload, conflict);
-    cases.push(rows);
-  }
   for (const status of [undefined, 'inProgress', 'unrecognized']) {
     const rows = make('status-' + status, 'notes', 'echo');
     rows[1].payload.item.status = status;

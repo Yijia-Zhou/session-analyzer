@@ -20,6 +20,8 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
   const heartbeat = 'Synthetic scheduled heartbeat';
   const namespace = 'mcp__106cd32d0170__notes';
   const shellReceipt = 'scoped-shell-receipt';
+  const foreignReceipt = 'another-tool-receipt';
+  const foreignEnd = 'another-environment-terminal';
   const records = [
     { type: 'session_meta', payload: { id, cwd: home, history_mode: 'paginated', attached_thread: true,
       thread_source: 'tui_side_chat', forked_from_id: 'bbbbbbbb-0172-4172-8172-bbbbbbbbbbbb' } },
@@ -51,6 +53,12 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
     response({ type: 'function_call_output', call_id: 'scoped-agent', output: 'scoped-agent-receipt' }),
     response({ type: 'function_call', name: 'shell_command', namespace: 'functions', arguments: '{"command":"echo native"}', call_id: 'native' }),
     response({ type: 'function_call_output', call_id: 'native', output: 'native-shell-receipt' }),
+    response({ type: 'function_call_output', call_id: 'tool', name: 'different', output: foreignReceipt }),
+    { type: 'event_msg', payload: { type: 'mcp_tool_call_end', call_id: 'tool',
+      invocation: { server: 'notes', tool: 'shell_command', environment_id: 'other-environment' },
+      result: { Ok: { content: [{ type: 'text', text: foreignEnd }] } } } },
+    { type: 'event_msg', payload: { type: 'dynamic_tool_call_end', call_id: 'scoped-shell',
+      tool_name: namespace + '.shell_command', success: false } },
   ].map((row, n) => ({
     timestamp: new Date(Date.UTC(2026, 10, 24, 0, 0, n)).toISOString(), ordinal: n, ...row,
   }));
@@ -58,14 +66,14 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
   const index = await buildSourceBackedIndex({ repoRoot: home, codexHome: home });
   const session = await materializeIndexedSession(index, id);
   const main = session.logicalEvents.filter(event => event.layer === 'main');
-  assert.deepEqual(main.map(event => event.rawRefs.map(ref => ref.line)), [[5, 6], [7], [8], [9, 10, 11], [14, 15], [16, 17], [18, 19]]);
+  assert.deepEqual(main.map(event => event.rawRefs.map(ref => ref.line)), [[5, 6], [7], [8], [9, 10, 11], [14, 15, 22], [16, 17], [18, 19]]);
   const tools = [
     [main[3], 'mcp_call', 'failed'],
-    [main[4], 'other_tool_call', 'completed'],
+    [main[4], 'other_tool_call', 'failed'],
     [main[5], 'other_tool_call', 'completed'],
     [main[6], 'command', 'completed'],
   ];
-  const controls = [[marker, [3]], [heartbeat, [12, 13]]].map(([text, lines]) => {
+  const controls = [[marker, [3]], [heartbeat, [12, 13]], [foreignReceipt, [20]], [foreignEnd, [21]]].map(([text, lines]) => {
     const event = session.logicalEvents.find(e => e.layer === 'protocol' && e.rawRefs.some(ref => ref.line === lines[0]));
     assert.deepEqual(event.rawRefs.map(ref => ref.line), lines);
     return { text, event };
@@ -110,7 +118,10 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
 
       await fillSearch(page, shellReceipt);
       const hit = page.locator(`#timeline .searchHit[${attribute}]`);
-      await hit.locator('.searchMark').first().waitFor();
+      await hit.locator('.searchMark').first().waitFor({ state: 'attached' });
+      const foldedMatch = hit.locator('details.searchSupplementDetails:not([open])').filter({ has: page.locator('.searchMark') });
+      if (await foldedMatch.count()) await foldedMatch.first().locator('summary').click();
+      await hit.locator('.searchMark:visible').first().waitFor();
       assert.equal(await hit.count(), 1);
       assert.equal(await page.locator('body').getAttribute('data-main-presentation'), presentation);
       assert.equal(await hit.getAttribute(attribute), main[4].id);
@@ -119,7 +130,7 @@ test('Codex 0.172 persisted evidence has the same owners in Timeline and Traject
       await page.locator('#detail [data-detail-action="raw"]').click();
       const raw = page.locator('#detail .rawRefsView pre');
       await raw.first().waitFor();
-      assert.deepEqual((await raw.allTextContents()).map(text => JSON.parse(text)), records.slice(13, 15));
+      assert.deepEqual((await raw.allTextContents()).map(text => JSON.parse(text)), [records[13], records[14], records[21]]);
       await fillSearch(page, '');
       await hit.waitFor({ state: 'detached' });
     }

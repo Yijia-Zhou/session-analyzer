@@ -10,6 +10,8 @@ function createCodexLogicalBuilder(deps) {
     scopedRequestPeer,
     followsToolRequest,
     legacyMcpStatus,
+    matchesToolOutput,
+    matchesDynamicTool,
     resolvedSubAgentStartup = () => null,
     turnBoundaryEpochs = () => new Map(),
     historyFacts = () => null,
@@ -693,7 +695,11 @@ function createCodexLogicalBuilder(deps) {
     // A typed dynamic end records completion, not necessarily success. Keep
     // explicit failure precedence, and require a boolean true for success.
     const typedDynamic = group.find((raw) => raw.typedItemType === 'DynamicToolCall')?.parsed?.payload;
-    if (typedDynamic && typedDynamic.success !== true && status === 'success') status = 'completed';
+    if (scopedRequest && dynamicRows.some(row => row.payloadType === 'dynamic_tool_call_end')) {
+      const ends = dynamicRows.filter(row => row.payloadType === 'dynamic_tool_call_end');
+      status = ends.find(row => row.status !== 'completed')?.status || 'completed';
+      severity = status === 'failed' ? 'error' : ['declined', 'interrupted'].includes(status) ? 'warning' : 'normal';
+    } else if (typedDynamic && typedDynamic.success !== true && status === 'success') status = 'completed';
     if (collabRows.some((raw) => raw.status === 'interrupted')) {
       status = 'interrupted';
       severity = 'warning';
@@ -1164,7 +1170,7 @@ function createCodexLogicalBuilder(deps) {
 
   function buildLogicalEvents(rawEvents, initialOwnedHeader = rawEvents[0]) {
     const sideBoundary = sideChatBoundary(rawEvents, initialOwnedHeader);
-    rawEvents = semanticRawEvents(rawEvents);
+    rawEvents = semanticRawEvents(rawEvents, remainingToolPeer);
     const typedMirrors = new Map();
     const omittedTyped = new Set();
     const responseById = new Map();
@@ -1323,6 +1329,8 @@ function createCodexLogicalBuilder(deps) {
       }
       if (fn && (native || ['collaboration', 'agents', 'multi_agent_v1'].includes(namespace))
           && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.COLLABORATION)) {
+        const sender = row.parsed.payload.sender_thread_id;
+        if (sender != null && sender !== call.sessionId) return null;
         // The 0.110 wait tool takes agent IDs. The later Code Mode namesake
         // takes a cell_id and cannot own a collaboration terminal.
         if (name === 'wait' && native && ['collab_waiting_begin', 'collab_waiting_end'].includes(row.payloadType)) {
@@ -1346,9 +1354,7 @@ function createCodexLogicalBuilder(deps) {
         return row.payloadType === action + '_begin' || row.payloadType === action + '_end' ? row : null;
       }
       if (fn && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL)) {
-        const { tool_name: tool, namespace: recordedNamespace } = row.parsed.payload;
-        if (recordedNamespace != null && recordedNamespace !== namespace) return null;
-        return typeof tool === 'string' && tool === (native ? name : namespace + '.' + name) ? row : null;
+        return matchesDynamicTool(call, row) ? row : null;
       }
       if (fn && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.IMAGE_GENERATION)) {
         return imageRequest ? row : null;
@@ -1390,14 +1396,7 @@ function createCodexLogicalBuilder(deps) {
       // A reused ID alone cannot assign a lifecycle or receipt to the other wire channel.
       const remaining = requests.filter(raw => !consumed.has(raw.rawId));
       const owner = remaining.length === 1 ? remaining[0] : null;
-      const outputs = owner ? group.filter(raw => {
-        if (raw.recordType !== 'response_item' || raw.payloadType !== owner.payloadType + '_output'
-            || !followsToolRequest(owner, raw, epochs)) return false;
-        const { name, namespace } = raw.parsed.payload;
-        const request = owner.parsed.payload;
-        return (name == null || name === request.name)
-          && (namespace == null || (namespace || 'functions') === (request.namespace || 'functions'));
-      }) : [];
+      const outputs = owner ? group.filter(raw => matchesToolOutput(owner, raw) && followsToolRequest(owner, raw, epochs)) : [];
       const remainingPeers = [];
       for (const raw of group) {
         if (consumed.has(raw.rawId)) continue;
