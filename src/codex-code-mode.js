@@ -2,6 +2,7 @@
 
 const { stripAnsiSequences } = require('./shared/terminal-text');
 const { isDynamicTransport } = require('./codex-tool-lifecycle-contract');
+const { followsToolRequest, mergeToolTurn, scopedRequestToolName, toolRowMatchesTurn, turnBoundaryEpochs } = require('./codex-turn-items');
 
 const OBSERVATION_STATES = Object.freeze({
   UNKNOWN: 'unknown',
@@ -283,14 +284,36 @@ function addWireEntry(groups, entry, side) {
   if (group) group[side].push(entry);
 }
 
-function isolateConflictingIdentities(groups, nativeCall, name, isolatedRawIds) {
-  for (const { calls, outputs } of groups.values()) {
-    if (calls.every(entry => nativeCall(entry.raw))
-        && outputs.every(entry => matchesNativeOutputIdentity(entry.raw, name))) continue;
+function isolateWireGroup(group, isolatedRawIds) {
+  for (const entry of group.calls) isolatedRawIds.add(entry.raw.rawId);
+  for (const entry of group.outputs) isolatedRawIds.add(entry.raw.rawId);
+}
+
+function filterScopedOutputs(group, name, isolatedRawIds, epochs, turnId = '') {
+  const call = group.calls[0].raw;
+  group.outputs = group.outputs.filter(({ raw }) => {
+    if (matchesNativeOutputIdentity(raw, name) && followsToolRequest(call, raw, epochs)
+        && (!turnId || toolRowMatchesTurn(raw, turnId))) return true;
+    isolatedRawIds.add(raw.rawId);
+    return false;
+  });
+  if (group.outputs.length > 1) isolateWireGroup(group, isolatedRawIds);
+}
+
+function isolateConflictingIdentities(groups, nativeCall, name, isolatedRawIds, scopedKeys, epochs) {
+  for (const [key, group] of groups) {
+    const { calls } = group;
+    if (scopedKeys.has(key)) {
+      if (calls.length === 1) {
+        // A wait can also use its pending cell's turn when it is observed.
+        if (name !== 'wait') filterScopedOutputs(group, name, isolatedRawIds, epochs);
+        continue;
+      }
+    } else if (calls.every(entry => nativeCall(entry.raw))
+        && group.outputs.every(entry => matchesNativeOutputIdentity(entry.raw, name))) continue;
     // An unqualified output has no safe owner in a mixed request group. Keep
     // these physical rows separate through the generic call-id fallback too.
-    for (const entry of calls) isolatedRawIds.add(entry.raw.rawId);
-    for (const entry of outputs) isolatedRawIds.add(entry.raw.rawId);
+    isolateWireGroup(group, isolatedRawIds);
   }
 }
 
@@ -321,7 +344,7 @@ function finalizeOperation(operation) {
   return operation;
 }
 
-function projectCodeModeOperations(rawEvents) {
+function projectCodeModeOperations(rawEvents, epochs) {
   const entries = (Array.isArray(rawEvents) ? rawEvents : [])
     .map((raw, inputIndex) => ({ raw, inputIndex }))
     .sort((left, right) => {
@@ -334,12 +357,14 @@ function projectCodeModeOperations(rawEvents) {
 
   const customGroups = new Map();
   const functionGroups = new Map();
+  const scopedKeys = new Set();
   const turnScopes = new Map();
 
   // Collect peers only for IDs a native Code Mode request could own.
   for (const { raw } of entries) {
     if (isExecCall(raw)) customGroups.set(callKey(raw), { calls: [], outputs: [] });
     else if (isWaitCall(raw)) functionGroups.set(callKey(raw), { calls: [], outputs: [] });
+    else if (scopedRequestToolName(raw)) scopedKeys.add(callKey(raw));
   }
 
   for (const entry of entries) {
@@ -358,8 +383,9 @@ function projectCodeModeOperations(rawEvents) {
   }
 
   const isolatedRawIds = new Set();
-  isolateConflictingIdentities(customGroups, isExecCall, 'exec', isolatedRawIds);
-  isolateConflictingIdentities(functionGroups, isWaitCall, 'wait', isolatedRawIds);
+  if (scopedKeys.size && !epochs) epochs = turnBoundaryEpochs(entries.map(entry => entry.raw));
+  isolateConflictingIdentities(customGroups, isExecCall, 'exec', isolatedRawIds, scopedKeys, epochs);
+  isolateConflictingIdentities(functionGroups, isWaitCall, 'wait', isolatedRawIds, scopedKeys, epochs);
   const operations = [];
   const operationByExecOutputPosition = new Map();
   const operationByWaitOutputPosition = new Map();
@@ -384,7 +410,7 @@ function projectCodeModeOperations(rawEvents) {
       activeWaitPhase: null,
     };
     operations.push(operation);
-    operationTurnScopes.set(operation.id, entry.turnBoundaryEpoch);
+    operationTurnScopes.set(operation.id, { epoch: entry.turnBoundaryEpoch, turnId: mergeToolTurn('', raw) });
     if (pairing.output) operationByExecOutputPosition.set(pairing.output.position, {
       operation,
       turnBoundaryEpoch: entry.turnBoundaryEpoch,
@@ -405,7 +431,7 @@ function projectCodeModeOperations(rawEvents) {
       if (operation.sessionId !== currentSession || operation.observationState !== OBSERVATION_STATES.PENDING) continue;
       const changedTurn = Boolean(raw?.turnId && operation.turnId && raw.turnId !== operation.turnId);
       if (isTurnBoundary(raw) || changedTurn
-          || operationTurnScopes.get(operation.id) !== entry.turnBoundaryEpoch) {
+          || operationTurnScopes.get(operation.id).epoch !== entry.turnBoundaryEpoch) {
         operation.observationState = OBSERVATION_STATES.UNOBSERVED_TERMINAL;
         operation.activeWaitPhase = null;
       }
@@ -422,6 +448,8 @@ function projectCodeModeOperations(rawEvents) {
       const execPhase = execOperation.phases[0];
       execOperation.observationState = execPhase.observationState;
       if (execPhase.observationState === OBSERVATION_STATES.PENDING) {
+        const scope = operationTurnScopes.get(execOperation.id);
+        scope.turnId = mergeToolTurn(scope.turnId, entry.raw);
         execOperation.cellId = execPhase.observedCellId;
         if (turnBoundaryEpoch !== entry.turnBoundaryEpoch) {
           execOperation.observationState = OBSERVATION_STATES.UNOBSERVED_TERMINAL;
@@ -430,11 +458,25 @@ function projectCodeModeOperations(rawEvents) {
     }
 
     if (isWaitCall(entry.raw)) {
-      const pairing = pairingFor(entry, functionGroups, isolatedRawIds);
       const targetCellId = waitCellId(entry.raw);
-      const phase = makePhase('wait', entry, pairing.output, targetCellId);
-      let reason = ['ambiguous_call_id', 'conflicting_output_identity'].includes(pairing.reason) ? pairing.reason : '';
       const candidates = targetCellId ? pendingOperationsFor(sessionKey(entry.raw), targetCellId) : [];
+      const key = callKey(entry.raw);
+      const group = functionGroups.get(key);
+      let reason = '';
+      if (scopedKeys.has(key) && group.calls.length === 1) {
+        const waitTurn = mergeToolTurn(epochs.get(entry.raw.rawId)?.turnId || '', entry.raw);
+        const cellTurn = candidates.length === 1 ? operationTurnScopes.get(candidates[0].id).turnId : '';
+        if (waitTurn === null || cellTurn === null || (waitTurn && cellTurn && waitTurn !== cellTurn)) {
+          // Even a call-only wait would reserve the matching cell for this turn.
+          reason = 'conflicting_request_turn';
+          isolateWireGroup(group, isolatedRawIds);
+        } else {
+          filterScopedOutputs(group, 'wait', isolatedRawIds, epochs, waitTurn || cellTurn);
+        }
+      }
+      const pairing = pairingFor(entry, functionGroups, isolatedRawIds);
+      const phase = makePhase('wait', entry, pairing.output, targetCellId);
+      if (!reason && ['ambiguous_call_id', 'conflicting_output_identity'].includes(pairing.reason)) reason = pairing.reason;
       if (!reason && !targetCellId) reason = 'invalid_cell_id';
       if (!reason && candidates.length === 0) reason = 'orphan_cell';
       if (!reason && candidates.length > 1) reason = 'ambiguous_cell';
@@ -444,6 +486,8 @@ function projectCodeModeOperations(rawEvents) {
         unassociatedWaits.push({ reason, phase });
       } else {
         const operation = candidates[0];
+        const scope = operationTurnScopes.get(operation.id);
+        scope.turnId = mergeToolTurn(scope.turnId, entry.raw);
         operation.phases.push(phase);
         operation.activeWaitPhase = phase;
         if (pairing.output) operationByWaitOutputPosition.set(pairing.output.position, { operation, phase });
@@ -459,6 +503,8 @@ function projectCodeModeOperations(rawEvents) {
           operation.observationState = OBSERVATION_STATES.TERMINAL;
         } else if (phase.observationState === OBSERVATION_STATES.PENDING
           && phase.observedCellId === operation.cellId) {
+          const scope = operationTurnScopes.get(operation.id);
+          scope.turnId = mergeToolTurn(scope.turnId, entry.raw);
           operation.observationState = OBSERVATION_STATES.PENDING;
         } else if (phase.observationState === OBSERVATION_STATES.PENDING) {
           phase.observationState = OBSERVATION_STATES.UNKNOWN;

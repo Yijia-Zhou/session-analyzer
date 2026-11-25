@@ -164,15 +164,15 @@ function scopedRequestToolName(raw) {
   return `${call.namespace}__${call.name}`;
 }
 
-const invalidMcpArguments = Symbol('invalid MCP arguments');
-const unverifiedMcpArguments = Symbol('unverified MCP arguments');
-const physicalMcpArguments = new WeakMap();
+const invalidToolArguments = Symbol('invalid tool arguments');
+const unverifiedToolArguments = Symbol('unverified tool arguments');
+const physicalToolArguments = new WeakMap();
 // externalizeEmbeddedImages replaces this header anywhere in a string, including an empty payload.
 const externalizedImageHeader = /data:image\/(?:png|jpeg|gif|webp|avif);base64,/i;
 // An optional identity check must not parse or encode a multi-megabyte tool result again.
-const MCP_ARGUMENT_EVIDENCE_MAX_CHARS = 64 * 1024;
+const TOOL_ARGUMENT_EVIDENCE_MAX_CHARS = 64 * 1024;
 
-function mcpArgumentTraits(value) {
+function toolArgumentTraits(value) {
   const pending = [value];
   let wide = false, image = false;
   while (pending.length) {
@@ -192,23 +192,32 @@ function mcpArgumentTraits(value) {
   return { wide, image };
 }
 
-function preciseMcpNumber(key, value, context) {
+function preciseToolNumber(key, value, context) {
   if (typeof value !== 'number') return value;
-  if (!Number.isFinite(value)) throw new RangeError('MCP argument outside the supported number range');
+  if (!Number.isFinite(value)) throw new RangeError('Tool argument outside the supported number range');
   if (!Number.isInteger(value) || Number.isSafeInteger(value) || !/^-?\d+$/.test(context.source)) return value;
   // serde_json stores integer tokens as i64 or u64. Limit conversion to those widths.
-  if (context.source.length > 20) throw new RangeError('MCP integer outside the supported range');
+  if (context.source.length > 20) throw new RangeError('Tool integer outside the supported range');
   const integer = BigInt(context.source);
-  if (integer < -9223372036854775808n || integer > 18446744073709551615n) throw new RangeError('MCP integer outside the supported range');
+  if (integer < -9223372036854775808n || integer > 18446744073709551615n) throw new RangeError('Tool integer outside the supported range');
   return integer;
 }
 
-function mcpCarrier(payload) {
-  if (payload?.type === 'item_completed' && payload.item?.type === 'McpToolCall') return payload.item;
-  if (payload?.invocation && toolLifecycleDescriptorFor(payload.type)?.family === TOOL_LIFECYCLE_FAMILY.MCP_TOOL) return payload.invocation;
+function toolArgumentCarrier(payload) {
+  if (!payload) return;
+  if (payload.type === 'item_completed' && ['McpToolCall', 'DynamicToolCall'].includes(payload.item?.type)) return payload.item;
+  const family = toolLifecycleDescriptorFor(payload.type)?.family;
+  if (family === TOOL_LIFECYCLE_FAMILY.MCP_TOOL) return payload.invocation;
+  if (family === TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL || payload.type === 'dynamic_tool_call_request' || payload.type === 'dynamic_tool_call_response') return payload;
 }
 
-function digestMcpArguments(value) {
+function recordedToolArguments(carrier) {
+  // Older imported dynamic begin events can put the native value in request.
+  if (carrier?.type === 'dynamic_tool_call_begin' && carrier.arguments === undefined) return carrier.request;
+  return carrier?.arguments;
+}
+
+function digestToolArguments(value) {
   // JSON objects are unordered. Keep null fields, array order and exact integers
   // when hashing bounded image-bearing arguments before display redaction.
   function encode(v) {
@@ -221,60 +230,66 @@ function digestMcpArguments(value) {
   return createHash('sha256').update(encode(value)).digest('hex');
 }
 
-function mcpArgumentEvidence(value, traits, inputLength, readExact) {
-  if (traits.invalid) return invalidMcpArguments;
-  const evidence = traits.image ? { image: unverifiedMcpArguments } : { value };
-  if (traits.wide) evidence.exact = unverifiedMcpArguments;
-  if (inputLength > MCP_ARGUMENT_EVIDENCE_MAX_CHARS) return evidence;
+function toolArgumentEvidence(value, traits, inputLength, readExact) {
+  if (traits.invalid) return invalidToolArguments;
+  const evidence = traits.image ? { image: unverifiedToolArguments } : { value };
+  if (traits.wide) evidence.exact = unverifiedToolArguments;
+  if (inputLength > TOOL_ARGUMENT_EVIDENCE_MAX_CHARS) return evidence;
   try {
-    if (traits.image) evidence.image = digestMcpArguments(value);
-    if (traits.wide) evidence.exact = traits.image ? digestMcpArguments(readExact()) : readExact();
+    if (traits.image) evidence.image = digestToolArguments(value);
+    if (traits.wide) evidence.exact = traits.image ? digestToolArguments(readExact()) : readExact();
   } catch { /* A candidate with unverified identity stays in Protocol. */ }
   return evidence;
 }
 
-function captureMcpArgumentEvidence(record, line) {
+function captureToolArgumentEvidence(record, line) {
   const p = record.payload;
   if (record.type === 'response_item' && p?.type === 'function_call' && typeof p.arguments === 'string'
-      && ((typeof p.namespace === 'string' && (scopedToolNamespace.test(p.namespace) || p.namespace.startsWith('mcp__')))
-        || (typeof p.name === 'string' && p.name.startsWith('mcp__')))
       && externalizedImageHeader.test(p.arguments)) {
     // An inline URL inside the serialized request can also be replaced for
     // display. Retain just its identity. A complete image is never cached.
-    physicalMcpArguments.set(p, p.arguments.length > MCP_ARGUMENT_EVIDENCE_MAX_CHARS
-      ? { image: unverifiedMcpArguments, unverifiedRequest: true } : mcpRequestArguments(p));
+    physicalToolArguments.set(p, p.arguments.length > TOOL_ARGUMENT_EVIDENCE_MAX_CHARS
+      ? { image: unverifiedToolArguments, unverifiedRequest: true } : functionRequestArguments(p));
   }
-  const carrier = mcpCarrier(p);
+  const carrier = record.type === 'event_msg' && toolArgumentCarrier(p);
   if (!carrier) return;
-  const traits = mcpArgumentTraits(carrier.arguments);
-  if (traits.wide || traits.image || traits.invalid) physicalMcpArguments.set(carrier, mcpArgumentEvidence(carrier.arguments, traits, line.length,
-    () => mcpCarrier(JSON.parse(line, preciseMcpNumber).payload).arguments));
+  const args = recordedToolArguments(carrier);
+  const traits = toolArgumentTraits(args);
+  if (traits.wide || traits.image || traits.invalid) physicalToolArguments.set(carrier, toolArgumentEvidence(args, traits, line.length,
+    () => recordedToolArguments(toolArgumentCarrier(JSON.parse(line, preciseToolNumber).payload))));
+}
+
+function functionRequestArguments(payload) {
+  if (physicalToolArguments.has(payload)) return physicalToolArguments.get(payload);
+  const text = payload.arguments;
+  if (text === undefined) return undefined;
+  if (typeof text !== 'string') return invalidToolArguments;
+  let value;
+  try { value = JSON.parse(text); }
+  catch { return invalidToolArguments; }
+  return toolArgumentEvidence(value, toolArgumentTraits(value), text.length, () => JSON.parse(text, preciseToolNumber));
 }
 
 function mcpRequestArguments(payload) {
-  if (physicalMcpArguments.has(payload)) return physicalMcpArguments.get(payload);
-  const text = payload.arguments;
-  if (typeof text !== 'string') return undefined;
-  // The writer uses Rust str::trim and returns before emitting an invocation on a parse error.
-  let value;
-  try { value = /^\p{White_Space}*$/u.test(text) ? null : JSON.parse(text); }
-  catch { return invalidMcpArguments; }
-  return mcpArgumentEvidence(value, mcpArgumentTraits(value), text.length, () => JSON.parse(text, preciseMcpNumber));
+  if (typeof payload.arguments !== 'string') return undefined;
+  // The MCP handler alone treats Rust str::trim-empty arguments as null.
+  return /^\p{White_Space}*$/u.test(payload.arguments) ? { value: null } : functionRequestArguments(payload);
 }
 
-function mcpArgumentsMatch(requested, carrier) {
-  if (requested === invalidMcpArguments) return false;
-  const stored = physicalMcpArguments.get(carrier);
-  if (stored === invalidMcpArguments) return false;
-  if (requested?.unverifiedRequest && carrier?.arguments === undefined) return unverifiedMcpArguments;
-  if (requested === undefined || carrier?.arguments === undefined) return true;
+function toolArgumentsMatch(requested, carrier) {
+  if (requested === invalidToolArguments) return false;
+  const stored = physicalToolArguments.get(carrier);
+  if (stored === invalidToolArguments) return false;
+  const args = recordedToolArguments(carrier);
+  if (requested?.unverifiedRequest && args === undefined) return unverifiedToolArguments;
+  if (requested === undefined || args === undefined) return true;
   if (requested.image !== undefined || stored?.image !== undefined) {
     if (requested.image === undefined || stored?.image === undefined) return false;
-    if (requested.image === unverifiedMcpArguments || stored.image === unverifiedMcpArguments) return unverifiedMcpArguments;
+    if (requested.image === unverifiedToolArguments || stored.image === unverifiedToolArguments) return unverifiedToolArguments;
     if (requested.image !== stored.image) return false;
-  } else if (!isDeepStrictEqual(requested.value, carrier.arguments)) return false;
+  } else if (!isDeepStrictEqual(requested.value, args)) return false;
   if (requested.exact === undefined) return true;
-  if (requested.exact === unverifiedMcpArguments || stored?.exact === undefined || stored.exact === unverifiedMcpArguments) return unverifiedMcpArguments;
+  if (requested.exact === unverifiedToolArguments || stored?.exact === undefined || stored.exact === unverifiedToolArguments) return unverifiedToolArguments;
   return isDeepStrictEqual(requested.exact, stored.exact);
 }
 
@@ -285,7 +300,7 @@ function matchesScopedMcpCall(raw, server, tool, environmentId, carrier) {
       || typeof call.namespace !== 'string' || call.namespace.length + 2 + call.name.length > 128) return null;
   const registration = scopedToolNamespace.exec(call.namespace);
   if (!registration) return null;
-  const argsMatch = mcpArgumentsMatch(raw.scopedMcpArguments, carrier);
+  const argsMatch = toolArgumentsMatch(raw.scopedMcpArguments, carrier);
   if (argsMatch === false) return false;
   const knownServer = typeof server === 'string' && /^[A-Za-z0-9_]{1,128}$/.test(server);
   const knownTool = typeof tool === 'string' && /^[A-Za-z0-9_]{1,128}$/.test(tool);
@@ -321,13 +336,25 @@ function matchesDynamicIdentity(call, tool, namespace) {
   return registeredScope.includes('.') || tool.includes('.') ? null : true;
 }
 
-function matchesDynamicTool(call, row) {
+function matchesLegacyDynamicName(call, row) {
   const { name, namespace } = call.parsed.payload;
   const { tool_name: tool, namespace: recordedNamespace } = row.parsed.payload;
   if (typeof name !== 'string' || (namespace != null && typeof namespace !== 'string')) return null;
   if (typeof recordedNamespace === 'string' && dynamicNamespace(recordedNamespace) !== dynamicNamespace(namespace)) return false;
   if ((recordedNamespace != null && typeof recordedNamespace !== 'string') || typeof tool !== 'string' || !tool) return null;
   return tool === (namespace && namespace !== 'functions' ? namespace + '.' + name : name);
+}
+
+function matchesDynamicTool(call, row) {
+  const payload = row.parsed.payload;
+  const typed = row.payloadType === 'item_completed';
+  const carrier = typed ? payload.item : payload;
+  const registration = typed || isDynamicTransport(row)
+    ? matchesDynamicIdentity(call, carrier.tool, carrier.namespace) : matchesLegacyDynamicName(call, row);
+  if (registration === false) return false;
+  const args = toolArgumentsMatch(functionRequestArguments(call.parsed.payload), carrier);
+  if (args === false) return false;
+  return registration === true ? args : null;
 }
 
 function scopedLegacyMcpStatus(call, row) {
@@ -363,7 +390,7 @@ function historicalMcpRegistration(call) {
 
 function matchesHistoricalMcpCall(registration, server, tool, environmentId, carrier) {
   if (!registration?.server || environmentId != null) return false;
-  const argsMatch = mcpArgumentsMatch(registration.args, carrier);
+  const argsMatch = toolArgumentsMatch(registration.args, carrier);
   if (argsMatch === false) return false;
   const knownServer = typeof server === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(server);
   const knownTool = typeof tool === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(tool);
@@ -396,8 +423,19 @@ function legacyMcpStatus(p) {
 
 function toolTurnStamp(row) {
   if (row.recordType === 'response_item' && ['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output'].includes(row.payloadType)) {
-    return row.parsed.payload.internal_chat_message_metadata_passthrough?.turn_id;
+    return row.parsed?.payload?.internal_chat_message_metadata_passthrough?.turn_id;
   }
+}
+
+function toolRowMatchesTurn(row, turnId) {
+  return [row.turnId, toolTurnStamp(row)].every(id => id == null || id === '' || (typeof id === 'string' && id === turnId));
+}
+
+// Empty means no turn was recorded. Null means the observed rows disagree.
+function mergeToolTurn(turnId, row) {
+  if (turnId === null) return null;
+  const turn = turnId || row.turnId || toolTurnStamp(row) || '';
+  return toolRowMatchesTurn(row, turn) ? turn : null;
 }
 
 function followsToolRequest(call, row, epochs) {
@@ -411,7 +449,7 @@ function followsToolRequest(call, row, epochs) {
   // Codex preserves a nonempty turn stamp during replay. A copied receipt
   // cannot change the surrounding epoch or compete with a local receipt.
   const turn = epoch?.turnId || rowEpoch?.turnId || call.turnId || row.turnId || callStamp || rowStamp;
-  return [call.turnId, row.turnId, callStamp, rowStamp].every(id => id == null || id === '' || (typeof id === 'string' && id === turn));
+  return toolRowMatchesTurn(call, turn) && toolRowMatchesTurn(row, turn);
 }
 
 function toolPeersInTurn(call, group, epochs, identify) {
@@ -441,7 +479,7 @@ function scopedLifecycleCarrier(call, row, matchMcp, historical, singleRequest) 
       if (['completed', 'failed'].includes(item.status)) status = row.status === 'failed' ? 'failed' : 'success';
     } else if (item.type === 'DynamicToolCall') {
       family = TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL;
-      match = matchesDynamicIdentity(call, item.tool, item.namespace);
+      match = matchesDynamicTool(call, row);
       if (['completed', 'failed', 'declined', 'interrupted'].includes(item.status)) status = dynamicOutcome(item);
       if (item.status === 'in_progress') status = '';
     } else return null;
@@ -481,7 +519,11 @@ function collaborationThreadId(value) {
 }
 
 function recordedCommandDirectory(value) {
-  if (typeof value !== 'string' || !value.startsWith('file:')) return value;
+  if (typeof value !== 'string') return value;
+  // Keep the UNC authority when a stored native directory uses forward slashes.
+  // The recorded-path comparison accepts either spelling of a UNC root.
+  if (/^[\\/]{2}/.test(value)) return value.replaceAll('/', '\\');
+  if (!value.startsWith('file:')) return value;
   try {
     const url = new URL(value);
     if (url.search || url.hash) return '';
@@ -536,10 +578,31 @@ function commandArgvMatches(args, name, argv, cwd) {
       || (argv.length === 4 && argv[1] === '-NoProfile' && argv[2] === '-Command' && args.login !== true));
 }
 
-function commandMatches(args, name, item, legacy = false) {
+function execWorkdirMatches(value, base, recorded) {
+  // unified_exec uses the selected executor's cwd for omitted, null and empty
+  // workdir. Relative native paths use that same base.
+  if (typeof value !== 'string' || value.includes('\0')) return null;
+  if (!sameRecordedPath(base, base)) return sameRecordedPath(value, value) ? sameCommandDirectory(value, recorded) : null;
+  const api = fsPathApi(base);
+  if (api.sep === '\\' && /^[A-Za-z]:(?![\\/])/.test(value) && value[0].toLowerCase() !== base[0].toLowerCase()) return null;
+  return sameCommandDirectory(api.resolve(base, value), recorded);
+}
+
+function commandDirectoryComparisons(args, name, recorded, callCwd) {
+  const matches = [];
+  if (name === 'exec_command') {
+    // A turn/session directory cannot establish a named executor's default.
+    const base = args?.environment_id == null ? recordedCommandDirectory(callCwd) : null;
+    matches.push(execWorkdirMatches(args?.workdir ?? '', base, recorded));
+  } else if (args?.workdir != null) matches.push(sameCommandDirectory(args.workdir, recorded));
+  if (args?.cwd != null) matches.push(sameCommandDirectory(args.cwd, recorded));
+  return matches;
+}
+
+function commandMatches(args, name, item, legacy = false, callCwd) {
   if (!['shell', 'shell_command', 'exec_command'].includes(name)) return false;
   if ((!legacy || item.source !== undefined) && item.source !== (name === 'exec_command' ? 'unified_exec_startup' : 'agent')) return false;
-  if ((!legacy || item.cwd !== undefined) && [args?.workdir, args?.cwd].some(cwd => cwd != null && sameCommandDirectory(cwd, item.cwd) !== true)) return false;
+  if ((!legacy || item.cwd !== undefined) && commandDirectoryComparisons(args, name, item.cwd, callCwd).some(match => match !== true)) return false;
   if (!legacy && item.exit_code != null && (!Number.isInteger(item.exit_code) || item.exit_code < -2147483648 || item.exit_code > 2147483647
       || (item.status === 'completed' && item.exit_code !== 0) || (item.status === 'failed' && item.exit_code === 0))) return false;
   return (legacy && item.command === undefined) || commandArgvMatches(args, name, item.command, item.cwd);
@@ -574,6 +637,19 @@ function patchPath(value, cwd) {
   if (api.isAbsolute(value)) return api.normalize(value);
   if (/^(?:[A-Za-z]:|[\\/])/.test(value)) return value;
   return api.join(cwd, value);
+}
+
+function foreignPatchMove(verified, change, cwd) {
+  if (!Object.hasOwn(change, 'move_path')) return false;
+  const target = change.move_path;
+  if (target === null) return verified != null;
+  if (typeof target !== 'string' || !target || target.includes('\0')) return false;
+  if (verified == null) return true;
+  const a = patchPath(verified, cwd), b = patchPath(target, cwd);
+  if (a === b || [a, b].some(value => value.split(/[\\/]/).includes('..'))) return false;
+  // Relative and absolute spellings may denote the same target without a cwd.
+  if (!sameRecordedPath(a, a) || !sameRecordedPath(b, b)) return false;
+  return !sameRecordedPath(a, b);
 }
 
 const unifiedHunkRange = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*|$)/;
@@ -805,7 +881,7 @@ function patchMatches(input, changes, cwd) {
   return seen.size > 0 && seen.size === Object.keys(changes).length && matched;
 }
 
-function legacyCommandOrPatchMatches(call, row, patchCwd) {
+function legacyCommandOrPatchMatches(call, row, requestCwd) {
   const request = call.parsed.payload;
   if (typeof request.name !== 'string' || (request.namespace != null && request.namespace !== '' && request.namespace !== 'functions')) return false;
   const name = request.name.replace(/^functions\./, '');
@@ -815,7 +891,7 @@ function legacyCommandOrPatchMatches(call, row, patchCwd) {
     // Older patch ends can omit changes, which serde defaults to an empty map.
     if (p.changes === undefined || (p.changes && typeof p.changes === 'object' && !Array.isArray(p.changes) && !Object.keys(p.changes).length)) return true;
     const input = request.type === 'function_call' ? uniqueArguments(request.arguments)?.input : request.input;
-    return patchMatches(input, p.changes, patchCwd);
+    return patchMatches(input, p.changes, requestCwd);
   }
   if (request.type !== 'function_call') return false;
   // A write_stdin interaction reports the running program's argv.
@@ -827,34 +903,34 @@ function legacyCommandOrPatchMatches(call, row, patchCwd) {
     return p.interaction_input == null || (args && typeof p.interaction_input === 'string'
       && p.interaction_input === (args.chars === undefined ? '' : args.chars));
   }
-  return commandMatches(uniqueArguments(request.arguments), name, p, true);
+  return commandMatches(uniqueArguments(request.arguments), name, p, true, requestCwd);
 }
 
 const nativeItemTypes = new Set(['CommandExecution', 'FileChange', 'CollabAgentToolCall']);
 
 // Only the opposite wire channel of a scoped request uses these stronger checks.
-function nativeTypedRequestMatches(call, item, patchCwd) {
+function nativeTypedRequestMatches(call, item, requestCwd) {
   const p = call.parsed.payload;
   const native = p.namespace == null || p.namespace === '' || p.namespace === 'functions';
   if (typeof p.name !== 'string' || !['completed', 'failed', 'declined'].includes(item.status)) return false;
   const name = p.name.replace(/^functions\./, '');
-  if (item.type === 'FileChange') return native && p.type === 'custom_tool_call' && name === 'apply_patch' && patchMatches(p.input, item.changes, patchCwd);
+  if (item.type === 'FileChange') return native && p.type === 'custom_tool_call' && name === 'apply_patch' && patchMatches(p.input, item.changes, requestCwd);
   if (p.type !== 'function_call') return false;
   const args = uniqueArguments(p.arguments);
-  if (item.type === 'CommandExecution') return native && commandMatches(args, name, item);
+  if (item.type === 'CommandExecution') return native && commandMatches(args, name, item, false, requestCwd);
   return item.type === 'CollabAgentToolCall' && ['completed', 'failed'].includes(item.status) && p.name === 'wait_agent'
     && p.namespace === 'multi_agent_v1' && waitMatches(args, item, call.sessionId);
 }
 
 // Only exclude a second candidate when a recorded identity field rules it out.
 // Malformed fields and incomplete identities can still dispute a verified item.
-function foreignNativeCarrier(call, item, other, patchCwd) {
+function foreignNativeCarrier(call, item, other, requestCwd) {
   if (item.type === 'CommandExecution') {
     const args = uniqueArguments(call.parsed.payload.arguments);
     return (['agent', 'user_shell', 'unified_exec_startup', 'unified_exec_interaction'].includes(other.source) && other.source !== item.source)
-      || [args.workdir, args.cwd].some(cwd => sameCommandDirectory(other.cwd, cwd) === false)
+      || commandDirectoryComparisons(args, call.parsed.payload.name.replace(/^functions\./, ''), other.cwd, requestCwd).includes(false)
       || (Array.isArray(other.command) && other.command.length && other.command.every(arg => typeof arg === 'string')
-        && !nativeTypedRequestMatches(call, { ...item, command: other.command }));
+        && !nativeTypedRequestMatches(call, { ...item, command: other.command }, requestCwd));
   }
   if (item.type === 'CollabAgentToolCall') {
     if (['spawn_agent', 'send_input', 'resume_agent', 'close_agent', 'send_message', 'followup_task', 'interrupt_agent', 'list_agents'].includes(other.tool)) return true;
@@ -866,17 +942,18 @@ function foreignNativeCarrier(call, item, other, patchCwd) {
       || (other.agents_states && Object.keys(other.agents_states).some(outside));
   }
   if (!other.changes || typeof other.changes !== 'object' || Array.isArray(other.changes)) return false;
-  const known = new Map(Object.keys(item.changes).map(key => [patchPath(key, patchCwd), key]));
+  const known = new Map(Object.keys(item.changes).map(key => [patchPath(key, requestCwd), key]));
   const candidateChanges = { ...item.changes };
   let compareUpdates = false;
   const foreign = Object.entries(other.changes).some(([key, change]) => {
     if (!key || !['add', 'update', 'delete'].includes(change?.type)) return false;
-    const path = patchPath(key, patchCwd);
+    const path = patchPath(key, requestCwd);
     const originalKey = known.get(path);
     if (originalKey !== undefined) {
       const expected = item.changes[originalKey];
       if (expected.type !== change.type) return true;
       if (change.type === 'add') return typeof change.content === 'string' && change.content !== expected.content;
+      if (change.type === 'update' && foreignPatchMove(expected.move_path, change, requestCwd)) return true;
       if (change.type === 'update' && typeof change.unified_diff === 'string' && numberedPatchBounds(patchDiffLines(change.unified_diff))) {
         candidateChanges[originalKey] = { ...expected, unified_diff: change.unified_diff };
         compareUpdates = true;
@@ -886,17 +963,17 @@ function foreignNativeCarrier(call, item, other, patchCwd) {
     // An absolute and a relative key might still refer to the same file if cwd is missing.
     return [...known.keys()].every(value => fsPathApi(value).isAbsolute(value) === fsPathApi(path).isAbsolute(path));
   });
-  return foreign || (compareUpdates && patchMatches(call.parsed.payload.input, candidateChanges, patchCwd) === false);
+  return foreign || (compareUpdates && patchMatches(call.parsed.payload.input, candidateChanges, requestCwd) === false);
 }
 
-function resolveNativeTypedTerminal(requests, group, epochs, views, remainingToolPeer, patchCwds) {
+function resolveNativeTypedTerminal(requests, group, epochs, views, remainingToolPeer, requestCwds) {
   // A scoped request disputes its own wire channel. Even mixed registrations
   // on that channel cannot own the unique request on the opposite channel.
   const scoped = requests.find(scopedRequestToolName);
   const independent = requests.filter(call => call.payloadType !== scoped.payloadType);
   if (independent.length !== 1 || scopedRequestToolName(independent[0])) return;
   const call = independent[0];
-  const patchCwd = patchCwds.get(call);
+  const requestCwd = requestCwds.get(call);
   const peers = group.filter(row => followsToolRequest(call, row, epochs));
   // Historical function and custom apply_patch can write the same unlabelled
   // patch lifecycle. Their shared legacy row cannot corroborate a typed item.
@@ -904,8 +981,8 @@ function resolveNativeTypedTerminal(requests, group, epochs, views, remainingToo
   if (otherCalls.length) {
     for (const row of peers) {
       if (toolLifecycleDescriptorFor(row.payloadType)?.family === TOOL_LIFECYCLE_FAMILY.PATCH
-          && legacyCommandOrPatchMatches(call, row, patchCwd) !== false
-          && otherCalls.some(other => followsToolRequest(other, row, epochs) && legacyCommandOrPatchMatches(other, row, patchCwds.get(other)) !== false)) {
+          && legacyCommandOrPatchMatches(call, row, requestCwd) !== false
+          && otherCalls.some(other => followsToolRequest(other, row, epochs) && legacyCommandOrPatchMatches(other, row, requestCwds.get(other)) !== false)) {
         views.set(row, { ...row, detachedNativeTerminal: true });
       }
     }
@@ -915,7 +992,7 @@ function resolveNativeTypedTerminal(requests, group, epochs, views, remainingToo
     && (row.parsed.payload.thread_id == null || row.parsed.payload.thread_id === call.sessionId));
   const candidates = typed.filter(row => {
     const p = row.parsed.payload;
-    return p.thread_id === call.sessionId && typeof p.turn_id === 'string' && p.turn_id.length > 0 && nativeTypedRequestMatches(call, p.item, patchCwd);
+    return p.thread_id === call.sessionId && typeof p.turn_id === 'string' && p.turn_id.length > 0 && nativeTypedRequestMatches(call, p.item, requestCwd);
   });
   if (!candidates.length) return;
   const raw = candidates[0];
@@ -932,7 +1009,7 @@ function resolveNativeTypedTerminal(requests, group, epochs, views, remainingToo
     const commandOrPatch = item.type === 'CommandExecution' || item.type === 'FileChange';
     if (!(descriptor.family === family && commandOrPatch) && !remainingToolPeer?.(call, row)) continue;
     const p = row.parsed.payload;
-    if (descriptor.family === family && foreignNativeCarrier(call, item, p, patchCwd)) views.set(row, { ...row, detachedNativeTerminal: true });
+    if (descriptor.family === family && foreignNativeCarrier(call, item, p, requestCwd)) views.set(row, { ...row, detachedNativeTerminal: true });
     else terminals.push(row);
   }
   // A registered dynamic tool may use the same callable name as a native tool.
@@ -940,15 +1017,15 @@ function resolveNativeTypedTerminal(requests, group, epochs, views, remainingToo
     if (row.recordType !== 'event_msg') return false;
     const p = row.parsed.payload;
     if (row.payloadType === 'item_completed' && p.item?.type === 'DynamicToolCall') {
-      return (p.thread_id == null || p.thread_id === call.sessionId) && matchesDynamicIdentity(call, p.item.tool, p.item.namespace) !== false;
+      return (p.thread_id == null || p.thread_id === call.sessionId) && matchesDynamicTool(call, row) !== false;
     }
     if (isDynamicTransport(row)) {
-      return transportTurnMatches(row, call.turnId || raw.turnId) && matchesDynamicIdentity(call, p.tool, p.namespace) !== false;
+      return transportTurnMatches(row, call.turnId || raw.turnId) && matchesDynamicTool(call, row) !== false;
     }
     return toolLifecycleDescriptorFor(row.payloadType)?.family === TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL && matchesDynamicTool(call, row) !== false;
   }) : [];
   const disputed = candidates.length > 1 || typed.some(row => row !== raw && row.parsed.payload.item.type === item.type
-    && !foreignNativeCarrier(call, item, row.parsed.payload.item, patchCwd)) || terminals.length > 1
+    && !foreignNativeCarrier(call, item, row.parsed.payload.item, requestCwd)) || terminals.length > 1
     || dynamicPeers.length > 0
     || terminals.some(row => {
       const p = row.parsed.payload;
@@ -973,9 +1050,9 @@ function resolveNativeTypedTerminal(requests, group, epochs, views, remainingToo
 }
 
 // Compare physical carriers before projecting either format into a logical event.
-function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCwds) {
+function resolveScopedTerminals(group, epochs, views, remainingToolPeer, requestCwds) {
   const requests = group.filter(row => row.recordType === 'response_item' && ['function_call', 'custom_tool_call'].includes(row.payloadType));
-  resolveNativeTypedTerminal(requests, group, epochs, views, remainingToolPeer, patchCwds);
+  resolveNativeTypedTerminal(requests, group, epochs, views, remainingToolPeer, requestCwds);
   const functions = requests.filter(row => row.payloadType === 'function_call');
   if (functions.length !== 1) return;
   const call = functions[0];
@@ -1002,7 +1079,7 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCw
     // Typed rows start in Protocol. Only a unique in-scope owner can claim one.
     if (carrier.typed) views.set(row, { ...row, callId: '' });
     if (!eligible.has(row)) continue;
-    if (carrier.match === unverifiedMcpArguments) {
+    if (carrier.match === unverifiedToolArguments) {
       views.set(row, { ...row, callId: '' });
       uncertainArguments.set(row, carrier);
       continue;
@@ -1017,7 +1094,20 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCw
       family.push(carrier);
     }
   }
-  const competingFamilies = (mcp.length > 0 || uncertainArguments.size > 0) && dynamic.length > 0;
+  const uncertainFamilies = new Set([...uncertainArguments.values()].map(carrier => carrier.family));
+  // A matching dynamic end can remain in Protocol. Preserve its candidacy
+  // until ordered native lifecycle checks (including path waits) finish.
+  if (!scopedName && dynamic.some(carrier => carrier.status)) {
+    for (const row of peers) {
+      const descriptor = toolLifecycleDescriptorFor(row.payloadType);
+      if (row.recordType === 'event_msg' && descriptor?.phase === TOOL_LIFECYCLE_PHASE.TERMINAL
+          && descriptor.family !== TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL && descriptor.family !== TOOL_LIFECYCLE_FAMILY.MCP_TOOL) {
+        views.set(row, { ...(views.get(row) || row), hasCompetingDynamicEnd: true });
+      }
+    }
+  }
+  const competingFamilies = (mcp.length > 0 || uncertainFamilies.has(TOOL_LIFECYCLE_FAMILY.MCP_TOOL))
+    && (dynamic.length > 0 || uncertainFamilies.has(TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL));
   for (const carriers of [mcp, dynamic]) {
     const terminals = carriers.filter(carrier => carrier.status);
     const typedItems = carriers.filter(carrier => carrier.typed);
@@ -1026,9 +1116,11 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCw
     // Unverified argument evidence stays in Protocol. A different-format row
     // with the same outcome cannot reverse an independently verified terminal.
     const legacyTerminals = terminals.filter(carrier => !carrier.typed).length;
-    const argumentDispute = carriers === mcp && [...uncertainArguments.values()].some(candidate => {
+    const argumentDispute = [...uncertainArguments.values()].some(candidate => {
+      if (candidate.family !== carriers[0]?.family) return false;
       if (!candidate.typed && toolLifecycleDescriptorFor(candidate.row.payloadType).phase !== TOOL_LIFECYCLE_PHASE.TERMINAL) return false;
-      return (candidate.typed ? typedItems.length : legacyTerminals) > 0 || (outcomes.size > 0 && !outcomes.has(candidate.status));
+      return (candidate.typed ? typedItems.length : legacyTerminals) > 0
+        || (candidate.status !== 'completed' && outcomes.size > 0 && !outcomes.has(candidate.status));
     });
     const disputed = outcomes.size > 1 || typedItems.length > 1
       || argumentDispute || (carriers === mcp && unresolvedHistoricalMcp.length > 0)
@@ -1043,15 +1135,14 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer, patchCw
     // A request or receipt has its own wire channel. Any remaining unidentified
     // lifecycle needs an independent owner before a typed terminal can join.
     const unresolved = peers.some(row => {
-      if (identified.has(row) || (carriers === mcp && uncertainArguments.has(row))) return false;
+      if (identified.has(row) || uncertainArguments.has(row)) return false;
       if (row.recordType === 'response_item' && ['custom_tool_call', 'custom_tool_call_output', 'function_call_output'].includes(row.payloadType)) return false;
       if (isDynamicTransport(row)) {
         // A transport mirror stays in Protocol. It can corroborate the identity
         // of a typed dynamic item, but cannot supply an outcome or attest MCP.
-        const p = row.parsed.payload;
         if (!transportTurnMatches(row, call.turnId || typed.row.turnId)) return false;
-        const match = matchesDynamicIdentity(call, p.tool, p.namespace);
-        return match !== false && !(match && carriers === dynamic);
+        const match = matchesDynamicTool(call, row);
+        return match !== false && !(match === true && carriers === dynamic);
       }
       return !customCalls.some(custom => followsToolRequest(custom, row, epochs) && remainingToolPeer?.(custom, views.get(row) || row));
     });
@@ -1074,7 +1165,7 @@ function dynamicToolPeer(call, row) {
   if (call.payloadType !== 'function_call' || row.recordType !== 'event_msg') return null;
   const phase = toolLifecycleDescriptorFor(row.payloadType);
   if (phase?.family !== TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL) return null;
-  if (row.typedItemType !== 'DynamicToolCall' && !matchesDynamicTool(call, row)) return null;
+  if (row.typedItemType !== 'DynamicToolCall' && matchesDynamicTool(call, row) !== true) return null;
   return phase.phase === TOOL_LIFECYCLE_PHASE.TERMINAL
     ? { ...row, dynamicTerminalStatus: dynamicOutcome(row.originalRaw?.parsed.payload.item || row.parsed.payload) } : row;
 }
@@ -1092,7 +1183,7 @@ function scopedRequestPeer(call, row) {
 
 // Ambiguous repeated identities are inspectable Protocol records. Never choose
 // one call owner from duplicate items, conflicting turns or copied histories.
-function semanticRawEvents(rawEvents, remainingToolPeer, patchCwds = new Map()) {
+function semanticRawEvents(rawEvents, remainingToolPeer, requestCwds = new Map()) {
   const typedCounts = new Map();
   const byCall = new Map();
   const scopedCallIds = new Set();
@@ -1109,9 +1200,9 @@ function semanticRawEvents(rawEvents, remainingToolPeer, patchCwds = new Map()) 
       turnCwd = p?.cwd;
       contextEpoch = epochs.get(raw.rawId);
       if (turnCwd !== sessionCwd) sessionCwd = ''; // An older default no longer proves a later turn's cwd.
-    } else if (['custom_tool_call', 'function_call'].includes(raw.payloadType) && ['apply_patch', 'functions.apply_patch'].includes(p?.name)
+    } else if (['custom_tool_call', 'function_call'].includes(raw.payloadType) && ['apply_patch', 'functions.apply_patch', 'exec_command', 'functions.exec_command'].includes(p?.name)
         && raw.sessionId === contextSession) {
-      patchCwds.set(raw, contextEpoch === epochs.get(raw.rawId) ? turnCwd : sessionCwd);
+      requestCwds.set(raw, contextEpoch === epochs.get(raw.rawId) ? turnCwd : sessionCwd);
     }
     if (raw.callId) {
       if (!byCall.has(raw.callId)) byCall.set(raw.callId, []);
@@ -1132,7 +1223,7 @@ function semanticRawEvents(rawEvents, remainingToolPeer, patchCwds = new Map()) 
     const id = raw.parsed.payload.item.id;
     if (scopedCallIds.has(id)) byCall.get(id).push(raw);
   }
-  for (const id of scopedCallIds) resolveScopedTerminals(byCall.get(id), epochs, scopedViews, remainingToolPeer, patchCwds);
+  for (const id of scopedCallIds) resolveScopedTerminals(byCall.get(id), epochs, scopedViews, remainingToolPeer, requestCwds);
   return rawEvents.map((raw) => {
     if (scopedViews.has(raw)) return scopedViews.get(raw);
     // The recorded namespace distinguishes the request from a native namesake
@@ -1227,4 +1318,4 @@ function additionalToolsSummary(payload) {
   return { valid: payload?.type === 'additional_tools' && payload.role === 'developer' && Array.isArray(payload.tools), entries: tools.length, count, names, unsupported, incomplete, shortened: incomplete || names.length >= 24 };
 }
 
-module.exports = { captureMcpArgumentEvidence, collaborationThreadId, typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, toolPeersInTurn, legacyMcpStatus, historicalMcpPeer, matchesToolOutput, dynamicToolPeer, legacyCommandOrPatchMatches };
+module.exports = { captureToolArgumentEvidence, collaborationThreadId, typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, toolRowMatchesTurn, mergeToolTurn, toolPeersInTurn, legacyMcpStatus, historicalMcpPeer, matchesToolOutput, dynamicToolPeer, legacyCommandOrPatchMatches };

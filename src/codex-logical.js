@@ -1179,8 +1179,8 @@ function createCodexLogicalBuilder(deps) {
 
   function buildLogicalEvents(rawEvents, initialOwnedHeader = rawEvents[0]) {
     const sideBoundary = sideChatBoundary(rawEvents, initialOwnedHeader);
-    const patchCwds = new Map();
-    rawEvents = semanticRawEvents(rawEvents, remainingToolPeer, patchCwds);
+    const requestCwds = new Map();
+    rawEvents = semanticRawEvents(rawEvents, remainingToolPeer, requestCwds);
     const typedMirrors = new Map();
     const omittedTyped = new Set();
     const responseById = new Map();
@@ -1261,7 +1261,7 @@ function createCodexLogicalBuilder(deps) {
     const goalToolEventsBySignature = new Map();
     const previousGoalSnapshots = new Map();
     const rawById = new Map(rawEvents.map((raw) => [raw.rawId, raw]));
-    const codeModeProjection = projectCodeModeOperations(rawEvents);
+    const codeModeProjection = projectCodeModeOperations(rawEvents, epochs);
     const initialCodeModeFacts = deriveCodeModeFacts({
       projection: codeModeProjection,
       rawEvents,
@@ -1289,12 +1289,16 @@ function createCodexLogicalBuilder(deps) {
       consumed.add(raw.rawId);
     }
 
+    const scopedCallIds = new Set();
     const disputedFunctionIds = new Set();
     for (const rawId of codeModeProjection.isolatedRawIds || []) {
       const raw = rawById.get(rawId);
       if (raw.payloadType === 'function_call') disputedFunctionIds.add(raw.callId);
     }
     for (const raw of rawEvents) {
+      // Code Mode can claim or isolate every scoped request on one channel.
+      // The other channel still needs the scoped ID's ownership checks.
+      if (raw.scopedRequest) scopedCallIds.add(raw.callId);
       const disputedMcp = raw.recordType === 'event_msg' && disputedFunctionIds.has(raw.callId)
         && isToolLifecycleFamily(raw.payloadType, TOOL_LIFECYCLE_FAMILY.MCP_TOOL);
       if (codeModeProjection.isolatedRawIds?.has(raw.rawId) || disputedMcp || raw.detachedNativeTerminal) {
@@ -1463,7 +1467,7 @@ function createCodexLogicalBuilder(deps) {
       if (fn && name === 'view_image' && row.payloadType === 'view_image_tool_call') return row;
       if (isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.PATCH)
           || isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.COMMAND)) {
-        return legacyCommandOrPatchMatches(call, row, patchCwds.get(call)) ? row : null;
+        return legacyCommandOrPatchMatches(call, row, requestCwds.get(call)) ? row : null;
       }
       return null;
     }
@@ -1501,13 +1505,12 @@ function createCodexLogicalBuilder(deps) {
       if (pathWait.ends.size > 1) eligible = eligible.filter(row => !pathWait.ends.has(row.rawId));
       // A verified typed mirror may accompany one legacy terminal. Two eligible
       // legacy terminals cannot both establish the outcome of this native call.
-      const legacyTerminals = new Set(eligible.filter(row => {
-        if (row.typedItemType || row.recordType !== 'event_msg') return false;
-        const descriptor = toolLifecycleDescriptorFor(row.payloadType);
-        return descriptor?.phase === TOOL_LIFECYCLE_PHASE.TERMINAL
-          && (descriptor.family === TOOL_LIFECYCLE_FAMILY.COMMAND || descriptor.family === TOOL_LIFECYCLE_FAMILY.PATCH);
-      }));
-      if (legacyTerminals.size > 1) eligible = eligible.filter(row => !legacyTerminals.has(row));
+      const terminals = new Set(eligible.filter(row => row.recordType === 'event_msg'
+        && toolLifecycleDescriptorFor(row.payloadType)?.phase === TOOL_LIFECYCLE_PHASE.TERMINAL));
+      const legacyEnds = [...terminals].filter(row => !row.typedItemType);
+      if (legacyEnds.length > 1 || legacyEnds.some(row => row.hasCompetingDynamicEnd)) {
+        eligible = eligible.filter(row => !terminals.has(row));
+      }
       const outputs = eligible.filter(raw => matchesToolOutput(owner, raw));
       const remainingPeers = owner ? [owner, ...eligible.filter(raw => outputs.length <= 1 || !matchesToolOutput(owner, raw))] : [];
       const ownedIds = new Set(remainingPeers.map(raw => raw.rawId));
@@ -1517,7 +1520,7 @@ function createCodexLogicalBuilder(deps) {
 
     for (const [callId, callGroup] of byCallId.entries()) {
       let group = callGroup.filter((raw) => !consumed.has(raw.rawId)).sort((a, b) => a.line - b.line);
-      if (group.some(raw => raw.scopedRequest)) {
+      if (scopedCallIds.has(callId)) {
         group = consumeScopedRequests(callId, group);
       }
       const hasToolShape = group.some(isToolResponseItemRow)

@@ -272,6 +272,49 @@ test('scoped tool requests use only their own completion evidence across index p
   }
 });
 
+test('Raw request sections use the recorded namespace for native command, patch and JavaScript formatting', async (t) => {
+  const cases = [];
+  const rows = [];
+  for (const namespace of ['mcp__notes', undefined, null, '', 'functions']) {
+    for (const [tool, fields, titles] of [
+      ['shell_command', { type: 'function_call', arguments: '{"command":"echo synthetic","workdir":"/synthetic"}' },
+        ['Command', 'Run context', 'Command arguments']],
+      ['apply_patch', { type: 'custom_tool_call', input: '*** Begin Patch\n*** Add File: fixture.txt\n+synthetic\n*** End Patch' }, ['Patch']],
+      ['js_repl', { type: 'custom_tool_call', input: 'console.log("synthetic")' }, ['JavaScript']],
+    ]) {
+      const call_id = 'raw-format-' + cases.length;
+      if (namespace === 'mcp__notes' && tool === 'shell_command') {
+        rows.push(response({ type: 'custom_tool_call', call_id, namespace: 'mcp__106cd32d0170__notes', name: 'custom', input: 'synthetic' }));
+      }
+      rows.push(response({ ...fields, call_id, name: tool, ...(namespace === undefined ? {} : { namespace }) }));
+      cases.push({ tool, namespace, titles, line: rows.length + 2 });
+    }
+  }
+  const f = await fixture(t, rows);
+  const resident = await codex.__testOnly.buildUncompactedIndexForDetailTests(f.options);
+  const compact = await codex.buildIndex(f.options);
+  const cold = await codex.buildSourceBackedIndex(f.options);
+  const warm = await codex.buildSourceBackedIndex({ ...f.options, previousIndex: cold });
+  assert.equal(warm.totals.reusedFileCount, 1);
+  for (const index of [resident, compact, cold, warm]) {
+    const indexed = index.sessionsById.get(ID);
+    const session = index === cold || index === warm ? await materializeSessionForIndex(index, indexed) : indexed;
+    const sectionTitles = [];
+    for (const { tool, namespace, titles, line } of cases) {
+      const raw = session.rawEvents.find(r => r.source.line === line);
+      if (namespace === 'mcp__notes' && tool === 'shell_command') {
+        const owner = session.logicalEvents.find(e => e.rawRefs.some(ref => ref.rawId === raw.rawId));
+        assert.deepEqual([owner.layer, owner.kind, owner.toolName], ['main', 'mcp_call', 'mcp__notes__shell_command']);
+      }
+      const detail = await codex.buildHydratedEventDetail(index, session, raw.rawId, 'raw', { locale: 'en' });
+      const sections = [...detail.timelineSections, ...detail.inspectorSections];
+      sectionTitles.push(sections.map(s => s.title).filter(title => titles.includes(title) || title === 'Payload'));
+      assert.deepEqual(sections.find(s => s.type === 'raw_json').value, f.records[line - 1]);
+    }
+    assert.deepEqual(sectionTitles, cases.map(({ namespace, titles }) => namespace === 'mcp__notes' ? ['Payload'] : titles));
+  }
+});
+
 test('scoped shell names join matching MCP or dynamic evidence and isolate foreign lifecycle records', async (t) => {
   const namespace = '106cd32d0170__notes';
   const tool = 'shell_command';
@@ -433,8 +476,8 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
   const waitEnd = id => event({ type: 'collab_waiting_end', call_id, sender_thread_id: ID, statuses: { [id]: { errored: 'path_end_marker' } } });
   const patchItem = { type: 'FileChange', id: call_id, status: 'failed', changes: { 'synthetic.txt': { type: 'add', content: 'example\n' } },
     stdout: '', stderr: 'typed_patch_marker' };
-  const dynamicRequest = event({ type: 'dynamic_tool_call_request', callId: call_id, turnId: TURN, startedAtMs: 1,
-    namespace, tool, arguments: { query: 'transport_request_marker' } });
+  const dynamicRequest = event({ type: 'dynamic_tool_call_request', callId: call_id, turnId: TURN, startedAtMs: 73590123,
+    namespace, tool, arguments: {} });
   const dynamicResponse = event({ type: 'dynamic_tool_call_response', call_id, turn_id: TURN, completed_at_ms: 2,
     namespace, tool, arguments: {}, content_items: [], success: false, error: 'transport_response_marker', duration });
   const stamped = (row, turn_id) => response({ ...row.payload, internal_chat_message_metadata_passthrough: { turn_id } });
@@ -588,22 +631,94 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       rows: [scopedCustom, independentDynamic, oldReceipt, stamped(receipt, TURN), customReceipt],
       main: [['other_tool_call', 'completed', [3, 7]], ['other_tool_call', 'completed', [4, 6]]], detached: [5],
       markers: [[5, 'old_receipt_marker'], [6, 'current_function_marker']] },
+    ...[
+      ['typed failure', typed({ ...typedDynamicFailure.payload.item, arguments: { q: 'B' } }), 'dynamic_failure_marker'],
+      ['legacy end', dynamicEnd({ ...qualifiedDynamic, arguments: { q: 'B' } }, dynamicSuccess), 'dynamic_end_marker'],
+      ['legacy begin request', event({ type: 'dynamic_tool_call_begin', call_id, ...qualifiedDynamic, request: { q: 'B' } }), ''],
+      ['transport request', event({ ...dynamicRequest.payload, arguments: { q: 'B' } }), '73590123'],
+      ['transport response', event({ ...dynamicResponse.payload, arguments: { q: 'B' } }), 'transport_response_marker'],
+    ].flatMap(([label, foreign, marker]) => [false, true].map(withMcp => ({
+      name: 'foreign dynamic arguments in ' + label + (withMcp ? ' beside an exact MCP failure' : ' beside a receipt'),
+      rows: [response({ ...scoped.payload, arguments: '{"q":"A"}' }), foreign,
+        ...(withMcp ? [typed({ ...typedEnd(true).payload.item, arguments: { q: 'A' } })] : []), receipt],
+      main: [withMcp ? ['mcp_call', 'failed', [3, 5, 6]] : ['other_tool_call', 'completed', [3, 5]]],
+      detached: [4], markers: [...(marker ? [[4, marker]] : []), ...(withMcp ? [[5, 'typed_terminal_marker']] : [])],
+    }))),
+    ...[
+      ['object key order', '{"b":2,"a":[1,3]}', { a: [1, 3], b: 2 }, true],
+      ['native JSON string', '"{}"', '{}', true],
+      ['string and object', '"{}"', {}, false],
+      ['absent historical field', '{}', undefined, true],
+      ['JSON null', 'null', null, true],
+      ['blank wire arguments', ' \t', null, false],
+      ['invalid JSON', '{', undefined, false],
+      ['adjacent wide integers', '{"n":9007199254740992}', { n: JSON.rawJSON('9007199254740993') }, false],
+      ['equal wide integers', '{"n":9007199254740993}', { n: JSON.rawJSON('9007199254740993') }, true],
+      ['two original images', '{"i":"data:image/png;base64,AAAA"}', { i: 'data:image/png;base64,BBBB' }, false],
+      ['an original image', '{"i":"data:image/png;base64,AAAA"}', { i: 'data:image/png;base64,AAAA' }, true],
+    ].map(([label, text, args, matches]) => ({ name: 'dynamic argument evidence for ' + label,
+      rows: [response({ ...scoped.payload, arguments: text }), typed({ ...typedDynamicFailure.payload.item, arguments: args }), receipt],
+      main: [['other_tool_call', matches ? 'failed' : 'completed', matches ? [3, 4, 5] : [3, 5]]],
+      detached: matches ? [] : [4], markers: [[4, 'dynamic_failure_marker']],
+    })),
+    ...[
+      ['a typed dynamic completion', false, false],
+      ['a transport response', true, false],
+      ['a transport response with a foreign key', true, true],
+    ].map(([label, transport, foreign]) => {
+      const args = { n: JSON.rawJSON('9007199254740993'), key: 'local' };
+      const recorded = { ...args, key: foreign ? 'other' : 'local' };
+      // Padding the physical carrier prevents the optional exact-number reparse.
+      const terminal = transport ? event({ ...dynamicResponse.payload, arguments: recorded, padding: 'x'.repeat(64 * 1024) })
+        : typed({ ...typedDynamicFailure.payload.item, arguments: recorded, error: 'dynamic_failure_marker' + 'x'.repeat(64 * 1024) });
+      return { name: 'unverified dynamic integer in ' + label,
+        rows: [response({ ...scoped.payload, arguments: JSON.stringify(args) }), terminal, typed({ ...typedEnd(true).payload.item, arguments: args }), receipt],
+        main: [foreign ? ['mcp_call', 'failed', [3, 5, 6]] : ['other_tool_call', 'completed', [3, 6]]],
+        detached: foreign ? [4] : [4, 5], markers: [[4, transport ? 'transport_response_marker' : 'dynamic_failure_marker'], [5, 'typed_terminal_marker']] };
+    }),
+    ...[
+      ['same outcome', { success: false }, true],
+      ['neutral completion', { status: 'completed' }, true],
+      ['conflicting outcome', { success: true }, false],
+    ].map(([label, outcome, keepTyped]) => {
+      const args = { n: JSON.rawJSON('9007199254740993') };
+      return { name: 'unverified legacy dynamic arguments with ' + label,
+        rows: [response({ ...scoped.payload, arguments: JSON.stringify(args) }), typed({ ...typedDynamicFailure.payload.item, arguments: args }),
+          dynamicEnd({ ...qualifiedDynamic, arguments: args }, { ...outcome, result: 'dynamic_end_marker' + 'x'.repeat(64 * 1024) }), receipt],
+        main: [['other_tool_call', keepTyped ? 'failed' : 'completed', keepTyped ? [3, 4, 6] : [3, 6]]],
+        detached: keepTyped ? [5] : [4, 5], markers: [[4, 'dynamic_failure_marker'], [5, 'dynamic_end_marker']] };
+    }),
+    ...[
+      ['exact request', { command: 'echo fail' }, false],
+      ['foreign request', { command: 'echo another' }, true],
+    ].map(([label, args, keepCommand]) => ({ name: 'native command failure with a dynamic transport ' + label,
+      rows: [scopedCustom, shell, typed(commandItem), event({ ...dynamicResponse.payload, namespace: 'functions', arguments: args }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['command', keepCommand ? 'failed' : 'completed', keepCommand ? [4, 5, 7] : [4, 7]]],
+      detached: keepCommand ? [6] : [5, 6], markers: [[5, 'typed_command_marker'], [6, 'transport_response_marker']],
+    })),
+    { name: 'an independent dynamic call keeps its exact image arguments beside a foreign typed completion',
+      rows: [scopedCustom, response({ ...independentDynamic.payload, arguments: '{"i":"data:image/png;base64,AAAA"}' }),
+        typed({ ...typedDynamicSuccess.payload.item, namespace: 'fixture', tool: 'lookup', arguments: { i: 'data:image/png;base64,BBBB' } }),
+        typed({ ...typedDynamicFailure.payload.item, namespace: 'fixture', tool: 'lookup', arguments: { i: 'data:image/png;base64,AAAA' } }),
+        receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['other_tool_call', 'failed', [4, 6, 7]]], detached: [5],
+      markers: [[5, 'dynamic_success_marker'], [6, 'dynamic_failure_marker'], [7, 'current_function_marker']] },
     { name: 'dynamic transport mirrors leave the verified typed failure on its request',
       rows: [scoped, dynamicRequest, typedDynamicFailure, dynamicResponse, receipt],
       main: [['other_tool_call', 'failed', [3, 5, 7]]], detached: [4, 6],
-      markers: [[4, 'transport_request_marker'], [5, 'dynamic_failure_marker'], [6, 'transport_response_marker']] },
+      markers: [[4, '73590123'], [5, 'dynamic_failure_marker'], [6, 'transport_response_marker']] },
     { name: 'dynamic transport alone leaves the request outcome unverified',
       rows: [scoped, dynamicRequest, dynamicResponse, receipt],
       main: [['other_tool_call', 'completed', [3, 6]]], detached: [4, 5],
-      markers: [[4, 'transport_request_marker'], [5, 'transport_response_marker']] },
+      markers: [[4, '73590123'], [5, 'transport_response_marker']] },
     { name: 'same-turn dynamic transport cannot attest an MCP terminal',
       rows: [scoped, dynamicRequest, typedEnd(true), receipt],
       main: [['other_tool_call', 'completed', [3, 6]]], detached: [4, 5],
-      markers: [[4, 'transport_request_marker'], [5, 'typed_terminal_marker']] },
+      markers: [[4, '73590123'], [5, 'typed_terminal_marker']] },
     { name: 'a dynamic transport request naming another turn cannot dispute the local MCP failure',
       rows: [scoped, event({ ...dynamicRequest.payload, turnId: 'other-turn' }), typedEnd(true), receipt],
       main: [['mcp_call', 'failed', [3, 5, 6]]], detached: [4],
-      markers: [[4, 'transport_request_marker'], [5, 'typed_terminal_marker']] },
+      markers: [[4, '73590123'], [5, 'typed_terminal_marker']] },
     ...[true, false].map(withBoundary => {
       const first = withBoundary ? 3 : 2;
       return { name: 'a foreign transport response leaves the local failure and receipt in their turn, opening boundary=' + withBoundary,
@@ -681,7 +796,8 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       main: [['other_tool_call', 'completed', [3, 8]], ['other_tool_call', 'completed', [4, 7]]], detached: [5, 6],
       markers: [[5, 'dynamic_end_marker'], [6, 'second_terminal_marker'], [7, 'current_function_marker'], [8, 'scoped_custom_marker']] },
     { name: 'an exact scoped dynamic begin without an end or receipt stays incomplete',
-      rows: [scoped, event({ type: 'dynamic_tool_call_begin', call_id, ...qualifiedDynamic, arguments: { query: 'begin_marker' } })],
+      rows: [response({ ...scoped.payload, arguments: '{"query":"begin_marker"}' }),
+        event({ type: 'dynamic_tool_call_begin', call_id, ...qualifiedDynamic, arguments: { query: 'begin_marker' } })],
       main: [['other_tool_call', 'incomplete', [3, 4]]], detached: [], markers: [[4, 'begin_marker']] },
     { name: 'an in-progress typed dynamic item keeps its request and physical evidence',
       rows: [scoped, typed({ type: 'DynamicToolCall', id: call_id, namespace, tool, status: 'in_progress', arguments: {} })],
@@ -1004,6 +1120,28 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
         command: commandItem.command, exit_code: 1, status: 'failed', aggregated_output: 'local_command_marker' }), customReceipt],
       main: [['other_tool_call', 'completed', [3, 7]], ['command', 'failed', [4, 6]]], detached: [5],
       markers: [[5, 'foreign_command_marker'], [6, 'local_command_marker']], commandExit: 1 },
+    ...['typed', 'legacy'].flatMap(format => [true, false].map(matches => ({
+      name: 'legacy command success and a ' + format + ' dynamic failure with ' + (matches ? 'matching' : 'foreign') + ' arguments',
+      rows: [scopedCustom, shell, event({ type: 'exec_command_end', call_id, command: commandItem.command, source: 'agent',
+        status: 'completed', exit_code: 0, aggregated_output: 'legacy_command_marker' }),
+        format === 'typed' ? typed({ type: 'DynamicToolCall', id: call_id, tool: 'shell_command',
+          arguments: { command: matches ? 'echo fail' : 'echo other' }, status: 'failed', success: false, error: 'dynamic_failure_marker' })
+          : dynamicEnd({ tool_name: 'shell_command', arguments: { command: matches ? 'echo fail' : 'echo other' } },
+          { success: false, error: 'dynamic_failure_marker' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['command', matches ? 'completed' : 'success', matches ? [4, 7] : [4, 5, 7]]],
+      detached: matches ? [5, 6] : [6], markers: [[5, 'legacy_command_marker'], [6, 'dynamic_failure_marker'],
+        [7, 'current_function_marker'], [8, 'scoped_custom_marker']], commandExit: matches ? undefined : 0,
+    }))),
+    ...[child, ID].map(secondReceiver => ({
+      name: 'legacy UUID wait results with ' + (secondReceiver === child ? 'two eligible ends' : 'one eligible end'),
+      rows: [scopedCustom, wait, waitBegin(child), event({ type: 'collab_waiting_end', call_id, sender_thread_id: ID,
+        statuses: { [child]: { completed: 'first_wait_marker' } } }),
+        event({ type: 'collab_waiting_end', call_id, sender_thread_id: ID, statuses: { [secondReceiver]: { errored: 'second_wait_marker' } } }),
+        receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 9]], ['agent_coordination', 'success', secondReceiver === child ? [4, 5, 8] : [4, 5, 6, 8]]],
+      detached: secondReceiver === child ? [6, 7] : [7], markers: [[6, 'first_wait_marker'], [7, 'second_wait_marker'],
+        [8, 'current_function_marker'], [9, 'scoped_custom_marker']],
+    })),
     { name: 'legacy patch end and decline both stay disputed',
       rows: [scoped, patch, patchEnd, event({ type: 'patch_apply_declined', call_id, changes: patchItem.changes }), receipt],
       main: [['other_tool_call', 'completed', [3, 7]], ['patch', 'incomplete', [4]]], detached: [5, 6], markers: [] },
@@ -1103,10 +1241,54 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       ['exec_command', false, ['cmd.exe', '/c'], true], ['exec_command', true, ['cmd.exe', '/c'], true],
       ['exec_command', 'false', ['/bin/bash', '-c'], false],
     ].map(([name, login, wrapper, matches]) => ({ name: 'native typed ' + name + ' with login=' + JSON.stringify(login) + ' and ' + wrapper.join(' '),
+      initialTurn: { type: 'turn_context', payload: { turn_id: TURN, cwd: commandItem.cwd } },
       rows: [scopedCustom, response({ ...shell.payload, name, arguments: JSON.stringify({ [name === 'exec_command' ? 'cmd' : 'command']: 'echo fail', login }) }),
         typed({ ...commandItem, source: name === 'exec_command' ? 'unified_exec_startup' : 'agent', command: [...wrapper, 'echo fail'] }), receipt, customReceipt],
       main: [['other_tool_call', 'completed', [3, 7]], ['command', matches ? 'failed' : 'completed', matches ? [4, 5, 6] : [4, 6]]],
       detached: matches ? [] : [5], markers: [[5, 'typed_command_marker']], commandExit: matches ? 72 : undefined })),
+    ...[
+      ['relative child', '/work/base', 'sub', 'file:///work/base/sub', true],
+      ['empty default', '/work/base', '', 'file:///work/base', true],
+      ...[undefined, null, ''].flatMap(workdir => [
+        ['default ' + String(workdir) + ' agrees', '/work/base', workdir, 'file:///work/base', true],
+        ['default ' + String(workdir) + ' conflicts', '/work/base', workdir, 'file:///work/foreign', false],
+        ['default ' + String(workdir) + ' is unknown', '', workdir, 'file:///work/base', false],
+        ['default ' + String(workdir) + ' in a named environment', '/work/base', workdir, 'file:///work/base', false, 'another'],
+      ]),
+      ['parent component', '/work/base', '../other', 'file:///work/other', true],
+      ['Windows directory', 'D:/work/base', 'sub', 'file:///D:/work/base/sub', true],
+      ['UNC relative child', '//fixture-host/share/base', 'sub', 'file://fixture-host/share/base/sub', true],
+      ['POSIX directory with a similar UNC spelling', '/fixture-host/share/base', 'sub', 'file://fixture-host/share/base/sub', false],
+      ['foreign directory', '/work/base', 'sub', 'file:///other/sub', false],
+      ['missing default', '', 'sub', 'file:///work/base/sub', false],
+      ['selected environment lacks a cwd', '/work/base', 'sub', 'file:///work/base/sub', false, 'another'],
+    ].map(([label, cwd, workdir, terminalCwd, matches, environment_id]) => ({ name: 'exec_command workdir with ' + label,
+      initialTurn: { type: 'turn_context', payload: { turn_id: TURN, cwd } },
+      rows: [scopedCustom, response({ ...shell.payload, name: 'exec_command', arguments: JSON.stringify({ cmd: 'echo fail', workdir, environment_id }) }),
+        typed({ ...commandItem, source: 'unified_exec_startup', cwd: terminalCwd }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['command', matches ? 'failed' : 'completed', matches ? [4, 5, 6] : [4, 6]]],
+      detached: matches ? [] : [5], markers: [[5, 'typed_command_marker']], commandExit: matches ? 72 : undefined })),
+    ...[undefined, null, ''].map(workdir => ({
+      name: 'default exec_command directory ' + String(workdir) + ' separates otherwise identical terminals',
+      initialTurn: { type: 'turn_context', payload: { turn_id: TURN, cwd: '/work/base' } },
+      rows: [scopedCustom, response({ ...shell.payload, name: 'exec_command', arguments: JSON.stringify({ cmd: 'echo fail', workdir }) }),
+        typed({ ...commandItem, source: 'unified_exec_startup', cwd: 'file:///work/base' }),
+        typed({ ...commandItem, source: 'unified_exec_startup', cwd: 'file:///work/foreign', exit_code: 0, status: 'completed', aggregated_output: 'foreign_directory_marker' }), receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 8]], ['command', 'failed', [4, 5, 7]]], detached: [6],
+      markers: [[5, 'typed_command_marker'], [6, 'foreign_directory_marker']], commandExit: 72 })),
+    ...['//fixture-host/share/base', '\\\\fixture-host\\share\\base', '/fixture-host/share/base'].flatMap(cwd => [true, false].map(uncFirst => {
+      const unc = cwd !== '/fixture-host/share/base';
+      const uncEnd = typed({ ...commandItem, source: 'unified_exec_startup', cwd: 'file://fixture-host/share/base' });
+      const posixEnd = typed({ ...commandItem, source: 'unified_exec_startup', cwd: 'file:///fixture-host/share/base', exit_code: 0,
+        status: 'completed', aggregated_output: 'posix_directory_marker' });
+      const uncLine = uncFirst ? 5 : 6, posixLine = uncFirst ? 6 : 5;
+      return { name: 'default command directory ' + cwd + ' with UNC terminal first=' + uncFirst,
+        initialTurn: { type: 'turn_context', payload: { turn_id: TURN, cwd } },
+        rows: [scopedCustom, response({ ...shell.payload, name: 'exec_command', arguments: '{"cmd":"echo fail"}' }),
+          ...(uncFirst ? [uncEnd, posixEnd] : [posixEnd, uncEnd]), receipt, customReceipt],
+        main: [['other_tool_call', 'completed', [3, 8]], ['command', unc ? 'failed' : 'success', [4, unc ? uncLine : posixLine, 7]]],
+        detached: [unc ? posixLine : uncLine], markers: [[uncLine, 'typed_command_marker'], [posixLine, 'posix_directory_marker']], commandExit: unc ? 72 : 0 };
+    })),
     { name: 'native command path and typed file URI identify the same recorded workdir',
       rows: [scopedCustom, response({ ...shell.payload, arguments: '{"command":"echo fail","workdir":"/work/a"}' }),
         typed({ ...commandItem, cwd: 'file:///work/a' }), receipt, customReceipt],
@@ -1118,6 +1300,7 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       ['bash', '/bin/zsh', '-c', false], ['bash', '/bin/bash', '-lc', false],
       ['/bin/bash-copy', '/bin/bash', '-c', false], ['bash', '/opt/bash/wrapper', '-c', false],
     ].map(([selector, executable, flag, matches]) => ({ name: 'exec_command shell selector ' + selector + ' resolved to ' + executable + ' ' + flag,
+      initialTurn: { type: 'turn_context', payload: { turn_id: TURN, cwd: commandItem.cwd } },
       rows: [scopedCustom, response({ ...shell.payload, name: 'exec_command', arguments: JSON.stringify({ cmd: 'echo hi', shell: selector, login: false }) }),
         typed({ ...commandItem, source: 'unified_exec_startup', command: [executable, flag, ...(flag === '-NoProfile' ? ['-Command'] : []), 'echo hi'] }),
         receipt, customReceipt],
@@ -1128,6 +1311,7 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       ['/work/repo', '/usr/bin/sh', '-c', false], ['C:/repo', 'C:/Windows/System32/cmd.exe', '/c', false],
       ['/work/repo', '/bin/sh', '-lc', false], ['/work/repo', 'cmd.exe', '/c', false], ['C:/repo', '/bin/sh', '-c', false],
     ].map(([cwd, executable, flag, matches]) => ({ name: 'unknown shell selector with ' + executable + ' ' + flag + ' in ' + cwd,
+      initialTurn: { type: 'turn_context', payload: { turn_id: TURN, cwd: cwd === 'file:///work/repo' ? '/work/repo' : cwd } },
       rows: [scopedCustom, response({ ...shell.payload, name: 'exec_command', arguments: '{"cmd":"echo hi","shell":"fish","login":false}' }),
         typed({ ...commandItem, source: 'unified_exec_startup', cwd, command: [executable, flag, 'echo hi'] }), receipt, customReceipt],
       main: [['other_tool_call', 'completed', [3, 7]], ['command', matches ? 'failed' : 'completed', matches ? [4, 5, 6] : [4, 6]]],
@@ -1281,6 +1465,20 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
         patchReceipt, receipt],
       main: [['other_tool_call', 'completed', [4, 8]], ['patch', matches ? 'failed' : 'success', matches ? [5, 6, 7] : [5, 7]]],
       detached: matches ? [] : [6], markers: [[6, 'typed_patch_marker']] })),
+    ...[false, true].flatMap(isTyped => [
+      ['foreign destination', 'elsewhere.txt', true], ['explicitly no move', null, true],
+      ['same destination', '/work/dir/moved.txt', false], ['malformed destination', 17, false],
+    ].map(([label, destination, foreign]) => {
+      const changes = move_path => ({ 'source.txt': { type: 'update', move_path, unified_diff: '@@ -1 +1 @@\n-before\n+after\n' } });
+      return { name: (isTyped ? 'typed' : 'legacy') + ' competing patch with ' + label,
+        initialTurn: { type: 'turn_context', payload: { turn_id: TURN, cwd: '/work/dir' } },
+        rows: [scoped, response({ ...patch.payload, input: '*** Begin Patch\n*** Update File: source.txt\n*** Move to: moved.txt\n-before\n+after\n*** End Patch' }),
+          typed({ ...patchItem, changes: changes('moved.txt') }),
+          isTyped ? typed({ ...patchItem, status: 'completed', changes: changes(destination), stderr: 'competing_patch_marker' })
+            : event({ ...patchEnd.payload, changes: changes(destination), stdout: 'competing_patch_marker' }), receipt],
+        main: [['other_tool_call', 'completed', [3, 7]], ['patch', foreign ? 'failed' : 'incomplete', foreign ? [4, 5] : [4]]],
+        detached: foreign ? [6] : [5, 6], markers: [[5, 'typed_patch_marker'], [6, 'competing_patch_marker']] };
+    })),
     { name: 'native typed shell and agreeing legacy evidence both belong to the command',
       rows: [scopedCustom, shell, typed(commandItem), event({ type: 'exec_command_end', call_id, command: commandItem.command,
         source: 'agent', status: 'failed', exit_code: 72, aggregated_output: 'typed_command_marker' }), receipt, customReceipt],
@@ -1315,6 +1513,7 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       ['shell', { command: ['echo', 'fail'] }, {}],
       ['shell_command', { command: 'echo fail' }, {}, ''],
     ].map(([name, args, fields, namespace]) => ({ name: 'native typed failure of ' + name,
+      initialTurn: { type: 'turn_context', payload: { turn_id: TURN, cwd: commandItem.cwd } },
       rows: [scopedCustom, response({ type: 'function_call', call_id, name, ...(namespace === undefined ? {} : { namespace }), arguments: JSON.stringify(args) }),
         typed({ ...commandItem, ...fields }), receipt, customReceipt],
       main: [['other_tool_call', 'completed', [3, 7]], ['command', 'failed', [4, 5, 6]]], detached: [],
@@ -1352,6 +1551,15 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
         statuses: { [ID]: { errored: 'competing_wait_marker' } } }), receipt, customReceipt],
       main: [['other_tool_call', 'completed', [3, 8]], ['agent_coordination', 'success', [4, 7]]],
       detached: [5, 6], markers: [[5, 'path_end_marker'], [6, 'competing_wait_marker']] },
+    ...[child, ID].map(receiver => ({
+      name: 'a dynamic end beside a path-wait end for ' + (receiver === child ? 'the resolved receiver' : 'a foreign receiver'),
+      rows: [scopedCustom, pathWait, waitBegin(child), waitEnd(receiver),
+        dynamicEnd({ tool_name: 'wait_agent', arguments: { targets: ['/root/reviewer'] } }, { success: false, error: 'dynamic_wait_marker' }),
+        receipt, customReceipt],
+      main: [['other_tool_call', 'completed', [3, 9]], ['agent_coordination', receiver === child ? 'success' : 'failed',
+        receiver === child ? [4, 5, 8] : [4, 5, 7, 8]]], detached: receiver === child ? [6, 7] : [6],
+      markers: [[6, 'path_end_marker'], [7, 'dynamic_wait_marker'], [8, 'current_function_marker']],
+    })),
     ...[true, false].map(timedOut => ({ name: 'historical path wait with conflicting begins and ' + (timedOut ? 'a timeout' : 'an explicit UUID result'),
       rows: [scopedCustom, response({ ...pathWait.payload, arguments: JSON.stringify({ targets: [ID, '/root/reviewer'] }) }),
         waitBegin(ID, { receiver_thread_ids: [ID, child] }), waitBegin(ID, { receiver_thread_ids: [ID, ID] }),
@@ -1719,7 +1927,76 @@ test('ambiguous Code Mode results retain physical owners and independent search 
   ];
   const first = 'first-wire-receipt';
   const second = 'second-wire-receipt';
+  const stamp = (row, turn_id) => response({ ...row.payload, internal_chat_message_metadata_passthrough: { turn_id } });
+  const scopedFunction = response({ type: 'function_call', call_id: 'shared', namespace: foreign, name: 'lookup', arguments: '{}' });
+  const scopedResult = response({ type: 'function_call_output', call_id: 'shared', output: 'scoped function receipt' });
+  const stampedExec = stamp(request('exec'), TURN);
+  const foreignExecResult = stamp(result('exec', first), 'previous-turn');
+  const currentExecResult = stamp(result('exec', second), TURN);
+  const oldWait = stamp(response({ ...request('wait').payload, arguments: '{"cell_id":"g2:14","yield_time_ms":7314}' }), 'previous-turn');
+  const scopedCustom = request('exec', foreign);
+  const scopedCustomResult = result('exec', 'scoped custom receipt');
+  const fragment = event({ type: 'task_started' });
+  const localWait = stamp(response({ ...request('wait').payload, call_id: 'local-wait' }), TURN);
+  const localWaitResult = stamp(response({ ...result('wait', second).payload, call_id: 'local-wait' }), TURN);
   const cases = [
+    ...[false, true].map(conflict => {
+      const commandEnd = (argv, code, text) => event({ type: 'exec_command_end', call_id: 'shared', source: 'agent',
+        command: ['/bin/sh', '-c', argv], status: code ? 'failed' : 'completed', exit_code: code, aggregated_output: text });
+      return { name: 'isolated custom exec leaves the independent command with ' + (conflict ? 'two plausible ends' : 'one matching end'),
+        rows: [scopedCustom, request('exec'), response({ type: 'function_call', call_id: 'shared', name: 'shell_command', arguments: '{"command":"echo local"}' }),
+          commandEnd(conflict ? 'echo local' : 'echo foreign', 0, first), commandEnd('echo local', 8, second),
+          response({ type: 'function_call_output', call_id: 'shared', output: 'ordinary receipt' }), scopedCustomResult],
+        main: [[3], [4], conflict ? [5, 8] : [5, 7, 8]], detached: conflict ? [6, 7, 9] : [6, 9],
+        state: 'unknown', commandStatus: conflict ? 'completed' : 'failed', commandExit: conflict ? null : 8 };
+    }),
+    ...[true, false].map(withReceipt => ({ name: 'a foreign stamped native wait cannot reserve a current cell ' + (withReceipt ? 'with a receipt' : 'without a receipt'),
+      rows: [...pending, scopedCustom, oldWait, ...(withReceipt ? [stamp(result('wait', first), 'previous-turn')] : []), scopedCustomResult,
+        response({ ...request('wait').payload, call_id: 'local-wait' }), response({ ...result('wait', second).payload, call_id: 'local-wait' })],
+      main: withReceipt ? [[3, 4, 9, 10], [5, 8], [6]] : [[3, 4, 8, 9], [5, 7], [6]], detached: withReceipt ? [7] : [],
+      state: 'terminal', unpairedWait: 6, requestMarker: [6, '7314'] })),
+    { name: 'a foreign stamped exec remains its own call-only operation', rows: [scopedFunction,
+      stamp(request('exec'), 'previous-turn'), foreignExecResult, currentExecResult, scopedResult],
+      main: [[3, 7], [4]], detached: [5, 6], state: 'unknown' },
+    { name: 'matching wait and receipt stamps in a fragment without a recorded turn', initialTurn: event({ type: 'task_started' }),
+      rows: [...pending, scopedCustom, oldWait, stamp(result('wait', first), 'previous-turn'), scopedCustomResult],
+      main: [[3, 4, 6, 7], [5, 8]], detached: [], state: 'terminal' },
+    ...['exec', 'receipt', 'both'].map(evidence => ({
+      name: 'a fragment cell stamped on ' + evidence + ' excludes a wait from another turn', initialTurn: fragment,
+      rows: [evidence === 'receipt' ? pending[0] : stamp(pending[0], TURN), evidence === 'exec' ? pending[1] : stamp(pending[1], TURN),
+        scopedCustom, oldWait, stamp(result('wait', first), 'previous-turn'), scopedCustomResult, localWait, localWaitResult],
+      main: [[3, 4, 9, 10], [5, 8], [6]], detached: [7], state: 'terminal', unpairedWait: 6, requestMarker: [6, '7314'],
+    })),
+    { name: 'a fragment cell accepts a wait stamped for its own turn', initialTurn: fragment,
+      rows: [stamp(pending[0], TURN), stamp(pending[1], TURN), scopedCustom, stamp(request('wait'), TURN),
+        stamp(result('wait', first), TURN), scopedCustomResult, localWait, localWaitResult],
+      main: [[3, 4, 6, 7], [5, 8], [9, 10]], detached: [], state: 'terminal' },
+    { name: 'a fragment cell distinguishes receipts on an unstamped wait before counting them', initialTurn: fragment,
+      rows: [stamp(pending[0], TURN), pending[1], scopedCustom, request('wait'), stamp(result('wait', first), 'previous-turn'),
+        stamp(result('wait', second), TURN), scopedCustomResult],
+      main: [[3, 4, 6, 8], [5, 9]], detached: [7], state: 'terminal' },
+    { name: 'an accepted pending wait can supply the turn of a fragment cell', initialTurn: fragment,
+      rows: [...pending, response({ ...request('wait').payload, call_id: 'poll' }),
+        stamp(response({ type: 'function_call_output', call_id: 'poll', output: 'Script running with cell ID g2:14' }), TURN),
+        scopedCustom, oldWait, stamp(result('wait', first), 'previous-turn'), scopedCustomResult, localWait, localWaitResult],
+      main: [[3, 4, 5, 6, 11, 12], [7, 10], [8]], detached: [9], state: 'terminal', unpairedWait: 8, requestMarker: [8, '7314'] },
+    { name: 'a wait outside a scoped ID collision retains ordinary pairing',
+      rows: [...pending, oldWait, stamp(result('wait', first), 'previous-turn')],
+      main: [[3, 4, 5, 6]], detached: [], state: 'terminal' },
+    { name: 'a foreign stamped exec receipt beside a scoped function', rows: [scopedFunction, stampedExec, foreignExecResult, scopedResult],
+      main: [[3, 6], [4]], detached: [5], state: 'unknown' },
+    { name: 'a current stamped exec receipt beside a scoped function', rows: [scopedFunction, stampedExec, currentExecResult, scopedResult],
+      main: [[3, 6], [4, 5]], detached: [], state: 'terminal' },
+    ...[false, true].map(reverse => ({ name: 'current and foreign stamped exec receipts, foreign ' + (reverse ? 'last' : 'first'),
+      rows: [scopedFunction, stampedExec, ...(reverse ? [currentExecResult, foreignExecResult] : [foreignExecResult, currentExecResult]), scopedResult],
+      main: [[3, 7], [4, reverse ? 5 : 6]], detached: [reverse ? 6 : 5], state: 'terminal' })),
+    { name: 'two current stamped exec receipts beside a scoped function', rows: [scopedFunction, stampedExec,
+      stamp(result('exec', first), TURN), currentExecResult, scopedResult],
+      main: [[3, 7], [4]], detached: [5, 6], state: 'unknown' },
+    { name: 'current and foreign stamped native wait receipts beside a scoped custom tool',
+      rows: [...pending, request('exec', foreign), stamp(request('wait'), TURN),
+        stamp(result('wait', first), 'previous-turn'), stamp(result('wait', second), TURN), result('exec', 'scoped custom receipt')],
+      main: [[3, 4, 6, 8], [5, 9]], detached: [7], state: 'terminal' },
     { name: 'competing custom execs', rows: [request('exec'), request('exec', foreign), result('exec', first), result('exec', second)],
       main: [[3], [4]], detached: [5, 6], state: 'unknown' },
     { name: 'competing function waits', rows: [...pending, request('wait'), request('wait', foreign), result('wait', first), result('wait', second)],
@@ -1741,11 +2018,16 @@ test('ambiguous Code Mode results retain physical owners and independent search 
         event({ type: 'exec_command_end', call_id: 'shared', command: ['synthetic'], exit_code: 1, status: 'failed' }),
         result('wait', second)], main: [[3], [5, 6, 7]], detached: [4], state: 'unknown', commandStatus: 'failed' },
   ];
-  for (const scenario of cases) {
-    await t.test(scenario.name, async (t) => {
-      const f = await fixture(t, scenario.rows);
-      const index = await codex.buildSourceBackedIndex(f.options);
-      const session = await materializeSessionForIndex(index, index.sessionsById.get(ID));
+  for (const scenario of cases) await t.test(scenario.name, async (t) => {
+    const f = await fixture(t, scenario.rows, scenario.initialTurn);
+    const resident = await codex.__testOnly.buildUncompactedIndexForDetailTests(f.options);
+    const compact = await codex.buildIndex(f.options);
+    const cold = await codex.buildSourceBackedIndex(f.options);
+    const warm = await codex.buildSourceBackedIndex({ ...f.options, previousIndex: cold });
+    assert.equal(warm.totals.reusedFileCount, 1);
+    for (const index of [resident, compact, cold, warm]) {
+      const indexed = index.sessionsById.get(ID);
+      const session = index === cold || index === warm ? await materializeSessionForIndex(index, indexed) : indexed;
       const main = session.logicalEvents.filter(e => e.layer === 'main').sort((a, b) => a.rawRefs[0].line - b.rawRefs[0].line);
       assert.equal(session.counts.toolCalls, scenario.main.length);
       assert.deepEqual(main.map(e => e.rawRefs.map(r => r.line)), scenario.main);
@@ -1753,7 +2035,12 @@ test('ambiguous Code Mode results retain physical owners and independent search 
       const operations = main.filter(e => e.kind === 'code_mode_operation');
       assert.equal(operations.length, 1);
       assert.equal(operations[0].codeModeOperation.observationState, scenario.state);
+      if (scenario.unpairedWait) {
+        const wait = main.find(e => e.rawRefs[0].line === scenario.unpairedWait);
+        assert.deepEqual([wait.kind, wait.status], ['other_tool_call', 'incomplete']);
+      }
       if (scenario.commandStatus) assert.equal(main.find(e => e.kind === 'command').status, scenario.commandStatus);
+      if ('commandExit' in scenario) assert.equal(main.find(e => e.kind === 'command').outputStats?.exitCode ?? null, scenario.commandExit);
       for (let line = 3; line <= f.records.length; line++) {
         const record = f.records[line - 1];
         const owners = session.logicalEvents.filter(e => e.rawRefs.some(r => r.line === line));
@@ -1765,15 +2052,20 @@ test('ambiguous Code Mode results retain physical owners and independent search 
         const ref = owner.rawRefs.find(r => r.line === line);
         const raw = session.rawEvents.find(r => r.rawId === ref.rawId);
         assert.deepEqual(JSON.parse((await codex.readIndexedCodexRawRecord(index, session, raw)).raw), record);
-        const marker = [first, second].find(word => record.payload.output?.includes(word));
+        const marker = line === scenario.requestMarker?.[0] ? scenario.requestMarker[1]
+          : [first, second].find(word => (record.payload.output || record.payload.aggregated_output)?.includes(word));
         if (!marker) continue;
+        for (const event of isDetached ? [...main, owner] : main) {
+          const detail = await codex.buildHydratedEventDetail(index, session, event.id, event.layer);
+          assert.equal(JSON.stringify(detail).includes(marker), event.id === owner.id, marker);
+        }
         for (const layer of ['protocol', 'main']) {
           const hits = codex.query.getTimeline(index, session, { layer, q: marker });
           assert.deepEqual(hits.events.filter(e => e.hasSearchHit).map(e => e.id), layer === owner.layer ? [owner.id] : []);
         }
       }
-    });
-  }
+    }
+  });
 });
 
 test('scoped MCP registration rejects incompatible peer rows and names outside producer limits', async (t) => {
