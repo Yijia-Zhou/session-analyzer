@@ -69,6 +69,7 @@ function createCodexLogicalBuilder(deps) {
   const {
     TOOL_LIFECYCLE_EVENT_TYPES,
     TOOL_LIFECYCLE_FAMILY,
+    TOOL_LIFECYCLE_PHASE,
     commandArgsFromRaw,
     nativeExecCommandArguments = () => null,
     commandToText,
@@ -82,6 +83,7 @@ function createCodexLogicalBuilder(deps) {
     isToolLifecycleCallGroupType,
     isToolLifecycleFamily,
     isToolLifecycleStandaloneType,
+    toolLifecycleDescriptorFor,
     toolLifecycleRepresentativeRank,
   } = tool;
   const CODE_MODE_ASSOCIATION_EVENT_TYPES = new Set([
@@ -1497,6 +1499,15 @@ function createCodexLogicalBuilder(deps) {
       let eligible = owner ? toolPeersInTurn(owner, unclaimed, epochs, (call, row) => remainingToolPeer(call, row, pathWait)) : [];
       if (pathWait.begins.size > 1) eligible = eligible.filter(row => !pathWait.begins.has(row.rawId));
       if (pathWait.ends.size > 1) eligible = eligible.filter(row => !pathWait.ends.has(row.rawId));
+      // A verified typed mirror may accompany one legacy terminal. Two eligible
+      // legacy terminals cannot both establish the outcome of this native call.
+      const legacyTerminals = new Set(eligible.filter(row => {
+        if (row.typedItemType || row.recordType !== 'event_msg') return false;
+        const descriptor = toolLifecycleDescriptorFor(row.payloadType);
+        return descriptor?.phase === TOOL_LIFECYCLE_PHASE.TERMINAL
+          && (descriptor.family === TOOL_LIFECYCLE_FAMILY.COMMAND || descriptor.family === TOOL_LIFECYCLE_FAMILY.PATCH);
+      }));
+      if (legacyTerminals.size > 1) eligible = eligible.filter(row => !legacyTerminals.has(row));
       const outputs = eligible.filter(raw => matchesToolOutput(owner, raw));
       const remainingPeers = owner ? [owner, ...eligible.filter(raw => outputs.length <= 1 || !matchesToolOutput(owner, raw))] : [];
       const ownedIds = new Set(remainingPeers.map(raw => raw.rawId));

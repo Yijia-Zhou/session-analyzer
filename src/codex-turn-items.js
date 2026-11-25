@@ -576,38 +576,207 @@ function patchPath(value, cwd) {
   return api.join(cwd, value);
 }
 
-function patchEditBlocks(lines) {
-  const blocks = [];
-  for (let i = 0; i < lines.length;) {
-    const start = i++;
-    if (!/^[+-]/.test(lines[start])) continue;
-    while (i < lines.length && /^[+-]/.test(lines[i])) i++;
-    const before = lines[start - 1], after = lines[i];
-    blocks.push({ edits: lines.slice(start, i), before: before?.startsWith(' ') ? before : null, after: after?.startsWith(' ') ? after : null });
+const unifiedHunkRange = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*|$)/;
+const missingFinalNewline = '\\ No newline at end of file';
+
+function patchDiffLines(diff) {
+  const lines = diff.split(/\r?\n/);
+  if (lines.at(-1) === '') lines.pop();
+  const hunk = lines.findIndex(line => line.startsWith('@@'));
+  return hunk < 0 ? lines : lines.slice(hunk);
+}
+
+// Historical coordinate-free diffs have no range to attest. A numbered diff
+// must account for both sides, including the unchanged gap between hunks.
+function numberedPatchBounds(lines, collectOldLines = false) {
+  if (!lines.some(line => line.startsWith('@@ -'))) return null;
+  let oldRemaining = 0, newRemaining = 0, seenHunk = false;
+  let oldEnd = 0, newEnd = 0, oldEnded = false, newEnded = false, previousPrefix = '';
+  const oldText = collectOldLines ? new Map() : null;
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      const range = unifiedHunkRange.exec(line);
+      if (!range || oldRemaining || newRemaining) return false;
+      seenHunk = true;
+      oldRemaining = Number(range[2] ?? 1);
+      newRemaining = Number(range[4] ?? 1);
+      const oldStart = Number(range[1]) - (oldRemaining ? 1 : 0);
+      const newStart = Number(range[3]) - (newRemaining ? 1 : 0);
+      if (![oldStart, newStart, oldStart + oldRemaining, newStart + newRemaining].every(Number.isSafeInteger)
+          || oldStart < oldEnd || oldStart - oldEnd !== newStart - newEnd
+          || (oldEnded && (oldRemaining || oldStart !== oldEnd)) || (newEnded && (newRemaining || newStart !== newEnd))) return false;
+      oldEnd = oldStart + oldRemaining;
+      newEnd = newStart + newRemaining;
+      previousPrefix = '';
+    } else if (line === missingFinalNewline) {
+      if (!previousPrefix) return false;
+      if (previousPrefix !== '+') oldEnded = true;
+      if (previousPrefix !== '-') newEnded = true;
+      previousPrefix = '';
+    } else {
+      if (!seenHunk || !/^[ +\-]/.test(line)) return false;
+      previousPrefix = line[0];
+      if ((oldEnded && previousPrefix !== '+') || (newEnded && previousPrefix !== '-')) return false;
+      if (!line.startsWith('+')) {
+        oldText?.set(oldEnd - oldRemaining, line);
+        oldRemaining--;
+      }
+      if (!line.startsWith('-')) newRemaining--;
+      if (oldRemaining < 0 || newRemaining < 0) return false;
+    }
   }
+  return seenHunk && oldRemaining === 0 && newRemaining === 0 && { oldEnd, oldEnded, oldText };
+}
+
+function patchEditBlocks(lines, { recorded = false, atEof = false } = {}) {
+  const blocks = [];
+  let chunk = { oldLines: 0, minOrigin: 0 }, origin = null;
+  for (let i = 0; i < lines.length;) {
+    const line = lines[i];
+    if (line.startsWith('@@')) {
+      // Each consumed pattern advances the writer's search. A named section
+      // advances it once more past the matched selector line.
+      const consumed = chunk.oldLines - (chunk.trailingEmpty ? 1 : 0);
+      const selector = !recorded && line.startsWith('@@ ') ? normalizedPatchOldText(line.slice(2)) : '';
+      chunk = { oldLines: 0, selector, minOrigin: chunk.minOrigin + consumed + (selector ? 1 : 0) };
+      const range = recorded && unifiedHunkRange.exec(line);
+      origin = range ? Number(range[1]) - (Number(range[2] ?? 1) > 0 ? 1 : 0) : null;
+    } else if (line.startsWith(' ')) {
+      chunk.oldLines++;
+      chunk.trailingEmpty = line === ' ';
+    }
+    if (!/^[+-]/.test(line)) { i++; continue; }
+    const start = i, oldOffset = chunk.oldLines;
+    while (i < lines.length && /^[+-]/.test(lines[i])) {
+      if (lines[i].startsWith('-')) {
+        chunk.oldLines++;
+        chunk.trailingEmpty = lines[i] === '-';
+      }
+      i++;
+    }
+    const before = lines[start - 1], after = lines[i];
+    blocks.push({ edits: lines.slice(start, i), before: before?.startsWith(' ') ? before : null, after: after?.startsWith(' ') ? after : null,
+      chunk, offset: oldOffset, position: origin === null ? null : origin + oldOffset });
+  }
+  chunk.atEof = atEof;
   return blocks;
 }
 
-function legacyPatchUpdateMatches(body, diff, move) {
-  const requested = patchEditBlocks(body), recorded = patchEditBlocks(diff);
-  if ((!move && !requested.length) || requested.length !== recorded.length) return false;
+// seek_sequence can locate old lines by their trimmed text and these specific
+// Unicode equivalents. New lines are written with the request's exact text.
+function normalizedPatchOldText(line) {
+  return line.slice(1).replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '')
+    .replace(/[\u2010-\u2015\u2212]/g, '-').replace(/[\u2018-\u201B]/g, "'").replace(/[\u201C-\u201F]/g, '"')
+    .replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, ' ');
+}
+
+function patchLineMatches(left, right) {
+  return left === right || (left[0] === right[0] && left[0] !== '+' && normalizedPatchOldText(left) === normalizedPatchOldText(right));
+}
+
+// TextDiff can coalesce adjacent replacements from separate request chunks.
+// Keep the old/new order within each side and preserve the old-file offsets.
+function alignPatchEdits(requested, recorded) {
+  const aligned = [];
+  for (const block of recorded) {
+    const removed = block.edits.filter(line => line[0] === '-'), added = block.edits.filter(line => line[0] === '+');
+    let old = 0, next = 0;
+    while (old < removed.length || next < added.length) {
+      const request = requested[aligned.length];
+      if (!request) return null;
+      const offset = old, first = !old && !next;
+      for (const edit of request.edits) {
+        const actual = edit[0] === '-' ? removed[old++] : added[next++];
+        if (actual === undefined || !patchLineMatches(edit, actual)) return null;
+      }
+      aligned.push({ ...block, before: first ? block.before : null, after: old === removed.length && next === added.length ? block.after : null,
+        offset: block.offset + offset, position: block.position === null ? null : block.position + offset });
+    }
+  }
+  return aligned.length === requested.length ? aligned : null;
+}
+
+// Re-diffing can present the same change with different runs or move identical
+// text from one side to the other. Changed line counts still have to balance.
+function patchTextContradicts(requested, recorded) {
+  const balance = new Map(), extraNewText = new Map();
+  for (const [blocks, sign] of [[requested, -1], [recorded, 1]]) {
+    for (const { edits } of blocks) for (const line of edits) {
+      const oldText = normalizedPatchOldText(line), text = line.slice(1);
+      const delta = line[0] === '+' ? sign : -sign;
+      if (oldText) balance.set(oldText, (balance.get(oldText) || 0) + delta);
+      // Requested additions are exact. Requested deletions can use seek_sequence.
+      if (text && (sign === 1 || line[0] === '+')) extraNewText.set(text, (extraNewText.get(text) || 0) + delta);
+    }
+  }
+  return [...balance.values()].some(n => n !== 0) || [...extraNewText.values()].some(n => n > 0);
+}
+
+function patchUpdateMatches(body, diff, move, atEof) {
+  const requested = patchEditBlocks(body, { atEof });
+  const bounds = numberedPatchBounds(diff, requested.some(block => block.chunk.selector));
+  if (bounds === false || (!move && !requested.length)) return null;
+  let lines = diff;
+  if (diff.includes(missingFinalNewline)) {
+    lines = [];
+    for (let i = 0; i < diff.length; i++) {
+      const line = diff[i];
+      // Appending can supply the previously missing newline on the last old
+      // line. Its bytes have to reappear unchanged before the appended text.
+      if (bounds && line[0] === '-' && diff[i + 1] === missingFinalNewline && diff[i + 2] === '+' + line.slice(1)
+          && requested.some(block => !block.chunk.oldLines)) {
+        lines.push(' ' + line.slice(1));
+        i += 2;
+      } else if (line !== missingFinalNewline) lines.push(line);
+    }
+  }
+  const observed = patchEditBlocks(lines, { recorded: true });
+  const recorded = alignPatchEdits(requested, observed);
+  if (!recorded) return patchTextContradicts(requested, observed) ? false : null;
   // The writer regenerates radius-one context. Compare the immediate neighbours
   // of each edit when both sides retain them. A hunk header always breaks a run.
+  let requestOrigin = null, skippedOldLines = 0;
   return requested.every((block, i) => {
     const other = recorded[i];
-    return (block.before === null || other.before === null || block.before === other.before)
-      && (block.after === null || other.after === null || block.after === other.after)
-      && isDeepStrictEqual(block.edits, other.edits);
+    const previous = requested[i - 1];
+    if (block.chunk !== previous?.chunk) {
+      if (requestOrigin !== null && previous.chunk.oldLines) skippedOldLines = requestOrigin - previous.chunk.minOrigin;
+      requestOrigin = null;
+    }
+    // compute_replacements appends chunks without old lines. An explicit EOF
+    // anchors the end of the complete request chunk, including its context.
+    const reachesEof = !block.chunk.oldLines || block.chunk.atEof;
+    const oldLength = block.chunk.oldLines;
+    if (reachesEof && other.offset - block.offset + oldLength < other.chunk.oldLines) return false;
+    if (other.position !== null) {
+      // All edits in one request chunk start from the same old-file position.
+      const origin = other.position - block.offset;
+      if (origin < block.chunk.minOrigin + skippedOldLines || (requestOrigin !== null && origin !== requestOrigin)) return false;
+      if (requestOrigin === null && block.chunk.selector) {
+        let pos = block.chunk.minOrigin + skippedOldLines - 1;
+        while (pos < origin && bounds.oldText.has(pos) && normalizedPatchOldText(bounds.oldText.get(pos)) !== block.chunk.selector) pos++;
+        if (pos === origin) return false;
+      }
+      const end = origin + oldLength;
+      // The writer may omit one empty trailing line used as a newline sentinel.
+      if ((reachesEof && end < bounds.oldEnd) || (bounds.oldEnded && end - (block.chunk.trailingEmpty ? 1 : 0) > bounds.oldEnd)) return false;
+      requestOrigin = origin;
+    }
+    if (previous && block.chunk === previous.chunk && other.chunk === recorded[i - 1].chunk
+        && block.offset - previous.offset !== other.offset - recorded[i - 1].offset) return false;
+    return (block.before === null || other.before === null || patchLineMatches(block.before, other.before))
+      && (block.after === null || other.after === null || patchLineMatches(block.after, other.after));
   });
 }
 
-function patchMatches(input, changes, cwd, legacy = false) {
+function patchMatches(input, changes, cwd) {
   if (typeof input !== 'string' || !changes || typeof changes !== 'object' || Array.isArray(changes)) return false;
   const lines = input.replaceAll('\r\n', '\n').trimEnd().split('\n');
   if (lines.shift() !== '*** Begin Patch' || lines.pop() !== '*** End Patch') return false;
   const byPath = new Map(Object.entries(changes).map(([path, change]) => [patchPath(path, cwd), change]));
   if (byPath.size !== Object.keys(changes).length) return false;
   const seen = new Set();
+  let matched = true;
   for (let i = 0; i < lines.length;) {
     const header = /^\*\*\* (Add|Delete|Update) File: (.+)$/.exec(lines[i++]);
     if (!header) return false;
@@ -626,26 +795,19 @@ function patchMatches(input, changes, cwd, legacy = false) {
     if (change.type === 'delete' && (body.length || typeof change.content !== 'string')) return false;
     if (change.type === 'update') {
       if (typeof change.unified_diff !== 'string') return false;
-      const diff = change.unified_diff.split(/\r?\n/);
-      const hunk = diff.findIndex(line => line.startsWith('@@'));
-      const valid = legacy ? /^(?:[ +\-]|@@(?: |$))/ : /^(?:[ +\-]|@@$)/;
-      if (body.some(line => !valid.test(line))) return false;
-      const hunks = hunk < 0 ? diff : diff.slice(hunk);
-      if (legacy) {
-        if (!legacyPatchUpdateMatches(body, hunks, move)) return false;
-      } else {
-        const expected = body.filter(line => line !== '@@');
-        const actual = hunks.filter(line => /^[ +\-]/.test(line));
-        if ((!move && !expected.some(line => /^[+-]/.test(line))) || !isDeepStrictEqual(expected, actual)) return false;
-      }
+      if (body.some(line => !/^(?:[ +\-]|@@(?: |$))/.test(line))) return false;
+      const result = patchUpdateMatches(body, patchDiffLines(change.unified_diff), move, lines[i] === '*** End of File');
+      if (result === false) return false;
+      if (result === null) matched = null;
       if (lines[i] === '*** End of File') i++;
     }
   }
-  return seen.size > 0 && seen.size === Object.keys(changes).length;
+  return seen.size > 0 && seen.size === Object.keys(changes).length && matched;
 }
 
 function legacyCommandOrPatchMatches(call, row, patchCwd) {
   const request = call.parsed.payload;
+  if (typeof request.name !== 'string' || (request.namespace != null && request.namespace !== '' && request.namespace !== 'functions')) return false;
   const name = request.name.replace(/^functions\./, '');
   const p = row.parsed.payload;
   if (toolLifecycleDescriptorFor(row.payloadType)?.family === TOOL_LIFECYCLE_FAMILY.PATCH) {
@@ -653,7 +815,7 @@ function legacyCommandOrPatchMatches(call, row, patchCwd) {
     // Older patch ends can omit changes, which serde defaults to an empty map.
     if (p.changes === undefined || (p.changes && typeof p.changes === 'object' && !Array.isArray(p.changes) && !Object.keys(p.changes).length)) return true;
     const input = request.type === 'function_call' ? uniqueArguments(request.arguments)?.input : request.input;
-    return patchMatches(input, p.changes, patchCwd, true);
+    return patchMatches(input, p.changes, patchCwd);
   }
   if (request.type !== 'function_call') return false;
   // A write_stdin interaction reports the running program's argv.
@@ -704,24 +866,50 @@ function foreignNativeCarrier(call, item, other, patchCwd) {
       || (other.agents_states && Object.keys(other.agents_states).some(outside));
   }
   if (!other.changes || typeof other.changes !== 'object' || Array.isArray(other.changes)) return false;
-  const known = new Map(Object.entries(item.changes).map(([key, change]) => [patchPath(key, patchCwd), change]));
-  return Object.entries(other.changes).some(([key, change]) => {
+  const known = new Map(Object.keys(item.changes).map(key => [patchPath(key, patchCwd), key]));
+  const candidateChanges = { ...item.changes };
+  let compareUpdates = false;
+  const foreign = Object.entries(other.changes).some(([key, change]) => {
     if (!key || !['add', 'update', 'delete'].includes(change?.type)) return false;
     const path = patchPath(key, patchCwd);
-    const expected = known.get(path);
-    if (expected) return expected.type !== change.type || (change.type === 'add' && typeof change.content === 'string' && change.content !== expected.content);
+    const originalKey = known.get(path);
+    if (originalKey !== undefined) {
+      const expected = item.changes[originalKey];
+      if (expected.type !== change.type) return true;
+      if (change.type === 'add') return typeof change.content === 'string' && change.content !== expected.content;
+      if (change.type === 'update' && typeof change.unified_diff === 'string' && numberedPatchBounds(patchDiffLines(change.unified_diff))) {
+        candidateChanges[originalKey] = { ...expected, unified_diff: change.unified_diff };
+        compareUpdates = true;
+      }
+      return false;
+    }
     // An absolute and a relative key might still refer to the same file if cwd is missing.
     return [...known.keys()].every(value => fsPathApi(value).isAbsolute(value) === fsPathApi(path).isAbsolute(path));
   });
+  return foreign || (compareUpdates && patchMatches(call.parsed.payload.input, candidateChanges, patchCwd) === false);
 }
 
 function resolveNativeTypedTerminal(requests, group, epochs, views, remainingToolPeer, patchCwds) {
-  if (requests.length !== 2 || requests[0].payloadType === requests[1].payloadType) return;
-  const independent = requests.filter(call => !scopedRequestToolName(call));
-  if (independent.length !== 1) return;
+  // A scoped request disputes its own wire channel. Even mixed registrations
+  // on that channel cannot own the unique request on the opposite channel.
+  const scoped = requests.find(scopedRequestToolName);
+  const independent = requests.filter(call => call.payloadType !== scoped.payloadType);
+  if (independent.length !== 1 || scopedRequestToolName(independent[0])) return;
   const call = independent[0];
   const patchCwd = patchCwds.get(call);
   const peers = group.filter(row => followsToolRequest(call, row, epochs));
+  // Historical function and custom apply_patch can write the same unlabelled
+  // patch lifecycle. Their shared legacy row cannot corroborate a typed item.
+  const otherCalls = requests.filter(other => other !== call && !scopedRequestToolName(other));
+  if (otherCalls.length) {
+    for (const row of peers) {
+      if (toolLifecycleDescriptorFor(row.payloadType)?.family === TOOL_LIFECYCLE_FAMILY.PATCH
+          && legacyCommandOrPatchMatches(call, row, patchCwd) !== false
+          && otherCalls.some(other => followsToolRequest(other, row, epochs) && legacyCommandOrPatchMatches(other, row, patchCwds.get(other)) !== false)) {
+        views.set(row, { ...row, detachedNativeTerminal: true });
+      }
+    }
+  }
   const typed = peers.filter(row => row.recordType === 'event_msg' && row.payloadType === 'item_completed'
     && nativeItemTypes.has(row.parsed.payload.item?.type) && row.parsed.payload.item.id === call.callId
     && (row.parsed.payload.thread_id == null || row.parsed.payload.thread_id === call.sessionId));
@@ -738,7 +926,7 @@ function resolveNativeTypedTerminal(requests, group, epochs, views, remainingToo
   const terminals = [];
   for (const row of peers) {
     const descriptor = toolLifecycleDescriptorFor(row.payloadType);
-    if (descriptor?.phase !== TOOL_LIFECYCLE_PHASE.TERMINAL) continue;
+    if (descriptor?.phase !== TOOL_LIFECYCLE_PHASE.TERMINAL || views.get(row)?.detachedNativeTerminal) continue;
     // Ambiguous same-family terminals can still dispute a verified typed item,
     // even when their malformed identity is insufficient for a legacy-only join.
     const commandOrPatch = item.type === 'CommandExecution' || item.type === 'FileChange';
@@ -767,8 +955,13 @@ function resolveNativeTypedTerminal(requests, group, epochs, views, remainingToo
       const status = row.payloadType.endsWith('_declined') ? 'declined' : p.status
         || (typeof p.success === 'boolean' ? (p.success ? 'completed' : 'failed') : null);
       return toolLifecycleDescriptorFor(row.payloadType).family !== family || (status != null && status !== item.status)
-        || (item.type === 'CommandExecution' && sameCommandDirectory(p.cwd, item.cwd) === false)
-        || (item.type === 'FileChange' && p.changes && !isDeepStrictEqual(p.changes, item.changes))
+        // CommandExecutionItem::as_legacy_end_event copies these fields.
+        || (item.type === 'CommandExecution' && (sameCommandDirectory(p.cwd, item.cwd) === false
+          || ['command', 'source', 'process_id', 'interaction_input', 'plugin_id', 'script_path', 'parsed_cmd',
+            'aggregated_output', 'stdout', 'stderr', 'formatted_output', 'duration']
+            .some(key => item[key] != null && p[key] != null && !isDeepStrictEqual(item[key], p[key]))))
+        || (item.type === 'FileChange' && ((p.changes && !isDeepStrictEqual(p.changes, item.changes))
+          || ['stdout', 'stderr'].some(key => typeof item[key] === 'string' && typeof p[key] === 'string' && item[key] !== p[key])))
         || (item.type === 'CollabAgentToolCall' && p.statuses && !isDeepStrictEqual(p.statuses, item.agents_states))
         || (typeof item.exit_code === 'number' && typeof p.exit_code === 'number' && item.exit_code !== p.exit_code);
     });
