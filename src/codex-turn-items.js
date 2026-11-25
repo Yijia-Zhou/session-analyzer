@@ -119,11 +119,16 @@ function semanticRaw(raw) {
 
 function turnBoundaryEpochs(rawEvents) {
   const epochs = new Map();
-  let epoch = 0;
+  let epoch = { number: 0, turnId: '' };
   let turnId = '';
   for (const raw of rawEvents) {
     const boundary = ['task_started', 'task_complete', 'turn_aborted'].includes(raw.canonicalType);
-    if (boundary || (turnId && raw.turnId && raw.turnId !== turnId)) epoch += 1;
+    const turnScope = raw.canonicalType === 'task_started' || raw.recordType === 'turn_context';
+    if (boundary || (turnId && raw.turnId && raw.turnId !== turnId)) {
+      epoch = { number: epoch.number + 1, turnId: turnScope ? raw.turnId : '' };
+    } else if (turnScope && raw.turnId && epoch.turnId !== raw.turnId) {
+      epoch = { number: epoch.number, turnId: raw.turnId };
+    }
     if (raw.turnId) turnId = raw.turnId;
     epochs.set(raw.rawId, epoch);
   }
@@ -214,9 +219,38 @@ function legacyMcpStatus(p) {
   return result.Ok.isError === true ? 'failed' : 'success';
 }
 
+function toolTurnStamp(row) {
+  if (row.recordType === 'response_item' && ['function_call', 'function_call_output', 'custom_tool_call', 'custom_tool_call_output'].includes(row.payloadType)) {
+    return row.parsed.payload.internal_chat_message_metadata_passthrough?.turn_id;
+  }
+}
+
 function followsToolRequest(call, row, epochs) {
-  return row.line > call.line && row.sessionId === call.sessionId && epochs.get(row.rawId) === epochs.get(call.rawId)
-    && (!row.turnId || !call.turnId || row.turnId === call.turnId);
+  const epoch = epochs.get(call.rawId);
+  const rowEpoch = epochs.get(row.rawId);
+  if (row.line <= call.line || row.sessionId !== call.sessionId || rowEpoch?.number !== epoch?.number
+      || (row.turnId && call.turnId && row.turnId !== call.turnId)) return false;
+  const callStamp = toolTurnStamp(call);
+  const rowStamp = toolTurnStamp(row);
+  if (callStamp == null && rowStamp == null) return true;
+  // Codex preserves a nonempty turn stamp during replay. A copied receipt
+  // cannot change the surrounding epoch or compete with a local receipt.
+  const turn = epoch?.turnId || rowEpoch?.turnId || call.turnId || row.turnId || callStamp || rowStamp;
+  return [call.turnId, row.turnId, callStamp, rowStamp].every(id => id == null || id === '' || (typeof id === 'string' && id === turn));
+}
+
+function toolPeersInTurn(call, group, epochs, identify) {
+  const peers = group.filter(row => followsToolRequest(call, row, epochs))
+    .map(row => matchesToolOutput(call, row) ? row : identify(call, row)).filter(Boolean);
+  // A fragment may start without a turn boundary. Only an independently
+  // admitted terminal can supply the missing turn for a stamped receipt.
+  const terminalTurns = new Set(peers.filter(row => row.turnId && row.recordType === 'event_msg'
+    && toolLifecycleDescriptorFor(row.payloadType)?.phase === TOOL_LIFECYCLE_PHASE.TERMINAL).map(row => row.turnId));
+  if (!terminalTurns.size) return peers;
+  return peers.filter(row => {
+    const stamp = toolTurnStamp(row);
+    return !stamp || (terminalTurns.size === 1 && terminalTurns.has(stamp));
+  });
 }
 
 // match is false for an identified foreign owner and null for an unresolved identity.
@@ -385,7 +419,7 @@ function semanticRawEvents(rawEvents, remainingToolPeer) {
       const peers = (byCall.get(view.callId) || []).filter((peer) => peer !== raw);
       const calls = peers.filter((peer) => peer.recordType === 'response_item' && ['function_call', 'custom_tool_call'].includes(peer.payloadType));
       if (calls.length > 1 || peers.some((peer) => peer.sessionId !== raw.sessionId
-          || epochs.get(peer.rawId) !== epochs.get(raw.rawId)
+          || epochs.get(peer.rawId)?.number !== epochs.get(raw.rawId)?.number
           || (peer.turnId && view.turnId && peer.turnId !== view.turnId))) return { ...raw, callId: '' };
       const callName = calls[0]?.toolName;
       const item = raw.parsed.payload.item;
@@ -465,4 +499,4 @@ function additionalToolsSummary(payload) {
   return { valid: payload?.type === 'additional_tools' && payload.role === 'developer' && Array.isArray(payload.tools), entries: tools.length, count, names, unsupported, incomplete, shortened: incomplete || names.length >= 24 };
 }
 
-module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, legacyMcpStatus, matchesToolOutput, dynamicToolPeer };
+module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, toolPeersInTurn, legacyMcpStatus, matchesToolOutput, dynamicToolPeer };

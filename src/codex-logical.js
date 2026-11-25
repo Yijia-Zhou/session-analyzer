@@ -8,7 +8,7 @@ function createCodexLogicalBuilder(deps) {
   const {
     semanticRawEvents = (raws) => raws,
     scopedRequestPeer,
-    followsToolRequest,
+    toolPeersInTurn,
     legacyMcpStatus,
     matchesToolOutput,
     dynamicToolPeer,
@@ -577,7 +577,7 @@ function createCodexLogicalBuilder(deps) {
       && group.filter(raw => raw.recordType === 'response_item' && raw.payloadType === 'function_call').length === 1
       && group.filter(raw => raw.recordType === 'response_item' && raw.payloadType === 'function_call_output').length <= 1
       && (!functionOutput || (functionOutput.line > functionCall.line
-        && (!sourceEpochs || sourceEpochs.get(functionOutput.rawId) === sourceEpochs.get(functionCall.rawId))
+        && (!sourceEpochs || sourceEpochs.get(functionOutput.rawId)?.number === sourceEpochs.get(functionCall.rawId)?.number)
         && (functionOutput.parsed?.payload?.namespace == null || functionOutput.parsed.payload.namespace === 'functions')))
       ? nativeExecCommandArguments(functionCall) : null;
     const isCommandTool = toolName === 'shell_command' || execRows.length || nativeArgs;
@@ -1211,7 +1211,7 @@ function createCodexLogicalBuilder(deps) {
       };
       if (owner.typedItemType || owner.recordType !== raw.recordType || owner.payloadType !== raw.payloadType
           || owner.role !== raw.role || owner.sessionId !== raw.sessionId
-          || epochs.get(owner.rawId) !== epochs.get(raw.rawId)
+          || epochs.get(owner.rawId)?.number !== epochs.get(raw.rawId)?.number
           || (owner.turnId && raw.turnId && owner.turnId !== raw.turnId)
           || owner.messageText !== raw.messageText
           || fullBody(owner) !== fullBody(raw)
@@ -1418,8 +1418,7 @@ function createCodexLogicalBuilder(deps) {
           continue;
         }
         const call = calls[0];
-        const eligible = group.filter(raw => followsToolRequest(call, raw, epochs))
-          .map(raw => scopedRequestPeer(call, raw)).filter(Boolean);
+        const eligible = toolPeersInTurn(call, group, epochs, scopedRequestPeer);
         if (eligible.filter(raw => raw.payloadType === channel + '_output').length > 1) {
           keepUnpaired(call);
           continue;
@@ -1433,21 +1432,12 @@ function createCodexLogicalBuilder(deps) {
       // A reused ID alone cannot assign a lifecycle or receipt to the other wire channel.
       const remaining = requests.filter(raw => !consumed.has(raw.rawId));
       const owner = remaining.length === 1 ? remaining[0] : null;
-      const outputs = owner ? group.filter(raw => matchesToolOutput(owner, raw) && followsToolRequest(owner, raw, epochs)) : [];
-      const remainingPeers = [];
-      for (const raw of group) {
-        if (consumed.has(raw.rawId)) continue;
-        if (raw === owner || (outputs.length === 1 && raw === outputs[0])) {
-          remainingPeers.push(raw);
-          continue;
-        }
-        const peer = owner && followsToolRequest(owner, raw, epochs) && remainingToolPeer(owner, raw);
-        if (peer) {
-          remainingPeers.push(peer);
-          continue;
-        }
-        keepUnpaired(raw);
-      }
+      const unclaimed = group.filter(raw => !consumed.has(raw.rawId));
+      const eligible = owner ? toolPeersInTurn(owner, unclaimed, epochs, remainingToolPeer) : [];
+      const outputs = eligible.filter(raw => matchesToolOutput(owner, raw));
+      const remainingPeers = owner ? [owner, ...eligible.filter(raw => outputs.length <= 1 || !matchesToolOutput(owner, raw))] : [];
+      const ownedIds = new Set(remainingPeers.map(raw => raw.rawId));
+      for (const raw of unclaimed) if (!ownedIds.has(raw.rawId)) keepUnpaired(raw);
       return remainingPeers;
     }
 
@@ -1470,7 +1460,7 @@ function createCodexLogicalBuilder(deps) {
           .filter((raw) => !consumed.has(raw.rawId) && !groupRawIds.has(raw.rawId)
             && raw.sessionId === ownerCalls[0].sessionId
             && (raw.parsed?.payload?.thread_id == null || raw.parsed.payload.thread_id === raw.sessionId)
-            && epochs.get(raw.rawId) === epochs.get(ownerCalls[0].rawId)
+            && epochs.get(raw.rawId)?.number === epochs.get(ownerCalls[0].rawId)?.number
             && (!raw.turnId || !ownerCalls[0].turnId || raw.turnId === ownerCalls[0].turnId))
           .sort((a, b) => a.line - b.line)
         : [];

@@ -78,7 +78,7 @@ function scenarios() {
   return cases;
 }
 
-async function fixture(t, rows) {
+async function fixture(t, rows, initialTurn = event({ type: 'task_started', turn_id: TURN })) {
   const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-0160-typed-'));
   t.after(() => fs.rm(codexHome, { recursive: true, force: true }));
   const repoRoot = path.join(codexHome, 'repo');
@@ -86,7 +86,7 @@ async function fixture(t, rows) {
   await fs.mkdir(root, { recursive: true });
   await fs.mkdir(repoRoot);
   const records = [{ type: 'session_meta', payload: { id: ID, cwd: repoRoot } },
-    event({ type: 'task_started', turn_id: TURN }), ...rows].map((row, i) => ({
+    ...(initialTurn ? [initialTurn] : []), ...rows].map((row, i) => ({
     timestamp: new Date(Date.parse('2026-10-02T10:00:00.000Z') + i * 1000).toISOString(), ...row,
   }));
   const file = path.join(root, `rollout-${ID}.jsonl`);
@@ -414,7 +414,42 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
     namespace, tool, arguments: { query: 'transport_request_marker' } });
   const dynamicResponse = event({ type: 'dynamic_tool_call_response', call_id, turn_id: TURN, completed_at_ms: 2,
     namespace, tool, arguments: {}, content_items: [], success: false, error: 'transport_response_marker', duration });
+  const stamped = (row, turn_id) => response({ ...row.payload, internal_chat_message_metadata_passthrough: { turn_id } });
+  const oldReceipt = stamped(response({ ...receipt.payload, output: 'old_receipt_marker' }), 'previous-turn');
   const cases = [
+    ...[[scoped, receipt], [scopedCustom, customReceipt]].map(([call, output]) => ({
+      name: `${call.payload.type} cannot own a response stamped for a previous turn`,
+      rows: [stamped(call, TURN), stamped(output, 'previous-turn')],
+      main: [['other_tool_call', 'incomplete', [3]]], detached: [4], markers: [[4, output.payload.output]] })),
+    { name: 'a foreign response stamp leaves the typed failure and current receipt searchable',
+      rows: [scoped, oldReceipt, typedEnd(true), stamped(receipt, TURN)],
+      main: [['mcp_call', 'failed', [3, 5, 6]]], detached: [4],
+      markers: [[4, 'old_receipt_marker'], [5, 'typed_terminal_marker'], [6, 'current_function_marker']] },
+    { name: 'turn_context identifies a foreign receipt even when the request is unstamped',
+      initialTurn: { type: 'turn_context', payload: { turn_id: TURN } },
+      rows: [scoped, oldReceipt, receipt], main: [['other_tool_call', 'completed', [3, 5]]], detached: [4],
+      markers: [[4, 'old_receipt_marker'], [5, 'current_function_marker']] },
+    ...[false, true].map(withLocal => ({ name: `the verified terminal supplies a turn in a fragment (local receipt=${withLocal})`,
+      initialTurn: null,
+      rows: [scoped, oldReceipt, typedEnd(true), ...(withLocal ? [stamped(receipt, TURN)] : [])],
+      main: [['mcp_call', 'failed', withLocal ? [2, 4, 5] : [2, 4]]], detached: [3],
+      markers: [[3, 'old_receipt_marker'], [4, 'typed_terminal_marker']] })),
+    { name: 'a foreign terminal cannot supply a turn for a fragment',
+      initialTurn: null, rows: [scoped, typedEnd(true, 'elsewhere'), oldReceipt],
+      main: [['other_tool_call', 'completed', [2, 4]]], detached: [3],
+      markers: [[3, 'typed_terminal_marker'], [4, 'old_receipt_marker']] },
+    { name: 'a request stamped for another turn cannot take the current typed failure',
+      rows: [stamped(scoped, 'previous-turn'), typedEnd(true), stamped(receipt, TURN)],
+      main: [['other_tool_call', 'incomplete', [3]]], detached: [4, 5],
+      markers: [[4, 'typed_terminal_marker'], [5, 'current_function_marker']] },
+    { name: 'an unstamped historical request and a current stamped receipt can share a typed terminal',
+      rows: [scoped, typedEnd(true), stamped(receipt, TURN)],
+      main: [['mcp_call', 'failed', [3, 4, 5]]], detached: [],
+      markers: [[4, 'typed_terminal_marker'], [5, 'current_function_marker']] },
+    { name: 'an independent native function excludes an old stamped receipt before counting outputs',
+      rows: [scopedCustom, independentDynamic, oldReceipt, stamped(receipt, TURN), customReceipt],
+      main: [['other_tool_call', 'completed', [3, 7]], ['other_tool_call', 'completed', [4, 6]]], detached: [5],
+      markers: [[5, 'old_receipt_marker'], [6, 'current_function_marker']] },
     { name: 'dynamic transport mirrors leave the verified typed failure on its request',
       rows: [scoped, dynamicRequest, typedDynamicFailure, dynamicResponse, receipt],
       main: [['other_tool_call', 'failed', [3, 5, 7]]], detached: [4, 6],
@@ -723,7 +758,7 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
       markers: [[4, 'legacy_terminal_marker'], [5, 'current_function_marker'], [6, 'orphan_receipt_marker']] },
   ];
   for (const scenario of cases) await t.test(scenario.name, async (t) => {
-    const f = await fixture(t, scenario.rows);
+    const f = await fixture(t, scenario.rows, scenario.initialTurn);
     const resident = await codex.__testOnly.buildUncompactedIndexForDetailTests(f.options);
     const compact = await codex.buildIndex(f.options);
     const cold = await codex.buildSourceBackedIndex(f.options);
