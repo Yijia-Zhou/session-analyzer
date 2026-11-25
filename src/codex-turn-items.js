@@ -244,12 +244,6 @@ function scopedLifecycleCarrier(call, row, scopedFunction, singleRequest) {
     if (match !== false && status == null) match = null;
     return { row, family, match, status, typed: true, canJoin };
   }
-  // These transport messages stay in Protocol. Explicit registration fields
-  // can exclude a foreign peer without assigning any outcome to the request.
-  if (['dynamic_tool_call_request', 'dynamic_tool_call_response'].includes(row.payloadType)) {
-    return matchesDynamicIdentity(call, p.tool, p.namespace) === false
-      ? { row, family: TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL, match: false } : null;
-  }
   const descriptor = toolLifecycleDescriptorFor(row.payloadType);
   const terminal = descriptor?.phase === TOOL_LIFECYCLE_PHASE.TERMINAL;
   if (scopedFunction && descriptor?.family === TOOL_LIFECYCLE_FAMILY.MCP_TOOL) {
@@ -304,9 +298,20 @@ function resolveScopedTerminals(group, epochs, views, remainingToolPeer) {
     if (!typed?.canJoin) continue;
     // A request or receipt has its own wire channel. Any remaining unidentified
     // lifecycle needs an independent owner before a typed terminal can join.
-    const unresolved = peers.some(row => !identified.has(row)
-      && !(row.recordType === 'response_item' && ['custom_tool_call', 'custom_tool_call_output', 'function_call_output'].includes(row.payloadType))
-      && !(custom && followsToolRequest(custom, row, epochs) && remainingToolPeer?.(custom, row)));
+    const unresolved = peers.some(row => {
+      if (identified.has(row)) return false;
+      if (row.recordType === 'response_item' && ['custom_tool_call', 'custom_tool_call_output', 'function_call_output'].includes(row.payloadType)) return false;
+      if (row.recordType === 'event_msg' && ['dynamic_tool_call_request', 'dynamic_tool_call_response'].includes(row.payloadType)) {
+        // A transport mirror stays in Protocol. It can corroborate the identity
+        // of a typed dynamic item, but cannot supply an outcome or attest MCP.
+        const p = row.parsed.payload;
+        const turn = call.turnId || typed.row.turnId;
+        if (row.payloadType === 'dynamic_tool_call_request' && typeof p.turnId === 'string' && p.turnId && turn && p.turnId !== turn) return false;
+        const match = matchesDynamicIdentity(call, p.tool, p.namespace);
+        return match !== false && !(match && carriers === dynamic);
+      }
+      return !(custom && followsToolRequest(custom, row, epochs) && remainingToolPeer?.(custom, row));
+    });
     if (!unresolved) views.set(typed.row, semanticRaw(typed.row));
   }
 }

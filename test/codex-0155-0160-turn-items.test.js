@@ -410,7 +410,27 @@ test('scoped lifecycle evidence respects terminal agreement, tool family and tur
     invocation: { server: 'notes', tool, environment_id: environment, arguments: {} }, reason: 'decline_marker' });
   const foreignTypedEnd = typedEnd(false, 'foreign-environment', 'second_terminal_marker');
   const independentDynamic = response({ type: 'function_call', call_id, namespace: 'fixture', name: 'lookup', arguments: '{}' });
+  const dynamicRequest = event({ type: 'dynamic_tool_call_request', callId: call_id, turnId: TURN, startedAtMs: 1,
+    namespace, tool, arguments: { query: 'transport_request_marker' } });
+  const dynamicResponse = event({ type: 'dynamic_tool_call_response', call_id, turn_id: TURN, completed_at_ms: 2,
+    namespace, tool, arguments: {}, content_items: [], success: false, error: 'transport_response_marker', duration });
   const cases = [
+    { name: 'dynamic transport mirrors leave the verified typed failure on its request',
+      rows: [scoped, dynamicRequest, typedDynamicFailure, dynamicResponse, receipt],
+      main: [['other_tool_call', 'failed', [3, 5, 7]]], detached: [4, 6],
+      markers: [[4, 'transport_request_marker'], [5, 'dynamic_failure_marker'], [6, 'transport_response_marker']] },
+    { name: 'dynamic transport alone leaves the request outcome unverified',
+      rows: [scoped, dynamicRequest, dynamicResponse, receipt],
+      main: [['other_tool_call', 'completed', [3, 6]]], detached: [4, 5],
+      markers: [[4, 'transport_request_marker'], [5, 'transport_response_marker']] },
+    { name: 'same-turn dynamic transport cannot attest an MCP terminal',
+      rows: [scoped, dynamicRequest, typedEnd(true), receipt],
+      main: [['other_tool_call', 'completed', [3, 6]]], detached: [4, 5],
+      markers: [[4, 'transport_request_marker'], [5, 'typed_terminal_marker']] },
+    { name: 'a dynamic transport request naming another turn cannot dispute the local MCP failure',
+      rows: [scoped, event({ ...dynamicRequest.payload, turnId: 'other-turn' }), typedEnd(true), receipt],
+      main: [['mcp_call', 'failed', [3, 5, 6]]], detached: [4],
+      markers: [[4, 'transport_request_marker'], [5, 'typed_terminal_marker']] },
     ...[
       [{ namespace: 'functions', name: 'lookup' }, {}],
       [{ name: 'lookup' }, { namespace: 'functions' }],
