@@ -2,7 +2,7 @@
 
 ### Reading Codex 0.172 sessions / 阅读 Codex 0.172 会话
 
-An environment-qualified tool request keeps its recorded name in Main and search, including when it shares a short name with a native command or agent tool. A request with no result is incomplete. An ordinary output records that the call returned. Use matching MCP terminal evidence to distinguish success from failure. / 环境限定工具请求在 Main 和搜索中保留限定名称，即使它与原生命令或 agent 工具同名。只有请求时显示未完成，普通输出表示调用已返回，匹配的 MCP 终态才区分成功与失败。
+An environment-qualified tool request keeps its recorded name in Main and search, including when it shares a short name with a native command or agent tool. A request with no result is incomplete. An ordinary output records that the call returned. Matching MCP terminals establish success or failure when their outcomes agree. If the typed and legacy terminals disagree, each stays individually searchable in Protocol with its own Raw reference. / 环境限定工具请求在 Main 和搜索中保留限定名称，即使它与原生命令或 agent 工具同名。只有请求时显示未完成，普通输出表示调用已返回。匹配的 MCP 终态可判定成功或失败。若带类型终态与旧式终态结论冲突，两条记录分别保留在 Protocol 中，可独立搜索并回查对应的 Raw。
 
 A submitted question may contain protocol-looking markup. When the native input and its mirrors establish authorship, Main, user counts and History search include the question once. A marked heartbeat and a verified TUI Side Chat bootstrap are inspectable in Protocol and Raw. Source attribution describes how Codex recorded the input. / 提交的问题可以包含形似协议标签的正文。原生输入与镜像能够确认来源时，主层、用户计数和 History 检索均只计一次。带标记的 heartbeat 及经验证的 TUI 旁聊引导可在 Protocol 和 Raw 中检查。来源归属描述 Codex 记录输入的方式。
 

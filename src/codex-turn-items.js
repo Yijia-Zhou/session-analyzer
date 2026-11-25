@@ -158,6 +158,10 @@ function scopedLegacyMcpStatus(call, row) {
   const p = row.parsed?.payload;
   const invocation = p?.invocation;
   if (!invocation || !matchesScopedMcpCall(call, invocation.server, invocation.tool, invocation.environment_id)) return '';
+  return legacyMcpStatus(p);
+}
+
+function legacyMcpStatus(p) {
   if (p.type === 'mcp_tool_call_begin') return 'incomplete';
   if (p.type !== 'mcp_tool_call_end') return '';
   // McpToolCallEndEvent::is_success (0.172.0) reads the tagged Result.
@@ -168,13 +172,55 @@ function scopedLegacyMcpStatus(call, row) {
   return result.Ok.isError === true ? 'failed' : 'success';
 }
 
-function scopedRequestPeer(call, row, epochs, repeatedEnd) {
-  if (row === call) return row;
-  if (row.line <= call.line || row.sessionId !== call.sessionId || epochs.get(row.rawId) !== epochs.get(call.rawId)
-      || (row.turnId && call.turnId && row.turnId !== call.turnId)) return null;
+function followsToolRequest(call, row, epochs) {
+  return row.line > call.line && row.sessionId === call.sessionId && epochs.get(row.rawId) === epochs.get(call.rawId)
+    && (!row.turnId || !call.turnId || row.turnId === call.turnId);
+}
+
+// Compare the physical carriers while both are still visible. A disputed end
+// must not become the only outcome just because its opposite lost a typed join.
+function resolveScopedMcpTerminals(group, epochs, typedCounts, views) {
+  const requests = group.filter(row => row.recordType === 'response_item' && ['function_call', 'custom_tool_call'].includes(row.payloadType));
+  const calls = requests.filter(row => row.payloadType === 'function_call');
+  if (calls.length !== 1 || !scopedRequestToolName(calls[0])) return;
+  const call = calls[0];
+  const peers = group.filter(row => followsToolRequest(call, row, epochs));
+  const terminals = new Map();
+  const items = group.filter(row => row.recordType === 'event_msg' && row.payloadType === 'item_completed'
+    && row.parsed.payload.item?.type === 'McpToolCall');
+  for (const row of items) {
+    views.set(row, { ...row, callId: '' });
+    const { item, thread_id, turn_id } = row.parsed.payload;
+    if (item.id === call.callId && followsToolRequest(call, row, epochs) && thread_id === call.sessionId && typeof turn_id === 'string' && turn_id
+        && ['completed', 'failed'].includes(item.status) && matchesScopedMcpCall(call, item.server, item.tool, item.environmentId)) {
+      terminals.set(row, row.status === 'failed' ? 'failed' : 'success');
+    }
+  }
+  const legacy = new Map();
+  for (const row of peers) {
+    if (row.recordType !== 'event_msg' || !['mcp_tool_call_begin', 'mcp_tool_call_end'].includes(row.payloadType)) continue;
+    const status = scopedLegacyMcpStatus(call, row);
+    if (!status) continue;
+    legacy.set(row, status);
+    if (row.payloadType === 'mcp_tool_call_end') terminals.set(row, status);
+  }
+  if (new Set(terminals.values()).size > 1) {
+    for (const row of terminals.keys()) views.set(row, { ...row, callId: '' });
+    return;
+  }
+  const item = items[0];
+  if (requests.length !== 1 || !terminals.has(item) || typedCounts.get(JSON.stringify([call.sessionId, call.callId])) !== 1) return;
+  const outputs = peers.filter(row => row.recordType === 'response_item' && row.payloadType === 'function_call_output');
+  const output = outputs[0]?.parsed.payload;
+  if (outputs.length > 1 || (output?.name != null && output.name !== call.parsed.payload.name)
+      || (output?.namespace != null && output.namespace !== call.parsed.payload.namespace)
+      || terminals.size > 2 || peers.some(row => row !== item && row !== outputs[0] && !legacy.has(row))) return;
+  views.set(item, semanticRaw(item));
+}
+
+function scopedRequestPeer(call, row) {
   if (row.typedItemType || (row.recordType === 'response_item' && row.payloadType === call.payloadType + '_output')) return row;
-  if (row.recordType !== 'event_msg' || !['mcp_tool_call_begin', 'mcp_tool_call_end'].includes(row.payloadType)
-      || (repeatedEnd && row.payloadType === 'mcp_tool_call_end')) return null;
+  if (row.recordType !== 'event_msg' || !['mcp_tool_call_begin', 'mcp_tool_call_end'].includes(row.payloadType)) return null;
   const status = scopedLegacyMcpStatus(call, row);
   return status ? { ...row, status } : null;
 }
@@ -184,6 +230,7 @@ function scopedRequestPeer(call, row, epochs, repeatedEnd) {
 function semanticRawEvents(rawEvents) {
   const typedCounts = new Map();
   const byCall = new Map();
+  const mcpIds = new Set();
   const epochs = turnBoundaryEpochs(rawEvents);
   for (const raw of rawEvents) {
     if (raw.callId) {
@@ -194,8 +241,12 @@ function semanticRawEvents(rawEvents) {
     if (raw.payloadType !== 'item_completed' || typeof item?.id !== 'string') continue;
     const key = JSON.stringify([raw.sessionId, item.id]);
     typedCounts.set(key, (typedCounts.get(key) || 0) + 1);
+    if (raw.recordType === 'event_msg' && item.type === 'McpToolCall' && raw.callId) mcpIds.add(raw.callId);
   }
+  const scopedViews = new Map();
+  for (const id of mcpIds) resolveScopedMcpTerminals(byCall.get(id), epochs, typedCounts, scopedViews);
   return rawEvents.map((raw) => {
+    if (scopedViews.has(raw)) return scopedViews.get(raw);
     // The recorded namespace distinguishes the request from a native namesake
     // even without a terminal. Only the separate join below can verify MCP status.
     const scopedName = scopedRequestToolName(raw);
@@ -213,21 +264,7 @@ function semanticRawEvents(rawEvents) {
       const callName = calls[0]?.toolName;
       const item = raw.parsed.payload.item;
       if (hasGeneratedImageFile(item) && peers.some((peer) => !imageFilePeer(peer))) return { ...raw, callId: '' };
-      const scoped = item.type === 'McpToolCall' && item.environmentId != null && calls[0]?.parsed?.payload?.namespace != null;
-      if (scoped) {
-        const call = calls[0];
-        const output = peers[1];
-        const outputPayload = output?.parsed?.payload;
-        if (raw.parsed.payload.thread_id !== raw.sessionId || !view.turnId || !['completed', 'failed'].includes(item.status)
-            || !matchesScopedMcpCall(call, item.server, item.tool, item.environmentId)
-            || peers[0] !== call || call.line >= raw.line || peers.length > 2
-            || (output && (output.recordType !== 'response_item' || output.payloadType !== 'function_call_output'
-              || (outputPayload.name != null && outputPayload.name !== item.tool)
-              || (outputPayload.namespace != null && outputPayload.namespace !== call.parsed.payload.namespace)))) {
-          return { ...raw, callId: '' };
-        }
-        return view;
-      }
+      if (item.type === 'McpToolCall' && item.environmentId != null && calls[0]?.parsed?.payload?.namespace != null) return { ...raw, callId: '' };
       if (scopedRequestToolName(calls[0]) && !(item.type === 'DynamicToolCall'
           && calls[0].parsed.payload.namespace === item.namespace && callName === item.tool)) {
         return { ...raw, callId: '' };
@@ -302,4 +339,4 @@ function additionalToolsSummary(payload) {
   return { valid: payload?.type === 'additional_tools' && payload.role === 'developer' && Array.isArray(payload.tools), entries: tools.length, count, names, unsupported, incomplete, shortened: incomplete || names.length >= 24 };
 }
 
-module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer };
+module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile, scopedRequestToolName, scopedRequestPeer, followsToolRequest, legacyMcpStatus };

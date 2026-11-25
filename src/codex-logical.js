@@ -8,6 +8,8 @@ function createCodexLogicalBuilder(deps) {
   const {
     semanticRawEvents = (raws) => raws,
     scopedRequestPeer,
+    followsToolRequest,
+    legacyMcpStatus,
     resolvedSubAgentStartup = () => null,
     turnBoundaryEpochs = () => new Map(),
     historyFacts = () => null,
@@ -1295,44 +1297,128 @@ function createCodexLogicalBuilder(deps) {
       }
     }
 
+    function remainingToolPeer(call, row) {
+      const { name, namespace } = call.parsed.payload;
+      if (typeof name !== 'string' || (namespace != null && typeof namespace !== 'string')) return null;
+      const native = namespace == null || namespace === '' || namespace === 'functions';
+      const fn = call.payloadType === 'function_call';
+      const imageRequest = fn && (native || namespace === 'image_gen') && name === 'imagegen';
+      if (row.recordType === 'response_item' && row.payloadType === 'image_generation_call') {
+        return imageRequest && row.parsed.payload.id === call.callId ? row : null;
+      }
+      if (row.recordType !== 'event_msg') return null;
+      if (fn && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.MCP_TOOL)) {
+        const p = row.parsed.payload;
+        const invocation = p.invocation;
+        if (!invocation || invocation.environment_id != null || typeof invocation.server !== 'string'
+            || !invocation.server || typeof invocation.tool !== 'string' || !invocation.tool) return null;
+        const server = 'mcp__' + invocation.server;
+        const flat = native && !invocation.server.includes('__') && !invocation.tool.includes('__')
+          && name === server + '__' + invocation.tool;
+        if (!flat && !(namespace === server && name === invocation.tool)) return null;
+        const status = legacyMcpStatus(p);
+        // Older native records carry their outcome in status or the lifecycle
+        // subtype. Once the invocation matches, keep their normal dispatch.
+        return status ? { ...row, status } : row;
+      }
+      if (fn && (native || ['collaboration', 'agents', 'multi_agent_v1'].includes(namespace))
+          && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.COLLABORATION)) {
+        // The 0.110 wait tool takes agent IDs. The later Code Mode namesake
+        // takes a cell_id and cannot own a collaboration terminal.
+        if (name === 'wait' && native && ['collab_waiting_begin', 'collab_waiting_end'].includes(row.payloadType)) {
+          const args = commandArgsFromRaw(call);
+          if (!Array.isArray(args?.ids) || !args.ids.length || !args.ids.every(id => typeof id === 'string' && id.length > 0)
+              || Object.keys(args).some(key => key !== 'ids' && key !== 'timeout_ms')
+              || (args.timeout_ms != null && !Number.isSafeInteger(args.timeout_ms))) return null;
+          const p = row.parsed.payload;
+          if (p.sender_thread_id !== call.sessionId) return null;
+          const targets = new Set(args.ids);
+          if (row.payloadType === 'collab_waiting_begin') {
+            return Array.isArray(p.receiver_thread_ids) && p.receiver_thread_ids.every(id => targets.has(id)) ? row : null;
+          }
+          return p.statuses && typeof p.statuses === 'object' && !Array.isArray(p.statuses)
+            && Object.keys(p.statuses).every(id => targets.has(id)) ? row : null;
+        }
+        const actions = { spawn_agent: 'collab_agent_spawn', send_input: 'collab_agent_interaction', send_message: 'collab_agent_interaction',
+          wait_agent: 'collab_waiting', close_agent: 'collab_close' };
+        if (!Object.hasOwn(actions, name)) return null;
+        const action = actions[name];
+        return row.payloadType === action + '_begin' || row.payloadType === action + '_end' ? row : null;
+      }
+      if (fn && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.DYNAMIC_TOOL)) {
+        const { tool_name: tool, namespace: recordedNamespace } = row.parsed.payload;
+        if (recordedNamespace != null && recordedNamespace !== namespace) return null;
+        return typeof tool === 'string' && tool === (native ? name : namespace + '.' + name) ? row : null;
+      }
+      if (fn && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.IMAGE_GENERATION)) {
+        return imageRequest ? row : null;
+      }
+      if (!native) return null;
+      if (fn && name === 'view_image' && row.payloadType === 'view_image_tool_call') return row;
+      if (isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.PATCH)) {
+        return name === 'apply_patch' || name === 'functions.apply_patch' ? row : null;
+      }
+      return fn && isToolLifecycleFamily(row.payloadType, TOOL_LIFECYCLE_FAMILY.COMMAND)
+        && ['shell', 'shell_command', 'exec_command', 'write_stdin', 'functions.shell_command', 'functions.exec_command', 'functions.write_stdin'].includes(name) ? row : null;
+    }
+
     function consumeScopedRequests(callId, group) {
       const requests = group.filter(raw => raw.recordType === 'response_item'
         && ['function_call', 'custom_tool_call'].includes(raw.payloadType));
       const scopedChannels = new Set(requests.filter(raw => raw.scopedRequest).map(raw => raw.payloadType));
-      const repeatedEnd = group.filter(raw => raw.payloadType === 'mcp_tool_call_end').length > 1;
       for (const channel of scopedChannels) {
         const calls = requests.filter(raw => raw.payloadType === channel);
-        const outputs = group.filter(raw => raw.recordType === 'response_item' && raw.payloadType === channel + '_output');
-        if (calls.length > 1 || outputs.length > 1) {
-          for (const raw of [...calls, ...outputs]) keepUnpaired(raw);
+        if (calls.length > 1) {
+          for (const raw of calls) keepUnpaired(raw);
           continue;
         }
         const call = calls[0];
-        const peers = group.map(raw => scopedRequestPeer(call, raw, epochs, repeatedEnd)).filter(Boolean);
+        const eligible = group.filter(raw => followsToolRequest(call, raw, epochs))
+          .map(raw => scopedRequestPeer(call, raw)).filter(Boolean);
+        if (eligible.filter(raw => raw.payloadType === channel + '_output').length > 1) {
+          keepUnpaired(call);
+          continue;
+        }
+        const legacyEnd = raw => raw.payloadType === 'mcp_tool_call_end' && !raw.typedItemType;
+        const repeatedEnd = eligible.filter(legacyEnd).length > 1;
+        const peers = [call, ...eligible.filter(raw => !repeatedEnd || !legacyEnd(raw))];
         const event = buildToolLogicalEvent(callId, peers, [], epochs);
         if (requests.length > 1) event.id = `${call.sessionId}:logical:scoped-call:${call.line}`;
         logicalEvents.push(event);
         for (const raw of peers) consumed.add(raw.rawId);
-        for (const raw of outputs) {
-          if (!consumed.has(raw.rawId)) keepUnpaired(raw);
-        }
       }
-      // Leave independent requests on the other wire channel to normal dispatch.
-      // A disputed MCP lifecycle cannot belong to a remaining custom request.
-      const remainingRequest = requests.some(raw => !consumed.has(raw.rawId));
+      // A reused ID alone cannot assign a lifecycle or receipt to the other wire channel.
+      const remaining = requests.filter(raw => !consumed.has(raw.rawId));
+      const owner = remaining.length === 1 ? remaining[0] : null;
+      const outputs = owner ? group.filter(raw => {
+        if (raw.recordType !== 'response_item' || raw.payloadType !== owner.payloadType + '_output'
+            || !followsToolRequest(owner, raw, epochs)) return false;
+        const { name, namespace } = raw.parsed.payload;
+        const request = owner.parsed.payload;
+        return (name == null || name === request.name)
+          && (namespace == null || (namespace || 'functions') === (request.namespace || 'functions'));
+      }) : [];
+      const remainingPeers = [];
       for (const raw of group) {
         if (consumed.has(raw.rawId)) continue;
-        const disputedMcp = scopedChannels.has('function_call') && raw.recordType === 'event_msg'
-          && isToolLifecycleFamily(raw.payloadType, TOOL_LIFECYCLE_FAMILY.MCP_TOOL);
-        if (!remainingRequest || disputedMcp) keepUnpaired(raw);
+        if (raw === owner || (outputs.length === 1 && raw === outputs[0])) {
+          remainingPeers.push(raw);
+          continue;
+        }
+        const peer = owner && followsToolRequest(owner, raw, epochs) && remainingToolPeer(owner, raw);
+        if (peer) {
+          remainingPeers.push(peer);
+          continue;
+        }
+        keepUnpaired(raw);
       }
+      return remainingPeers;
     }
 
     for (const [callId, callGroup] of byCallId.entries()) {
       let group = callGroup.filter((raw) => !consumed.has(raw.rawId)).sort((a, b) => a.line - b.line);
       if (group.some(raw => raw.scopedRequest)) {
-        consumeScopedRequests(callId, group);
-        group = group.filter(raw => !consumed.has(raw.rawId));
+        group = consumeScopedRequests(callId, group);
       }
       const hasToolShape = group.some(isToolResponseItemRow)
         || group.some((raw) => raw.recordType === 'event_msg' && isToolLifecycleCallGroupType(raw.payloadType));
