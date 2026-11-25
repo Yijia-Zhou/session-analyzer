@@ -225,9 +225,22 @@ function createCodexDetailBuilder(deps) {
       case 'user_message':
       case 'assistant_message':
       case 'developer_message': {
-        const sections = extractConversationSections(raws);
-        if (facts?.type === 'transcript_segment') {
-          sections.push(makeNoticeSection('Realtime', 'Committed transcript segment; modality and agent-turn boundaries are not inferred.', 'info', 'content'));
+        // The source adapter redacts complete embedded media before producing searchText.
+        const frameText = facts?.type === 'frame' ? raws[0]?.searchText : null;
+        const edgeChars = 16_000;
+        const shortened = typeof frameText === 'string' && frameText.length > 2 * edgeChars;
+        // Hydration can recover text beyond the index preview. Bound markdown rendering
+        // for large recordings and give the reader the exact Raw route to the middle.
+        const sections = typeof frameText === 'string' && frameText.length > edgeChars
+          ? extractConversationSections([{ ...raws[0], messageText: shortened
+            ? frameText.slice(0, edgeChars).replace(/[\uD800-\uDBFF]$/u, '') + '\n…\n'
+              + frameText.slice(-edgeChars).replace(/^[\uDC00-\uDFFF]/u, '') : frameText }])
+          : extractConversationSections(raws);
+        if (facts?.role) {
+          const notice = facts.type === 'frame' ? 'Voice transcript from a recorded realtime frame.'
+            : 'Committed transcript segment; modality and agent-turn boundaries are not inferred.';
+          sections.push(makeNoticeSection('Realtime', notice, 'info', 'content'));
+          if (shortened) sections.push(makeNoticeSection('Realtime', 'Speech is shortened here. Open Raw for the full transcript.', 'info', 'content'));
           maybePushKvSection(sections, 'Realtime provenance', historyEntries(facts), 'fallback');
         }
         const asyncMessage = raws.map(asyncAgentMessageFromRaw).find(Boolean);

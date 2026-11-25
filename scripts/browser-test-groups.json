@@ -1,6 +1,7 @@
 {
   "reading-presentation": [
     "browser-code-mode.test.js",
+    "browser-codex-0172.test.js",
     "browser-detail.test.js",
     "browser-rendering.test.js",
     "browser-trajectory.test.js",

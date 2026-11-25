@@ -1,5 +1,9 @@
 'use strict';
 
+function hasExternalizedImage(value) {
+  return typeof value === 'string' && value.includes('[embedded image payload externalized; open raw refs for source]');
+}
+
 function createCodexLogicalBuilder(deps) {
   const {
     semanticRawEvents = (raws) => raws,
@@ -51,6 +55,7 @@ function createCodexLogicalBuilder(deps) {
   const {
     classifyProtocolText,
     humanizeProtocolSubtype,
+    parseRolloutArtifactIdentity = () => null,
     protocolLabelFor,
     protocolPreviewFor,
   } = protocol;
@@ -910,6 +915,32 @@ function createCodexLogicalBuilder(deps) {
     return String(left || '').trim() === String(right || '').trim();
   }
 
+  // 0.172 creates the prepared input and a fresh-ID UserMessage in one
+  // acceptance. The mirror map has already checked full text and turn epoch.
+  function recordedUserTextOrigin(raw, mirror) {
+    if (raw.typedItemType) return '';
+    const payload = raw.parsed.payload;
+    const attribution = payload.internal_chat_message_metadata_passthrough;
+    const kinds = attribution?.content_item_kinds;
+    if (!Array.isArray(kinds) || !Array.isArray(payload.content) || kinds.length !== payload.content.length) return '';
+    if (kinds.length === 1 && kinds[0] === 'user.heartbeat' && payload.content[0]?.type === 'input_text') return 'heartbeat';
+    const parts = attribution.content_item_metadata;
+    const completion = mirror?.originalRaw?.parsed?.payload;
+    const evidence = raw.parsed.metadata;
+    if (mirror?.typedItemType !== 'UserMessage' || completion.thread_id !== raw.sessionId
+        || !mirror.turnId || attribution.turn_id !== mirror.turnId
+        || mirror.source.file !== raw.source.file || mirror.source.line !== raw.source.line + 1
+        || !Array.isArray(parts) || !kinds.length || parts.length !== kinds.length
+        || completion.item.content.length !== kinds.length
+        || evidence?.inherited_user_message || evidence?.guardian_sources?.length
+        || evidence?.realtime_session_input || evidence?.realtime_session_end_input) return '';
+    return payload.content.every((part, index) => part?.type === 'input_text' && typeof part.text === 'string'
+      && !hasExternalizedImage(part.text)
+      && kinds[index] === 'user.text' && parts[index]?.provenance?.type === 'user'
+      && completion.item.content[index]?.type === 'text' && completion.item.content[index].text === part.text)
+      ? 'submitted' : '';
+  }
+
   function attachmentSummaryForRaw(raw) {
     if (!raw || typeof raw !== 'object') return null;
     if (raw.attachmentSummary?.totalCount > 0) return raw.attachmentSummary;
@@ -1062,7 +1093,66 @@ function createCodexLogicalBuilder(deps) {
     });
   }
 
-  function buildLogicalEvents(rawEvents) {
+  function sideChatBoundary(raws, initialOwnedHeader) {
+    function isSideHeader(raw) {
+      const meta = raw?.parsed?.payload;
+      return raw?.recordType === 'session_meta' && raw.source.line === 1 && meta?.id === raw.sessionId
+        && meta.history_mode === 'paginated' && meta.attached_thread === true
+        && meta.thread_source === 'tui_side_chat' && typeof meta.forked_from_id === 'string'
+        && meta.forked_from_id.trim() && meta.forked_from_id !== meta.id;
+    }
+    const head = raws[0];
+    if (!isSideHeader(head) || !isSideHeader(initialOwnedHeader)
+        || initialOwnedHeader.sessionId !== head.sessionId
+        || initialOwnedHeader.parsed.payload.forked_from_id !== head.parsed.payload.forked_from_id
+        || !Number.isSafeInteger(initialOwnedHeader.parsed.ordinal) || initialOwnedHeader.parsed.ordinal < 0) return null;
+    const physical = parseRolloutArtifactIdentity(initialOwnedHeader.source.file);
+    if (!physical || physical.threadId !== initialOwnedHeader.sessionId.toLowerCase()
+        || physical.rolloutId !== physical.threadId) return null;
+    // The TUI injects two response items together before its first child turn.
+    // Only inspect owned rows. The effective header can be in a later revert artifact.
+    function textPart(row, role) {
+      const p = row?.parsed?.payload;
+      return row?.recordType === 'response_item' && p?.type === 'message' && p.role === role
+        && Array.isArray(p.content) && p.content.length === 1 && p.content[0]?.type === 'input_text'
+        && typeof p.content[0].text === 'string' ? p.content[0].text : '';
+    }
+    function follows(row, previous) {
+      return row?.source.file === previous.source.file && row.source.line === previous.source.line + 1
+        && Number.isSafeInteger(row.parsed?.ordinal) && row.parsed.ordinal === previous.parsed.ordinal + 1;
+    }
+    let previous = initialOwnedHeader;
+    for (let i = 1; i < raws.length; i++) {
+      const policy = raws[i];
+      if (!follows(policy, previous)) return null;
+      if (policy.recordType === 'event_msg' && policy.payloadType === 'thread_settings_applied') {
+        previous = policy;
+        continue;
+      }
+      const text = textPart(policy, 'developer');
+      if (!text.startsWith('<side_conversation>') || !text.endsWith('</side_conversation>')) return null;
+      const source = policy.parsed.payload.internal_chat_message_metadata_passthrough;
+      if (!Array.isArray(source?.content_item_kinds) || source.content_item_kinds.length !== 1
+          || source.content_item_kinds[0] !== 'side_conversation.policy'
+          || !Array.isArray(source.content_item_metadata) || source.content_item_metadata.length !== 1
+          || source.content_item_metadata[0]?.provenance?.type !== 'harness'
+          || source.content_item_metadata[0].provenance.hook) return null;
+      const next = raws[i + 1];
+      if (!follows(next, policy) || !textPart(next, 'user').startsWith('Side conversation boundary.\n\n')) return null;
+      const attribution = next.parsed.payload.internal_chat_message_metadata_passthrough;
+      const kinds = attribution?.content_item_kinds;
+      const following = raws[i + 2];
+      if (following?.recordType === 'event_msg' && (following.payloadType === 'user_message'
+          || following.parsed?.payload?.item?.type === 'UserMessage')) return null;
+      // The native writer fills an unannotated injected text part with "unknown".
+      return attribution?.content_item_metadata == null && (kinds == null
+        || (Array.isArray(kinds) && kinds.length === 1 && kinds[0] === 'unknown')) ? next : null;
+    }
+    return null;
+  }
+
+  function buildLogicalEvents(rawEvents, initialOwnedHeader = rawEvents[0]) {
+    const sideBoundary = sideChatBoundary(rawEvents, initialOwnedHeader);
     rawEvents = semanticRawEvents(rawEvents);
     const typedMirrors = new Map();
     const omittedTyped = new Set();
@@ -1086,6 +1176,14 @@ function createCodexLogicalBuilder(deps) {
         : responseById.get(raw.parsed.payload.id) || [];
       if (candidates.length !== 1) continue;
       const owner = candidates[0];
+      if (raw.typedItemType === 'UserMessage') {
+        // Media redaction can replace even identity strings in a malformed row.
+        // A shared placeholder cannot identify the owner, turn or completion.
+        const prepared = owner.parsed?.payload;
+        const completion = raw.originalRaw?.parsed?.payload;
+        if ([owner.sessionId, owner.turnId, prepared?.id, prepared?.internal_chat_message_metadata_passthrough?.turn_id,
+          completion?.thread_id, completion?.turn_id, completion?.item?.id].some(hasExternalizedImage)) continue;
+      }
       const fullBody = (value) => {
         const payload = value.parsed?.payload || {};
         if (payload.content != null && !Array.isArray(payload.content)) return null;
@@ -1152,7 +1250,29 @@ function createCodexLogicalBuilder(deps) {
     }
     for (const rawId of initialCodeModeFacts.claimedRawIds) consumed.add(rawId);
 
+    const disputedFunctionIds = new Set();
+    for (const rawId of codeModeProjection.isolatedRawIds || []) {
+      const raw = rawById.get(rawId);
+      if (raw.payloadType === 'function_call') disputedFunctionIds.add(raw.callId);
+    }
     for (const raw of rawEvents) {
+      const disputedMcp = raw.recordType === 'event_msg' && disputedFunctionIds.has(raw.callId)
+        && isToolLifecycleFamily(raw.payloadType, TOOL_LIFECYCLE_FAMILY.MCP_TOOL);
+      if (codeModeProjection.isolatedRawIds?.has(raw.rawId) || disputedMcp) {
+        if (consumed.has(raw.rawId)) continue;
+        const request = raw.payloadType === 'custom_tool_call' || raw.payloadType === 'function_call';
+        // Keep each disputed request visible once. Its outputs have physical
+        // evidence, but cannot supply a result to this or any other request.
+        logicalEvents.push(request ? createLogicalEvent({
+          id: `${raw.sessionId}:logical:unpaired-call:${raw.line}`,
+          timestamp: raw.timestamp, turnId: raw.turnId, kind: 'other_tool_call', layer: 'main',
+          role: 'assistant', toolName: raw.toolName, subtype: raw.toolName, label: raw.toolName,
+          preview: raw.preview, searchText: codexSearchValue(raw.output), status: 'incomplete',
+          severity: 'warning', rawRefs: [rawRef(raw)], channels: [raw.recordType],
+        }) : buildProtocolEvent(raw.originalRaw || raw));
+        consumed.add(raw.rawId);
+        continue;
+      }
       if (raw.callId) {
         if (!byCallId.has(raw.callId)) byCallId.set(raw.callId, []);
         byCallId.get(raw.callId).push(raw);
@@ -1216,12 +1336,14 @@ function createCodexLogicalBuilder(deps) {
       const history = historyFacts(raw);
       if (history) {
         const identityCount = realtimeIdentities.get(realtimeIdentity(raw));
-        const event = history.type === 'transcript_segment' && identityCount === 1
+        // Only admitted, persisted speech has a role. Recording and receipt facts do not.
+        const speech = Boolean(history.role);
+        const event = speech && identityCount === 1
           ? buildConversationEvent(`${raw.sessionId}:logical:realtime:${raw.line}`, `${history.role}_message`, history.role, raw.messageText, [raw])
-          : buildProtocolEvent(raw, history.type === 'transcript_segment' ? 'realtime_identity_conflict' : history.type);
+          : buildProtocolEvent(raw, speech ? 'realtime_identity_conflict' : history.type);
         event.historyFacts = history;
         event.turnId = '';
-        if (history.type === 'transcript_segment' && event.layer === 'main') event.tags.push('realtime');
+        if (speech && event.layer === 'main') event.tags.push('realtime');
         logicalEvents.push(event);
         consumed.add(raw.rawId);
         continue;
@@ -1273,7 +1395,15 @@ function createCodexLogicalBuilder(deps) {
       }
 
       if (raw.recordType === 'response_item' && raw.payloadType === 'message' && raw.role === 'user') {
-        const protocolSubtype = classifyProtocolText(raw.messageText, raw.role);
+        if (raw === sideBoundary) {
+          logicalEvents.push(buildProtocolEvent(raw, 'side_conversation_boundary'));
+          consumed.add(raw.rawId);
+          continue;
+        }
+        const mirror = typedMirrors.get(raw.rawId);
+        const origin = recordedUserTextOrigin(raw, mirror);
+        const protocolSubtype = origin === 'submitted' ? ''
+          : origin === 'heartbeat' ? 'meta_block' : classifyProtocolText(raw.messageText, raw.role);
         if (protocolSubtype === 'user_shell_command') {
           if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message'
               && mirroredMessageTextMatches(raw.messageText, next.messageText)
@@ -1292,15 +1422,20 @@ function createCodexLogicalBuilder(deps) {
           consumed.add(raw.rawId);
           continue;
         }
+        const sources = [raw];
+        if (origin === 'submitted') {
+          // This adjacent canonical completion supplies the recorded turn and
+          // precedes any legacy mirror in the physical evidence list.
+          sources.push(mirror);
+          typedMirrors.delete(raw.rawId);
+        }
         if (next && next.recordType === 'event_msg' && next.payloadType === 'user_message'
             && mirroredMessageTextMatches(raw.messageText, next.messageText)
             && mirroredAttachmentIdentityMatches(raw, next)) {
-          logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:user:${raw.line}`, 'user_message', 'user', raw.messageText, [raw, next]));
-          consumed.add(raw.rawId);
+          sources.push(next);
           consumed.add(next.rawId);
-          continue;
         }
-        logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:user:${raw.line}`, 'user_message', 'user', raw.messageText, [raw]));
+        logicalEvents.push(buildConversationEvent(`${raw.sessionId}:logical:user:${raw.line}`, 'user_message', 'user', raw.messageText, sources));
         consumed.add(raw.rawId);
         continue;
       }

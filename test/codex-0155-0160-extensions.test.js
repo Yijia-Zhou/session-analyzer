@@ -101,6 +101,65 @@ test('extension items retain one call, source identity, detail and search with o
   });
 });
 
+test('file-referenced image completions own the typed Raw row with or without an invocation', async (t) => {
+  for (const mixed of [false, true]) {
+    const marker = 'file-backed-completion-prompt';
+    const item = { type: 'Extension', kind: 'image_gen.generation', id: 'generated-file',
+      status: 'completed', fileId: 'fixture-opaque-image-id', revisedPrompt: marker };
+    const rows = mixed ? [call(item.id, 'imagegen', { prompt: 'original' }), typed(item), output(item.id, 'done')] : [typed(item)];
+    const f = await fixture(t, rows);
+    await representations(f, async (index, session) => {
+      const main = session.logicalEvents.filter((event) => event.layer === 'main');
+      assert.equal(main.length, 1);
+      assert.equal(session.counts.toolCalls, 1);
+      assert.equal(main[0].status, 'success');
+      assert.equal(main[0].rawRefs.length, rows.length);
+      const detail = await readPaths(index, session, main[0], marker, f);
+      assert.deepEqual(detail.inspectorSections.filter((section) => section.type === 'image_preview')
+        .flatMap((section) => section.images), []);
+    });
+  }
+});
+
+test('file image admission requires a terminal result and a usable opaque reference', () => {
+  const { typedItemRecord } = require('../src/codex-turn-items');
+  const item = { type: 'Extension', kind: 'image_gen.generation', id: 'file', status: 'completed', fileId: 'opaque' };
+  for (const change of [{ fileId: '' }, { fileId: 17 }, { status: 'running' }, { kind: 'other.image' }])
+    assert.equal(typedItemRecord(typed({ ...item, ...change }), ID), null);
+  assert.equal(typedItemRecord(typed(item), CHILD), null);
+  assert.equal(typedItemRecord(typed({ ...item, result: '' }), ID).payload.type, 'image_generation_end');
+});
+
+test('file-backed completion rejects conflicting tool evidence and ignores stale inline preview bytes', async (t) => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+  const image = id => typed({ type: 'Extension', kind: 'image_gen.generation', id, status: 'completed',
+    fileId: 'fixture-file', revisedPrompt: 'retained image evidence', result: png });
+  const wrong = call('wrong', 'imagegen');
+  wrong.payload.namespace = 'unrelated';
+  const right = call('right', 'imagegen');
+  right.payload.namespace = 'image_gen';
+  const f = await fixture(t, [wrong, image('wrong'), output('wrong', 'wrong invocation'),
+    image('conflict'), { type: 'event_msg', payload: { type: 'exec_command_end', call_id: 'conflict', exit_code: 0 } },
+    right, image('right'), output('right', 'completed'), image('image-alone')]);
+  await representations(f, async (index, session) => {
+    for (const line of [4, 6]) {
+      const event = session.logicalEvents.find(e => e.rawRefs.some(ref => ref.line === line));
+      assert.equal(event.layer, 'protocol');
+      assert.deepEqual(event.rawRefs.map(ref => ref.line), [line]);
+    }
+    for (const lines of [[8, 9, 10], [11]]) {
+      const owner = session.logicalEvents.find(e => e.rawRefs.some(ref => ref.line === lines[0]));
+      assert.equal(owner.layer, 'main');
+      assert.deepEqual(owner.rawRefs.map(r => r.line), lines);
+      const detail = await codex.buildHydratedEventDetail(index, session, owner.id, 'main');
+      assert.deepEqual(detail.inspectorSections.flatMap(section => section.images || []), []);
+      assert.ok(!JSON.stringify(detail).includes(png));
+    }
+    const raw = session.rawEvents.find(r => r.source.line === 11);
+    assert.equal((await codex.readIndexedCodexRawRecord(index, session, raw)).parsed.payload.item.result, png);
+  });
+});
+
 test('typed generated PNG previews retain the original nested locator without image bytes in ordinary detail', async (t) => {
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
   for (const mixed of [false, true]) {

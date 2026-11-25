@@ -282,10 +282,11 @@ function createCodexRawParser(deps) {
       raw.callId = '';
       raw.toolName = '';
       raw.status = '';
-      if (history.type === 'transcript_segment') {
-        raw.messageText = payload.text.slice(0, 16000);
+      if (history.role) {
+        const speech = history.type === 'frame' ? payload.channels.voice_transcript.text : payload.text;
+        raw.searchText = codexFullSearchText(speech);
+        raw.messageText = (history.type === 'frame' ? raw.searchText : speech).slice(0, 16000).replace(/[\uD800-\uDBFF]$/u, '');
         raw.preview = truncate(raw.messageText);
-        raw.searchText = codexFullSearchText(payload.text);
       } else {
         const text = Object.entries(history.values || history)
           .filter(([key]) => !['type', 'itemId', 'realtimeSessionId'].includes(key))

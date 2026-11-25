@@ -1,5 +1,6 @@
 'use strict';
 
+const { isExecCall } = require('./codex-code-mode');
 const {
   knownCodeModeToolNames,
   projectDeclaredCodeModeCalls,
@@ -43,9 +44,8 @@ function codeModeOperationExecSource(operation, rawById) {
   const raw = rawById.get(rawId);
   const payload = raw?.parsed?.payload;
   const callId = String(execPhase?.callId || '');
-  if (raw?.recordType !== 'response_item'
-      || raw?.payloadType !== 'custom_tool_call'
-      || raw?.toolName !== 'exec'
+  if (!isExecCall(raw)
+      || raw.toolName !== 'exec'
       || (payload && payload.name !== 'exec')
       || !callId
       || String(raw?.callId || '') !== callId

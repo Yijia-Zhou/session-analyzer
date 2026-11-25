@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { zstdCompressSync } = require('node:zlib');
+const { constants: zstdConstants, zstdCompressSync } = require('node:zlib');
 const codex = require('../src/codex');
 const { CODEX_ROLLOUT_RECORD_TOO_LARGE, MAX_CODEX_RECORD_BYTES } = require('../src/codex-rollout-storage');
 const { disposeIndexResources } = require('../src/index-resources');
@@ -117,6 +117,290 @@ async function historyFixture(t) {
   await fs.writeFile(path.join(sessionsRoot, file(ONE)), secondRows.map(JSON.stringify).join('\n') + '\n');
   return { repoRoot, codexHome, sessionsRoot, firstRows, secondRows, options: { repoRoot, codexHome, currentRolloutPathsForTests: new Map([[ROOT, path.join(sessionsRoot, file(ONE))]]) } };
 }
+
+test('an explicit frozen prefix can use a valid archive while leaving the active ancestor selectable', async (t) => {
+  const f = await historyFixture(t);
+  const active = path.join(f.sessionsRoot, file(ROOT));
+  const archive = path.join(f.codexHome, 'archived_sessions', path.basename(active));
+  await fs.mkdir(path.dirname(archive));
+  await fs.rename(active, archive);
+  const header = JSON.stringify(f.firstRows[0]) + '\n';
+  await fs.writeFile(active + '.zst', zstdCompressSync(header));
+  // Different children cite different cutoffs of the same physical rollout.
+  const shortChild = { ...f.secondRows[0], ordinal: 1, payload: { ...f.secondRows[0].payload,
+    id: OTHER, forked_from_id: ROOT, history_base: base(ROOT, 1, Buffer.byteLength(header)) } };
+  await fs.writeFile(path.join(f.sessionsRoot, file(OTHER, OTHER)), JSON.stringify(shortChild) + '\n');
+  for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+    const index = await build(f.options);
+    t.after(() => disposeIndexResources(index));
+    const current = index.sessionsById.get(ROOT);
+    assert.ok(current, 'the two-row cutoff needs the archive');
+    const session = current.logicalEvents ? current : await materializeSessionForIndex(index, current);
+    const retained = session.rawEvents.find(raw => raw.source.file.includes('archived_sessions') && raw.source.line === 2);
+    assert.ok(retained);
+    assert.deepEqual((await codex.readIndexedCodexRawRecord(index, session, retained)).parsed, f.firstRows[1]);
+    const short = index.sessionsById.get(OTHER);
+    const shortSession = short.logicalEvents ? short : await materializeSessionForIndex(index, short);
+    assert.ok(shortSession.rawEvents.every(raw => !raw.source.file.includes('archived_sessions')),
+      'both copies agree through the shorter cutoff, so the active locator remains usable');
+    const parentIndex = await build({ ...f.options, currentRolloutPathsForTests: new Map([[ROOT, active]]) });
+    t.after(() => disposeIndexResources(parentIndex));
+    assert.equal(parentIndex.sessionsById.get(ROOT).sourceFile, path.relative(f.sessionsRoot, active));
+  }
+  const cold = await codex.buildSourceBackedIndex(f.options);
+  t.after(() => disposeIndexResources(cold));
+  const warm = await codex.buildSourceBackedIndex({ ...f.options, previousIndex: cold });
+  t.after(() => disposeIndexResources(warm));
+  await validateIndexOwnershipForCommit(warm, 'codex');
+  const recovered = warm.sessionsById.get(ROOT);
+  const archivedSource = path.relative(f.sessionsRoot, archive);
+  assert.equal(recovered.materializationDescriptor.payload.historySnapshots[0].sourceFile, archivedSource);
+  const { startHistoryServer } = require('../src/history-server');
+  const { runHistoryCli } = require('../src/history-cli');
+  const server = await startHistoryServer({ repo: f.repoRoot, source: 'codex', codexHome: f.codexHome, port: 0 });
+  t.after(() => server.close());
+  async function cli(operation, ...args) {
+    let output = '';
+    const code = await runHistoryCli([operation, '--endpoint', server.endpoint, ...args], {
+      stdout: { write(value) { output += value; } },
+    });
+    assert.equal(code, 0, output);
+    return JSON.parse(output);
+  }
+  const { contextRef } = await cli('status');
+  const hit = (await cli('search', '--context', contextRef, '--layer', 'main', '--query', 'kept-ancestor', '--presentation', 'full')).items[0];
+  const read = (await cli('read', '--context', contextRef, '--ref', hit.ref, '--parts', 'message', '--presentation', 'full')).items[0];
+  const physical = (await cli('read', '--context', contextRef, '--ref', read.rawRefs[0], '--parts', 'raw')).items[0];
+  assert.match(physical.parts[0].text, /kept-ancestor/);
+  const content = await fs.readFile(archive, 'utf8');
+  await fs.writeFile(archive, content.replace('kept-ancestor', 'lost-ancestor'));
+  await assert.rejects(materializeSessionForIndex(warm, recovered), { code: 'INDEXED_SOURCE_STALE' });
+});
+
+test('comparing an unused compressed archive leaves its large tail off temporary storage', async (t) => {
+  const f = await historyFixture(t);
+  const active = path.join(f.sessionsRoot, file(ROOT));
+  const archive = path.join(f.codexHome, 'archived_sessions', path.basename(active) + '.zst');
+  await fs.mkdir(path.dirname(archive));
+  const tail = JSON.stringify({ ordinal: 4, type: 'event_msg', payload: { type: 'user_message',
+    message: 'x'.repeat(8 * 1024 * 1024) } }) + '\n';
+  await fs.writeFile(archive, zstdCompressSync((await fs.readFile(active, 'utf8')) + tail));
+  const { snapshotStatsForTests } = require('../src/codex-rollout-snapshots');
+  const before = snapshotStatsForTests().decodeCount;
+  for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+    const index = await build(f.options);
+    t.after(() => disposeIndexResources(index));
+    const recovered = index.sessionsById.get(ROOT);
+    const snapshots = recovered._historySnapshots || recovered.materializationDescriptor.payload.historySnapshots;
+    assert.equal(snapshots[0].sourceFile, path.relative(f.sessionsRoot, active));
+    assert.equal(snapshotStatsForTests().decodeCount, before, 'the unused archive must never build a decoded snapshot');
+  }
+});
+
+test('two copies with divergent valid prefixes exclude the dependent history', async (t) => {
+  const f = await historyFixture(t);
+  const active = path.join(f.sessionsRoot, file(ROOT));
+  const archive = path.join(f.codexHome, 'archived_sessions', path.basename(active));
+  await fs.mkdir(path.dirname(archive));
+  const original = await fs.readFile(active, 'utf8');
+  await fs.writeFile(archive, original.replace('kept-ancestor', 'lost-ancestor'));
+  for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+    const index = await build(f.options);
+    t.after(() => disposeIndexResources(index));
+    assert.equal(index.sessionsById.has(ROOT), false);
+    assert.ok(index.sourceDiagnostics.counts.CODEX_HISTORY_BASE_AMBIGUOUS);
+  }
+});
+
+test('a compressed alternate prefix beyond the comparison input budget stays unresolved', async (t) => {
+  const f = await historyFixture(t);
+  const active = path.join(f.sessionsRoot, file(ROOT));
+  const archive = path.join(f.codexHome, 'archived_sessions', path.basename(active) + '.zst');
+  await fs.mkdir(path.dirname(archive));
+  const content = await fs.readFile(active);
+  const boundary = content.indexOf(10) + 1;
+  const skipped = Buffer.alloc(512 * 1024);
+  const header = Buffer.alloc(8);
+  header.writeUInt32LE(0x184d2a50);
+  header.writeUInt32LE(skipped.length, 4);
+  await fs.writeFile(archive, Buffer.concat([zstdCompressSync(content.subarray(0, boundary)),
+    header, skipped, zstdCompressSync(content.subarray(boundary))]));
+  for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+    const index = await build(f.options);
+    t.after(() => disposeIndexResources(index));
+    assert.equal(index.sessionsById.has(ROOT), false);
+    assert.ok(index.sourceDiagnostics.counts.CODEX_HISTORY_BASE_AMBIGUOUS);
+  }
+});
+
+test('compressed replica conflicts require a verified covering frame or an exhausted budget', async (t) => {
+  const f = await historyFixture(t);
+  const active = path.join(f.sessionsRoot, file(ROOT));
+  const archive = path.join(f.codexHome, 'archived_sessions', path.basename(active) + '.zst');
+  await fs.mkdir(path.dirname(archive));
+  const original = await fs.readFile(active, 'utf8');
+  const different = original.replace('kept-ancestor', 'lost-ancestor');
+  // The frozen rows decode from the first block, before the last block/EOF.
+  const noise = require('node:crypto').randomBytes(74 * 1024).toString('hex');
+  const tail = message => JSON.stringify({ ordinal: 3, type: 'event_msg', payload: { type: 'user_message', message } }) + '\n';
+  const complete = zstdCompressSync(different + tail(noise));
+  const badChecksum = zstdCompressSync(different + tail(noise), { params: { [zstdConstants.ZSTD_c_checksumFlag]: 1 } });
+  badChecksum[badChecksum.length - 1] ^= 1;
+  const headerFrame = zstdCompressSync(original.slice(0, original.indexOf('\n') + 1));
+  const skipBytes = Buffer.alloc(96 * 1024);
+  const skipHeader = Buffer.alloc(8);
+  skipHeader.writeUInt32LE(0x184d2a50);
+  skipHeader.writeUInt32LE(skipBytes.length, 4);
+  const invalidMagic = Buffer.concat([headerFrame, skipHeader, skipBytes, Buffer.from('bad magic'), Buffer.alloc(768 * 1024)]);
+  const largeConflict = zstdCompressSync(different + tail('a'.repeat(2 * 1024 * 1024)));
+  for (const [name, data, admitted] of [
+    ['complete conflict', complete, false], ['truncated last block', complete.subarray(0, -7), true],
+    ['bad checksum', badChecksum, true],
+    ['invalid magic before budget', invalidMagic, true], ['decoded comparison budget', largeConflict, false],
+    ['complete conflict before damaged next frame', Buffer.concat([complete, Buffer.from('bad magic')]), false],
+  ]) await t.test(name, async () => {
+    await fs.writeFile(archive, data);
+    for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+      const index = await build(f.options);
+      try {
+        assert.equal(index.sessionsById.has(ROOT), admitted);
+        if (admitted) {
+          const session = index.sessionsById.get(ROOT);
+          const snapshots = session._historySnapshots || session.materializationDescriptor.payload.historySnapshots;
+          assert.equal(snapshots[0].sourceFile, path.relative(f.sessionsRoot, active));
+          assert.ok(index.sourceDiagnostics.counts.CODEX_ROLLOUT_STORAGE_INVALID);
+        } else assert.ok(index.sourceDiagnostics.counts.CODEX_HISTORY_BASE_AMBIGUOUS);
+      } finally { await disposeIndexResources(index); }
+    }
+  });
+});
+
+test('only a matching owner and exact ordinal boundary can supply a replacement prefix', async (t) => {
+  const f = await historyFixture(t);
+  const active = path.join(f.sessionsRoot, file(ROOT));
+  const archive = path.join(f.codexHome, 'archived_sessions', path.basename(active));
+  await fs.mkdir(path.dirname(archive));
+  const original = await fs.readFile(active, 'utf8');
+  const short = JSON.stringify(f.firstRows[0]) + '\n';
+  await fs.writeFile(active, short);
+  for (const [modified, code] of [
+    [original.replace(ROOT, OTHER), 'CODEX_HISTORY_OWNER_CONFLICT'],
+    [original.replace('"ordinal":1', '"ordinal":9'), 'CODEX_HISTORY_BOUNDARY_INVALID'],
+    [original.replace('"history_mode":"paginated"', '"history_mode":"old-style"'), 'CODEX_HISTORY_BOUNDARY_INVALID'],
+  ]) {
+    await fs.writeFile(archive, modified);
+    const index = await codex.buildSourceBackedIndex(f.options);
+    try {
+      assert.equal(index.sessionsById.has(ROOT), false);
+      assert.ok(index.sourceDiagnostics.counts[code], code);
+    } finally { await disposeIndexResources(index); }
+  }
+});
+
+// Zstd frame with a complete non-final raw block, as with a writer that
+// flushed a header but did not finish its frame. No terminal block follows.
+function unfinishedFrame(text) {
+  const bytes = Buffer.from(text);
+  const frame = Buffer.alloc(12);
+  frame.writeUInt32LE(0xfd2fb528);
+  frame[4] = 0xa0;
+  frame.writeUInt32LE(bytes.length, 5);
+  frame.writeUIntLE(bytes.length * 8, 9, 3);
+  return Buffer.concat([frame, bytes]);
+}
+
+test('only a complete matching header can identify an unfinished Zstd replica', async (t) => {
+  for (const failed of ['active', 'archive', 'partial-header', 'wrong-owner']) await t.test(failed, async (t) => {
+    const f = await historyFixture(t);
+    const active = path.join(f.sessionsRoot, file(ROOT));
+    const archive = path.join(f.codexHome, 'archived_sessions', path.basename(active));
+    await fs.mkdir(path.dirname(archive));
+    const full = await fs.readFile(active);
+    const header = JSON.stringify(f.firstRows[0]);
+    const brokenPath = failed === 'archive' ? archive : active;
+    await fs.writeFile(brokenPath + '.zst', unfinishedFrame(failed === 'partial-header' ? header
+      : (failed === 'wrong-owner' ? header.replace(ROOT, OTHER) : header) + '\n'));
+    if (brokenPath === active) {
+      await fs.unlink(active);
+      await fs.writeFile(archive, full);
+    }
+    for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+      const index = await build({ ...f.options, currentRolloutPathsForTests: new Map() });
+      t.after(() => disposeIndexResources(index));
+      const recovered = index.sessionsById.get(ROOT);
+      if (failed === 'wrong-owner' || failed === 'partial-header') {
+        assert.equal(recovered, undefined);
+        continue;
+      }
+      assert.ok(recovered);
+      const session = recovered.logicalEvents ? recovered : await materializeSessionForIndex(index, recovered);
+      const retained = session.rawEvents.find(raw => raw.source.line === 2 && raw.source.file !== recovered.sourceFile);
+      assert.equal(retained.source.file, path.relative(f.sessionsRoot, brokenPath === active ? archive : active));
+      assert.deepEqual((await codex.readIndexedCodexRawRecord(index, session, retained)).parsed, f.firstRows[1]);
+    }
+  });
+});
+
+test('a recovered replica may have a different base without changing the live head graph', async (t) => {
+  const f = await historyFixture(t);
+  const active = path.join(f.sessionsRoot, file(ROOT));
+  const archive = path.join(f.codexHome, 'archived_sessions', path.basename(active));
+  await fs.mkdir(path.dirname(archive));
+  const old = JSON.stringify(f.firstRows[0]) + '\n';
+  await fs.writeFile(active, old);
+  await fs.writeFile(path.join(path.dirname(archive), path.basename(file(TWO))), old);
+  const middle = { ...f.firstRows[0], ordinal: 1,
+    payload: { ...f.firstRows[0].payload, history_base: base(TWO, 1, Buffer.byteLength(old)) } };
+  const retained = [middle, { ...f.firstRows[1], ordinal: 2 }].map(JSON.stringify).join('\n') + '\n';
+  await fs.writeFile(archive, retained);
+  const child = { ...f.firstRows[0], ordinal: 3, payload: { ...f.firstRows[0].payload, id: OTHER,
+    forked_from_id: ROOT, history_base: base(ROOT, 3, Buffer.byteLength(retained)) } };
+  await fs.unlink(path.join(f.sessionsRoot, file(ONE)));
+  await fs.writeFile(path.join(f.sessionsRoot, file(OTHER, OTHER)), JSON.stringify(child) + '\n');
+  for (const malformed of [false, true]) {
+    if (malformed) await fs.writeFile(active, JSON.stringify({ ...f.firstRows[0],
+      payload: { ...f.firstRows[0].payload, history_base: { invalid: true } } }) + '\n');
+    for (const build of [codex.buildIndex, codex.buildSourceBackedIndex]) {
+      const index = await build({ ...f.options, currentRolloutPathsForTests: new Map() });
+      t.after(() => disposeIndexResources(index));
+      assert.equal(index.sessionsById.has(ROOT), !malformed);
+      const recovered = index.sessionsById.get(OTHER);
+      assert.ok(recovered);
+      const snapshots = recovered._historySnapshots || recovered.materializationDescriptor.payload.historySnapshots;
+      assert.deepEqual(snapshots.map(s => s.rolloutId), [TWO, ROOT, OTHER]);
+    }
+  }
+});
+
+test('archive discovery stops reading headers at the per-history depth budget', async (t) => {
+  const f = await historyFixture(t);
+  const archive = path.join(f.codexHome, 'archived_sessions');
+  await fs.mkdir(archive);
+  const head = f.firstRows[0];
+  const oldest = JSON.stringify(head) + '\n';
+  const middle = JSON.stringify({ ...head, ordinal: 1, payload: { ...head.payload,
+    history_base: base(TWO, 1, Buffer.byteLength(oldest)) } }) + '\n';
+  await fs.writeFile(path.join(archive, path.basename(file(TWO))), oldest);
+  await fs.writeFile(path.join(archive, path.basename(file(ROOT))), middle);
+  await fs.unlink(path.join(f.sessionsRoot, file(ROOT)));
+  await fs.writeFile(path.join(f.sessionsRoot, file(ONE)), JSON.stringify({ ...head, ordinal: 2,
+    payload: { ...head.payload, history_base: base(ROOT, 2, Buffer.byteLength(middle)) } }) + '\n');
+  await fs.writeFile(path.join(f.sessionsRoot, file(OTHER, OTHER)), JSON.stringify({ ...head,
+    payload: { ...head.payload, id: OTHER } }) + '\n');
+  // Reduce discovery's exported budget so a three-file real chain exercises
+  // the pre-I/O guard. The planner's normal 4096-node limit remains unchanged.
+  const history = require('../src/codex-rollout-history');
+  const budget = history.MAX_ARTIFACTS_PER_HISTORY;
+  t.after(() => { history.MAX_ARTIFACTS_PER_HISTORY = budget; });
+  history.MAX_ARTIFACTS_PER_HISTORY = 2;
+  const storage = require('../src/codex-rollout-storage');
+  const observed = t.mock.method(storage, 'readReplicaHeader');
+  const index = await codex.buildSourceBackedIndex(f.options);
+  t.after(() => disposeIndexResources(index));
+  assert.deepEqual(index.sessions.map(session => session.id), [OTHER]);
+  assert.ok(index.sourceDiagnostics.counts.CODEX_HISTORY_CHAIN_CAPACITY_EXCEEDED);
+  assert.deepEqual(observed.mock.calls.map(call => path.basename(call.arguments[0].physicalPath)), [path.basename(file(ROOT))]);
+});
 
 test('oversized history record diagnostics identify the ancestor containing the record', async (t) => {
   const f = await historyFixture(t);

@@ -194,6 +194,10 @@ test('exact exec-source lookup fails closed unless one matching outer exec owns 
     ['wrong raw record type', event, { ...record, recordType: 'event_msg' }],
     ['wrong raw payload type', event, { ...record, payloadType: 'function_call' }],
     ['wrong raw tool name', event, { ...record, toolName: 'shell_command' }],
+    ['scoped exec request', event, {
+      ...record,
+      parsed: { payload: { ...record.parsed.payload, namespace: 'other' } },
+    }],
     ['wrong payload tool name', event, {
       ...record,
       parsed: { payload: { ...record.parsed.payload, name: 'shell_command' } },

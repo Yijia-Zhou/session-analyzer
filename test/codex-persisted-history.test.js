@@ -52,6 +52,65 @@ test('persisted segments are independent messages, never text-classified command
   }
 });
 
+test('sealed voice frames retain speech identity, observation time and physical evidence', async (t) => {
+  const frame = (id, role, text) => realtime(id, 'frame', {
+    observed_at_ms: 105, channels: { voice_transcript: { role, text } },
+  });
+  const { index, session, rows } = await fixture(t, [
+    frame('one', 'assistant', 'sealed voice answer'), frame('two', 'user', 'sealed voice question'),
+    frame('repeat', 'user', 'conflicting frame'), segment('repeat', 'user', 'older segment'),
+    frame('invalid', 'tool', 'invalid voice'), frame('empty', 'user', ''),
+    realtime('saved', 'session_input_saved', { reason: 'session_end', input: 'saved context', source_event_ids: ['two'] }),
+    realtime('end', 'realtime_session_closed', { outcome: 'ended', final_frame_sequence: 0 }),
+  ], true);
+  assert.equal(session.counts.messages, 2);
+  assert.equal(session.counts.turns, 0);
+  assert.equal(session.counts.toolCalls, 0);
+  const main = session.logicalEvents.filter((event) => event.layer === 'main');
+  assert.deepEqual(main.map((event) => event.kind), ['assistant_message', 'user_message']);
+  for (const event of main) {
+    assert.equal(event.historyFacts.observedAtMs, 105);
+    assert.equal(event.historyFacts.type, 'frame');
+    assert.equal(event.turnId || '', '');
+    const ref = event.rawRefs[0];
+    const raw = session.rawEvents.find((row) => row.rawId === ref.rawId);
+    assert.deepEqual((await codex.readIndexedCodexRawRecord(index, session, raw)).parsed, rows[ref.line - 1]);
+    const detail = await codex.buildHydratedEventDetail(index, session, event.id, 'main', { locale: 'zh-CN' });
+    assert.match(JSON.stringify(detail.timelineSections), /sealed voice/);
+  }
+  assert.equal(codex.query.getTimeline(index, session, { layer: 'main', q: 'sealed voice' }).searchEventCount, 2);
+  assert.equal(session.logicalEvents.filter((event) => event.subtype === 'realtime_identity_conflict').length, 2);
+  assert.equal(session.logicalEvents.find((event) => event.historyFacts?.outcome === 'ended').historyFacts.finalFrameSequence, 0);
+});
+
+test('voice frame detail bounds rendering, retains the searchable tail and counts sealed whitespace', async (t) => {
+  const voice = (id, text) => realtime(id, 'frame', { channels: { voice_transcript: { role: 'assistant', text } } });
+  const { index, session } = await fixture(t, [
+    voice('medium', 'a'.repeat(16000) + 'medium-tail'),
+    voice('large', 'a'.repeat(16000) + 'only-in-middle' + 'b'.repeat(16000) + 'large-tail'),
+    voice('whitespace', ' \t\n'),
+    voice('media', 'a'.repeat(18000) + ' data:audio/wav;base64,' + 'ABCD'.repeat(9000) + 'PRIVATEBLOCK end'),
+    voice('unicode', 'a'.repeat(15999) + '😀' + 'middle' + '😀' + 'b'.repeat(15999)),
+  ]);
+  const main = session.logicalEvents.filter(e => e.layer === 'main');
+  assert.equal(main.length, 5);
+  for (const [i, tail] of ['medium-tail', 'large-tail'].entries()) {
+    const detail = await codex.buildHydratedEventDetail(index, session, main[i].id, 'main', { locale: 'en' });
+    const rendered = JSON.stringify(detail.timelineSections);
+    assert.ok(rendered.includes(tail));
+    assert.equal(rendered.includes('Speech is shortened'), i === 1);
+    assert.ok(!rendered.includes('only-in-middle'));
+  }
+  assert.equal(codex.query.getTimeline(index, session, { layer: 'main', q: 'only-in-middle' }).searchEventCount, 1);
+  const physical = session.rawEvents.find(r => r.rawId === main[1].rawRefs[0].rawId);
+  assert.match((await codex.readIndexedCodexRawRecord(index, session, physical)).raw, /only-in-middle/);
+  const media = await codex.buildHydratedEventDetail(index, session, main[3].id, 'main');
+  assert.doesNotMatch(JSON.stringify(media.timelineSections), /PRIVATEBLOCK|ABCDABCD/);
+  const unicode = await codex.buildHydratedEventDetail(index, session, main[4].id, 'main');
+  const body = unicode.timelineSections.find(section => section.type === 'markdown');
+  assert.ok(body.html.isWellFormed());
+});
+
 test('settings, recorded context and positional controls stay separate Protocol evidence', async (t) => {
   const { index, session } = await fixture(t, [settings({ service_tier: null }), settings(), settings({}, 'foreign'),
     { type: 'turn_context', payload: { turn_id: 'turn-1', model: 'captured-model', effort: 'low', summary: 'auto', realtime_active: true } },

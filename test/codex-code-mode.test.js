@@ -10,6 +10,7 @@ const {
   codeModeDisplayOutputText,
   codeModeOutputText,
   projectCodeModeOperations,
+  waitCellId,
 } = require('../src/codex-code-mode');
 const { deriveCodeModeFacts } = require('../src/codex-code-mode-facts');
 
@@ -108,6 +109,47 @@ function fixtureRawEvents(file) {
     });
 }
 
+test('only native exec and wait requests can own a Code Mode phase', () => {
+  for (const namespace of [undefined, null, '', 'functions', 'mcp__106cd32d0170__notes', 'other', 'Functions', false]) {
+    const native = namespace == null || namespace === '' || namespace === 'functions';
+    for (const name of ['exec', 'wait']) {
+      const requests = [execCall(1, 'outer'), execOutput(2, 'outer', 'Script running with cell ID g2:14'),
+        waitCall(3, 'poll', 'g2:14'), waitOutput(4, 'poll', 'Script completed')];
+      if (namespace !== undefined) requests[name === 'exec' ? 0 : 2].parsed.payload.namespace = namespace;
+      const { operations } = projectCodeModeOperations(requests);
+      assert.equal(operations.length, name === 'exec' && !native ? 0 : 1, `${name} namespace ${namespace}`);
+      if (operations.length) {
+        assert.equal(operations[0].observationState, native ? 'terminal' : 'pending');
+        assert.equal(operations[0].phases.length, native ? 2 : 1);
+      }
+    }
+  }
+});
+
+test('a competing scoped request or contradictory output cannot supply native phase evidence', () => {
+  for (const name of ['exec', 'wait']) {
+    const call = name === 'exec' ? execCall(3, 'shared') : waitCall(3, 'shared', '14');
+    const result = name === 'exec' ? execOutput(5, 'shared', 'Script completed')
+      : waitOutput(5, 'shared', 'Script completed');
+    const prefix = name === 'exec' ? [] : [execCall(1, 'outer'), execOutput(2, 'outer', 'Script running with cell ID 14')];
+    const competitor = name === 'exec' ? execCall(4, 'shared') : waitCall(4, 'shared', '14');
+    competitor.parsed.payload.namespace = 'mcp__106cd32d0170__notes';
+    for (const rows of [
+      [...prefix, call, competitor, result],
+      [...prefix, call, { ...result, parsed: { payload: { ...result.parsed.payload, name: 'other' } } }],
+      [...prefix, call, { ...result, parsed: { payload: { ...result.parsed.payload, namespace: 'other' } } }],
+    ]) {
+      const projection = projectCodeModeOperations(rows);
+      assert.equal(projection.operations.length, 1);
+      const [operation] = projection.operations;
+      assert.equal(operation.observationState, name === 'exec' ? 'unknown' : 'pending');
+      assert.equal(operation.phases.length, 1);
+      const facts = deriveCodeModeFacts({ projection, rawEvents: rows, lifecycleTypes: new Set() });
+      assert.ok(!facts.claimedRawIds.includes(result.rawId));
+    }
+  }
+});
+
 test('projects a direct terminal exec without retaining JavaScript or output content', () => {
   const lifecycle = raw(2, {
     recordType: 'event_msg',
@@ -183,6 +225,48 @@ test('decodes text arrays recursively and only accepts the canonical pending fir
     observationState: 'unknown',
     cellId: '',
   });
+});
+
+test('pending receipts and waits admit the same full generation-qualified cell identity', () => {
+  for (const id of ['14', '0014', 'g2:14', 'g10:1', 'g18446744073709551615:18446744073709551614']) {
+    const output = execOutput(2, 'exec', [
+      { type: 'input_text', text: `Script running with cell ID ${id}\nWall time 1 second\nLive output:\n` },
+      { type: 'input_text', text: 'partial batch' },
+    ]);
+    assert.deepEqual(classifyObservedOutput(output), { observationState: 'pending', cellId: id });
+    assert.equal(waitCellId(waitCall(3, 'wait', id)), id);
+    assert.equal(codeModeDisplayOutputText(output), 'partial batch');
+  }
+  for (const id of ['g0:7', 'g1:7', 'g02:7', 'g2:07', 'g2:0', 'g2:-7', 'g2:x', 'g2:1:2',
+    'g2:18446744073709551615', 'g18446744073709551616:1', 'g2:1 ', 'g2:1 extra']) {
+    assert.deepEqual(classifyObservedOutput(execOutput(2, 'exec', `Script running with cell ID ${id}`)),
+      { observationState: 'unknown', cellId: '' }, id);
+    assert.equal(waitCellId(waitCall(3, 'wait', id)), '', id);
+  }
+});
+
+test('parallel generations with the same local cell number keep distinct waits and output refs', () => {
+  const pending = id => `Script running with cell ID ${id}`;
+  const projection = projectCodeModeOperations([
+    execCall(1, 'first'), execOutput(2, 'first', pending('14')),
+    execCall(3, 'second'), execOutput(4, 'second', pending('g2:14')),
+    execCall(5, 'third'), execOutput(6, 'third', pending('g3:14')),
+    waitCall(7, 'second-poll', 'g2:14'), waitOutput(8, 'second-poll', pending('g2:14')),
+    waitCall(9, 'third-end', 'g3:14'), waitOutput(10, 'third-end', 'Script terminated'),
+    waitCall(11, 'second-end', 'g2:14'), waitOutput(12, 'second-end', 'Script completed'),
+    execCall(13, 'fourth'), execOutput(14, 'fourth', pending('g4:14')),
+    execCall(15, 'fourth-duplicate'), execOutput(16, 'fourth-duplicate', pending('g4:14')),
+    waitCall(17, 'ambiguous', 'g4:14'),
+    waitCall(18, 'cross-turn', 'g4:14', { turnId: 'turn-b' }),
+  ]);
+  assert.deepEqual(projection.operations.map(op => [op.cellId, op.observationState, op.phases.map(p => p.outputRef.line)]), [
+    ['14', 'unobserved_terminal', [2]],
+    ['g2:14', 'terminal', [4, 8, 12]],
+    ['g3:14', 'terminal', [6, 10]],
+    ['g4:14', 'unobserved_terminal', [14]],
+    ['g4:14', 'unobserved_terminal', [16]],
+  ]);
+  assert.deepEqual(projection.unassociatedWaits.map(w => w.reason), ['ambiguous_cell', 'orphan_cell']);
 });
 
 test('Code Mode display output removes an empty outer status envelope without changing classification', () => {

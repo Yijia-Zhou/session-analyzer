@@ -389,6 +389,8 @@ test('browser single-tool Code Mode keeps native request and operation output pr
   const session = await materializeIndexedSession(index);
   const operation = session.logicalEvents.find((candidate) => candidate.kind === 'code_mode_operation');
   assert.ok(operation, 'fixture should create one Code Mode operation');
+  assert.equal(operation.codeModeOperation.cellId, 'g2:7373');
+  assert.equal(operation.codeModeOperation.phases.length, 3);
   const { page } = await openApp(t, index, { locale: 'en' });
   const renderedEventIds = await page.locator('#timeline .event[data-event-id]').evaluateAll((events) => events.map((eventNode) => eventNode.dataset.eventId));
   assert.ok(renderedEventIds.includes(operation.id), `expected Code Mode event in ${JSON.stringify(renderedEventIds)}`);
@@ -447,6 +449,17 @@ test('browser single-tool Code Mode keeps native request and operation output pr
   assert.notEqual(await localizedInspectorTrace.getAttribute('open'), null);
   assert.match(await localizedInspectorTrace.textContent(), /执行阶段.*Initial output.*等待阶段 1.*Intermediate output.*等待阶段 2/s);
   assert.equal((await localizedInspectorTrace.textContent()).includes('Final browser output'), false);
+  await page.locator('#mainPresentationControl [data-main-presentation="trajectory"]').click();
+  const card = page.locator(`#timeline [data-trajectory-event-id="${operation.id}"]`);
+  for (const [locale, label] of [['zh-CN', 'Code Mode 工具调用'], ['en', 'Code Mode']]) {
+    if (locale === 'en') await switchHiddenLocale(page, locale);
+    await page.waitForFunction((lang) => document.documentElement.lang === lang, locale);
+    const group = page.locator('#timeline .trajectoryToolGroup').first();
+    if (!(await group.evaluate((node) => node.open))) await group.locator('summary').click();
+    await card.filter({ hasText: label }).waitFor();
+    assert.match(await card.textContent(), /wait_agent/);
+    assert.equal(await card.count(), 1);
+  }
 });
 
 test('browser Code Mode projects direct write_stdin emissions as terminal requests without native origin relation', async (t) => {

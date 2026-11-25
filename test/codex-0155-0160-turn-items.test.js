@@ -100,6 +100,251 @@ function rowsFor(scenario, mode) {
   return [scenario.call, typed(scenario.item), ...(scenario.partial ? [] : [scenario.output])];
 }
 
+test('a scoped MCP terminal joins only the exact registration namespace and tool', async (t) => {
+  const { createHash } = require('node:crypto');
+  const scope = 'synthetic-registration-scope';
+  const hash = (value) => createHash('sha1').update(value).digest('hex').slice(0, 12);
+  const request = (id, namespace, name = 'echo') => response({ type: 'function_call', call_id: id, namespace, name, arguments: '{}' });
+  const completion = (id, environmentId, failed) => typed({ type: 'McpToolCall', id, environmentId,
+    server: 'notes', tool: 'echo', status: failed ? 'failed' : 'completed', result: { content: [], isError: failed } });
+  const output = (id) => response({ type: 'function_call_output', call_id: id, output: 'MCP result ' + id });
+  const localName = hash(scope) + '__notes';
+  const rows = [
+    request('first', 'mcp__' + localName), completion('first', scope, true),
+    response({ ...output('first').payload, name: 'echo', namespace: 'mcp__' + localName }),
+    request('second', hash('second-scope') + '__notes'), completion('second', 'second-scope', false), output('second'),
+    request('conflict', localName), completion('conflict', 'other', true), output('conflict'),
+    request('other-tool', localName, 'other'), completion('other-tool', scope, true), output('other-tool'),
+    request('missing', localName), output('missing'),
+  ];
+  const f = await fixture(t, rows);
+  const index = await codex.buildSourceBackedIndex(f.options);
+  const session = await materializeSessionForIndex(index, index.sessionsById.get(ID));
+  for (const [offset, status] of [[0, 'failed'], [3, 'success']]) {
+    const owner = session.logicalEvents.find((e) => e.layer === 'main' && e.rawRefs.some((r) => r.line === offset + 3));
+    assert.equal(owner.kind, 'mcp_call');
+    assert.equal(owner.status, status);
+    assert.deepEqual(owner.rawRefs.map((r) => r.line), [3, 4, 5].map((n) => n + offset));
+  }
+  for (const line of [10, 13]) {
+    assert.equal(session.logicalEvents.find((e) => e.rawRefs.some((r) => r.line === line)).layer, 'protocol');
+  }
+  assert.equal(session.counts.toolCalls, 5);
+  const failed = codex.query.getTimeline(index, session, { layer: 'main', kind: 'mcp_call', status: 'failed' });
+  assert.equal(failed.events.length, 1);
+  assert.equal(failed.events[0].status, 'failed');
+});
+
+test('verified scoped MCP short names stay distinct from native tools and pending cells', async (t) => {
+  const scope = 'synthetic-registration-scope';
+  const namespace = 'mcp__106cd32d0170__notes';
+  const rows = [
+    response({ type: 'custom_tool_call', name: 'exec', call_id: 'native', input: 'await yield_control()' }),
+    response({ type: 'custom_tool_call_output', call_id: 'native', output: [
+      { type: 'input_text', text: 'Script running with cell ID 14\nWall time 0.0 seconds\nOutput:\n' },
+    ] }),
+  ];
+  for (const tool of ['wait', 'js_repl', 'create_goal', 'shell_command', 'apply_patch']) {
+    rows.push(response({ type: 'function_call', namespace, name: tool, call_id: tool, arguments: '{"cell_id":"14"}' }),
+      typed({ type: 'McpToolCall', id: tool, tool, server: 'notes', environmentId: scope, status: 'failed' }),
+      response({ type: 'function_call_output', call_id: tool, output: 'failed' }));
+  }
+  const f = await fixture(t, rows);
+  const index = await codex.buildSourceBackedIndex(f.options);
+  const session = await materializeSessionForIndex(index, index.sessionsById.get(ID));
+  const main = session.logicalEvents.filter(e => e.layer === 'main');
+  const pending = main.find(e => e.kind === 'code_mode_operation');
+  assert.deepEqual(pending.rawRefs.map(r => r.line), [3, 4]);
+  assert.equal(main.length, 6);
+  for (const [i, e] of main.filter(e => e !== pending).entries()) {
+    assert.equal(e.kind, 'mcp_call');
+    assert.equal(e.status, 'failed');
+    assert.deepEqual(e.rawRefs.map(r => r.line), [5, 6, 7].map(n => n + i * 3));
+    const raw = session.rawEvents.find(r => r.rawId === e.rawRefs[0].rawId);
+    const record = await codex.readIndexedCodexRawRecord(index, session, raw);
+    assert.equal(JSON.parse(record.raw).payload.name, rows[2 + i * 3].payload.name);
+  }
+});
+
+test('a scoped wait cannot take ownership of a pending native cell', async (t) => {
+  const namespace = 'mcp__106cd32d0170__notes';
+  const marker = 'scoped-reader-output';
+  for (const cellId of ['14', 'g2:14']) {
+    for (const completion of ['missing', 'valid', 'conflicting environment', 'conflicting output']) {
+      await t.test(`${cellId} / ${completion}`, async (t) => {
+        const rows = [
+          response({ type: 'custom_tool_call', name: 'exec', call_id: 'native', input: 'await yield_control()' }),
+          response({ type: 'custom_tool_call_output', call_id: 'native', output: [
+            { type: 'input_text', text: `Script running with cell ID ${cellId}\nWall time 0.0 seconds\nOutput:\n` },
+          ] }),
+          response({ type: 'function_call', name: 'wait', namespace, call_id: 'foreign',
+            arguments: JSON.stringify({ cell_id: cellId }) }),
+        ];
+        if (completion !== 'missing') rows.push(typed({
+          type: 'McpToolCall', id: 'foreign', server: 'notes', tool: 'wait', arguments: { cell_id: cellId }, status: 'failed',
+          environmentId: completion === 'conflicting environment' ? 'other' : 'synthetic-registration-scope',
+          error: { message: 'synthetic failure' },
+        }));
+        rows.push(response({ type: 'function_call_output', call_id: 'foreign',
+          ...(completion === 'conflicting output' ? { name: 'different' } : {}),
+          output: `Script completed\nWall time 0.0 seconds\nOutput:\n${marker}` }));
+        const f = await fixture(t, rows);
+        const resident = await codex.__testOnly.buildUncompactedIndexForDetailTests(f.options);
+        const compact = await codex.buildIndex(f.options);
+        const cold = await codex.buildSourceBackedIndex(f.options);
+        const warm = await codex.buildSourceBackedIndex({ ...f.options, previousIndex: cold });
+        assert.equal(warm.totals.reusedFileCount, 1);
+        for (const index of [resident, compact, cold, warm]) {
+          const indexed = index.sessionsById.get(ID);
+          assert.equal(indexed.counts.toolCalls, 2);
+          const session = index === cold || index === warm ? await materializeSessionForIndex(index, indexed) : indexed;
+          const main = session.logicalEvents.filter(e => e.layer === 'main');
+          assert.equal(main.length, 2);
+          const operation = main.find(e => e.kind === 'code_mode_operation');
+          const foreign = main.find(e => e !== operation);
+          assert.equal(operation.codeModeOperation.observationState, 'pending');
+          assert.equal(operation.codeModeOperation.cellId, cellId);
+          assert.deepEqual(operation.rawRefs.map(r => r.line), [3, 4]);
+          assert.equal(foreign.kind, completion === 'valid' ? 'mcp_call' : 'other_tool_call');
+          assert.equal(foreign.status, completion === 'valid' ? 'failed' : 'completed');
+          const outputLine = f.records.length;
+          assert.deepEqual(foreign.rawRefs.map(r => r.line), completion === 'valid' ? [5, 6, 7] : [5, outputLine]);
+          const owners = [operation, foreign];
+          if (completion.startsWith('conflicting')) {
+            const protocol = session.logicalEvents.find(e => e.layer === 'protocol' && e.rawRefs.some(r => r.line === 6));
+            assert.deepEqual(protocol.rawRefs.map(r => r.line), [6]);
+            owners.push(protocol);
+          }
+          for (const owner of owners) {
+            for (const ref of owner.rawRefs) {
+              const raw = session.rawEvents.find(r => r.rawId === ref.rawId);
+              const readback = await codex.readIndexedCodexRawRecord(index, session, raw);
+              assert.deepEqual(JSON.parse(readback.raw), f.records[ref.line - 1]);
+            }
+          }
+          const hits = codex.query.getTimeline(index, session, { layer: 'main', q: marker });
+          assert.equal(hits.searchEventCount, 1);
+          assert.equal(hits.events.find(e => e.hasSearchHit).id, foreign.id);
+          const detail = await codex.buildHydratedEventDetail(index, session, operation.id, 'main');
+          assert.equal(JSON.stringify(detail).includes(marker), false);
+          const foreignDetail = await codex.buildHydratedEventDetail(index, session, foreign.id, 'main');
+          assert.equal(foreignDetail.meta.status, foreign.status);
+          assert.ok(JSON.stringify(foreignDetail).includes(marker));
+        }
+      });
+    }
+  }
+});
+
+test('ambiguous Code Mode results retain physical owners and independent search evidence', async (t) => {
+  const foreign = 'mcp__106cd32d0170__notes';
+  const request = (tool, namespace) => response({
+    name: tool, call_id: 'shared', ...(namespace ? { namespace } : {}),
+    ...(tool === 'exec' ? { type: 'custom_tool_call', input: 'await yield_control()' }
+      : { type: 'function_call', arguments: '{"cell_id":"g2:14"}' }),
+  });
+  const result = (tool, marker, fields = {}) => response({
+    type: tool === 'exec' ? 'custom_tool_call_output' : 'function_call_output', call_id: 'shared',
+    output: `Script completed\nWall time 0.0 seconds\nOutput:\n${marker}`, ...fields,
+  });
+  const pending = [
+    response({ type: 'custom_tool_call', name: 'exec', call_id: 'pending', input: 'await yield_control()' }),
+    response({ type: 'custom_tool_call_output', call_id: 'pending', output: 'Script running with cell ID g2:14' }),
+  ];
+  const first = 'first-wire-receipt';
+  const second = 'second-wire-receipt';
+  const cases = [
+    { name: 'competing custom execs', rows: [request('exec'), request('exec', foreign), result('exec', first), result('exec', second)],
+      main: [[3], [4]], detached: [5, 6], state: 'unknown' },
+    { name: 'competing function waits', rows: [...pending, request('wait'), request('wait', foreign), result('wait', first), result('wait', second)],
+      main: [[3, 4], [5], [6]], detached: [7, 8], state: 'pending' },
+    { name: 'competing waits with a legacy MCP lifecycle', rows: [...pending, request('wait'), request('wait', foreign),
+      ...['mcp_tool_call_begin', 'mcp_tool_call_end'].map(type => event({ type, call_id: 'shared',
+        invocation: { environment_id: 'synthetic-registration-scope', server: 'notes', tool: 'wait', arguments: { cell_id: 'g2:14' } },
+        ...(type === 'mcp_tool_call_end' ? { result: { Err: 'synthetic failure' } } : {}) })),
+      result('wait', first)], main: [[3, 4], [5], [6]], detached: [7, 8, 9], state: 'pending' },
+    { name: 'contradictory exec output scope', rows: [request('exec'), result('exec', first, { namespace: foreign })],
+      main: [[3]], detached: [4], state: 'unknown' },
+    { name: 'contradictory wait output name', rows: [...pending, request('wait'), result('wait', first, { name: 'other' })],
+      main: [[3, 4], [5]], detached: [6], state: 'pending' },
+    { name: 'same ID on independent channels', rows: [request('exec'), request('wait', foreign), result('exec', first), result('wait', second)],
+      main: [[3, 5], [4, 6]], detached: [], state: 'terminal' },
+    { name: 'a disputed custom output leaves independent command evidence with its function call',
+      rows: [request('exec'), result('exec', first, { name: 'other' }),
+        response({ type: 'function_call', call_id: 'shared', name: 'shell_command', arguments: '{"command":"synthetic"}' }),
+        event({ type: 'exec_command_end', call_id: 'shared', command: ['synthetic'], exit_code: 1, status: 'failed' }),
+        result('wait', second)], main: [[3], [5, 6, 7]], detached: [4], state: 'unknown', commandStatus: 'failed' },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (t) => {
+      const f = await fixture(t, scenario.rows);
+      const index = await codex.buildSourceBackedIndex(f.options);
+      const session = await materializeSessionForIndex(index, index.sessionsById.get(ID));
+      const main = session.logicalEvents.filter(e => e.layer === 'main').sort((a, b) => a.rawRefs[0].line - b.rawRefs[0].line);
+      assert.equal(session.counts.toolCalls, scenario.main.length);
+      assert.deepEqual(main.map(e => e.rawRefs.map(r => r.line)), scenario.main);
+      assert.equal(new Set(main.map(e => e.id)).size, main.length);
+      const operations = main.filter(e => e.kind === 'code_mode_operation');
+      assert.equal(operations.length, 1);
+      assert.equal(operations[0].codeModeOperation.observationState, scenario.state);
+      if (scenario.commandStatus) assert.equal(main.find(e => e.kind === 'command').status, scenario.commandStatus);
+      for (let line = 3; line <= f.records.length; line++) {
+        const record = f.records[line - 1];
+        const owners = session.logicalEvents.filter(e => e.rawRefs.some(r => r.line === line));
+        assert.equal(owners.length, 1);
+        const [owner] = owners;
+        const isDetached = scenario.detached.includes(line);
+        assert.equal(owner.layer, isDetached ? 'protocol' : 'main');
+        if (isDetached) assert.deepEqual(owner.rawRefs.map(r => r.line), [line]);
+        const ref = owner.rawRefs.find(r => r.line === line);
+        const raw = session.rawEvents.find(r => r.rawId === ref.rawId);
+        assert.deepEqual(JSON.parse((await codex.readIndexedCodexRawRecord(index, session, raw)).raw), record);
+        const marker = [first, second].find(word => record.payload.output?.includes(word));
+        if (!marker) continue;
+        for (const layer of ['protocol', 'main']) {
+          const hits = codex.query.getTimeline(index, session, { layer, q: marker });
+          assert.deepEqual(hits.events.filter(e => e.hasSearchHit).map(e => e.id), layer === owner.layer ? [owner.id] : []);
+        }
+      }
+    });
+  }
+});
+
+test('scoped MCP registration rejects incompatible peer rows and names outside producer limits', async (t) => {
+  const make = (id, server, tool, extra) => [
+    response({ type: 'function_call', call_id: id, namespace: 'mcp__106cd32d0170__' + server, name: tool, arguments: '{}' }),
+    typed({ type: 'McpToolCall', id, server, tool, environmentId: 'synthetic-registration-scope', status: 'failed' }),
+    ...(extra ? [event({ ...extra, call_id: id })] : []),
+    response({ type: 'function_call_output', call_id: id, output: 'result' }),
+  ];
+  const cases = [
+    make('minus', 'my-notes', 'echo'), make('long', 'notes', 'x'.repeat(103)),
+    make('cmd', 'notes', 'echo', { type: 'exec_command_end', exit_code: 0 }),
+    make('collision', 'notes', 'echo', { type: 'mcp_tool_call_end',
+      invocation: { server: 'notes', tool: 'echo', environment_id: 'other' } }),
+  ];
+  for (const conflict of [{ name: 'different' }, { namespace: 'functions' }]) {
+    const rows = make('output-' + Object.keys(conflict)[0], 'notes', 'echo');
+    Object.assign(rows.at(-1).payload, conflict);
+    cases.push(rows);
+  }
+  for (const status of [undefined, 'inProgress', 'unrecognized']) {
+    const rows = make('status-' + status, 'notes', 'echo');
+    rows[1].payload.item.status = status;
+    cases.push(rows);
+  }
+  const f = await fixture(t, cases.flat());
+  const index = await codex.buildIndex(f.options);
+  const session = index.sessionsById.get(ID);
+  let typedLine = 4;
+  for (const rows of cases) {
+    const owner = session.logicalEvents.find(e => e.rawRefs.some(r => r.line === typedLine));
+    assert.equal(owner.layer, 'protocol');
+    assert.deepEqual(owner.rawRefs.map(r => r.line), [typedLine]);
+    typedLine += rows.length;
+  }
+});
+
 test('typed tool outcomes preserve semantic status, counts, files and search across Legacy/Paginated/mixed paths', async (t) => {
   for (const scenario of scenarios()) {
     await t.test(scenario.id, async (t) => {

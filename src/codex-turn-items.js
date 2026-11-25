@@ -1,5 +1,23 @@
 'use strict';
 
+const { createHash } = require('node:crypto');
+
+function hasGeneratedImageFile(item) {
+  return item?.type === 'Extension' && item.kind === 'image_gen.generation'
+    && typeof item.fileId === 'string' && item.fileId.trim() !== '';
+}
+
+function imageFilePeer(raw) {
+  if (raw.recordType === 'response_item') {
+    if (raw.payloadType === 'function_call') {
+      const { name, namespace } = raw.parsed.payload;
+      return name === 'imagegen' && (namespace == null || namespace === 'image_gen');
+    }
+    return raw.payloadType === 'function_call_output' || raw.payloadType === 'image_generation_call';
+  }
+  return raw.recordType === 'event_msg' && ['image_generation_begin', 'image_generation_end'].includes(raw.payloadType);
+}
+
 // Pinned producer: rust-v0.160.0 protocol/src/items.rs and core/src/tools/events.rs.
 // These are semantic views, never replacements for the persisted Raw record.
 // Only tool types whose producer assigns id = call_id can join call groups.
@@ -46,7 +64,9 @@ function typedItemRecord(record, sessionId) {
       break;
     case 'Extension':
       if (i.kind === 'image_gen.generation') {
-        if (typeof i.status !== 'string' || typeof i.result !== 'string') return null;
+        // 0.172's extension writer can keep an attachment-store ID on successful completion.
+        const fileCompletion = i.status === 'completed' && hasGeneratedImageFile(i);
+        if (typeof i.status !== 'string' || (typeof i.result !== 'string' && !fileCompletion)) return null;
         payload = { ...i, type: ['completed', 'failed'].includes(i.status) ? 'image_generation_end' : 'image_generation_call_update', call_id: i.id, name: 'image_generation', revised_prompt: i.revisedPrompt, saved_path: i.savedPath };
         if (i.failure) payload.status = 'failed';
       } else if (i.kind === 'clock.sleep' && Number.isSafeInteger(i.durationMs) && i.durationMs >= 0) {
@@ -109,6 +129,20 @@ function turnBoundaryEpochs(rawEvents) {
   return epochs;
 }
 
+// codex-mcp/src/tools.rs prefixes an environment-qualified callable namespace
+// with the first twelve hex digits of SHA-1(environment). Connector aliases,
+// sanitized names and collision suffixes need separate registration evidence.
+function matchesScopedMcpCall(raw, item) {
+  const call = raw.parsed.payload;
+  if (call.type !== 'function_call' || call.name !== item.tool
+      || typeof item.environmentId !== 'string' || !item.environmentId || item.environmentId.length > 4096
+      || !/^[A-Za-z0-9_]{1,128}$/.test(item.server) || !/^[A-Za-z0-9_]{1,128}$/.test(item.tool)
+      || typeof call.namespace !== 'string' || call.namespace.length + 2 + call.name.length > 128) return false;
+  const scope = createHash('sha1').update(item.environmentId).digest('hex').slice(0, 12);
+  const namespace = `${scope}__${item.server}`;
+  return call.namespace === namespace || call.namespace === `mcp__${namespace}`;
+}
+
 // Ambiguous repeated identities are inspectable Protocol records. Never choose
 // one call owner from duplicate items, conflicting turns or copied histories.
 function semanticRawEvents(rawEvents) {
@@ -125,7 +159,8 @@ function semanticRawEvents(rawEvents) {
     const key = JSON.stringify([raw.sessionId, item.id]);
     typedCounts.set(key, (typedCounts.get(key) || 0) + 1);
   }
-  return rawEvents.map((raw) => {
+  const scopedCallNames = new Map();
+  const semantic = rawEvents.map((raw) => {
     const view = semanticRaw(raw);
     if (view === raw) return raw;
     const key = JSON.stringify([raw.sessionId, raw.parsed.payload.item.id]);
@@ -138,6 +173,25 @@ function semanticRawEvents(rawEvents) {
           || (peer.turnId && view.turnId && peer.turnId !== view.turnId))) return { ...raw, callId: '' };
       const callName = calls[0]?.toolName;
       const item = raw.parsed.payload.item;
+      if (hasGeneratedImageFile(item) && peers.some((peer) => !imageFilePeer(peer))) return { ...raw, callId: '' };
+      const scoped = item.type === 'McpToolCall' && item.environmentId != null && calls[0]?.parsed?.payload?.namespace != null;
+      if (scoped) {
+        const call = calls[0];
+        const output = peers[1];
+        const outputPayload = output?.parsed?.payload;
+        if (raw.parsed.payload.thread_id !== raw.sessionId || !view.turnId || !['completed', 'failed'].includes(item.status)
+            || !matchesScopedMcpCall(call, item)
+            || peers[0] !== call || call.line >= raw.line || peers.length > 2
+            || (output && (output.recordType !== 'response_item' || output.payloadType !== 'function_call_output'
+              || (outputPayload.name != null && outputPayload.name !== item.tool)
+              || (outputPayload.namespace != null && outputPayload.namespace !== call.parsed.payload.namespace)))) {
+          return { ...raw, callId: '' };
+        }
+        // Use the validated callable identity during projection. Short names like
+        // wait and create_goal also exist in the native tool catalog.
+        scopedCallNames.set(call, `${call.parsed.payload.namespace}__${item.tool}`);
+        return view;
+      }
       const compatible = !callName || callName === view.toolName
         || (item.type === 'CommandExecution' && ['shell', 'exec_command', 'write_stdin', 'functions.exec_command', 'functions.shell_command', 'functions.write_stdin'].includes(callName))
         || (item.type === 'FileChange' && callName === 'functions.apply_patch')
@@ -149,6 +203,8 @@ function semanticRawEvents(rawEvents) {
     }
     return view;
   });
+  return scopedCallNames.size ? semantic.map(raw => scopedCallNames.has(raw)
+    ? { ...raw, toolName: scopedCallNames.get(raw) } : raw) : semantic;
 }
 
 // Startup evidence is deliberately separate from requested tool arguments.
@@ -208,4 +264,4 @@ function additionalToolsSummary(payload) {
   return { valid: payload?.type === 'additional_tools' && payload.role === 'developer' && Array.isArray(payload.tools), entries: tools.length, count, names, unsupported, incomplete, shortened: incomplete || names.length >= 24 };
 }
 
-module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary };
+module.exports = { typedItemRecord, semanticRaw, semanticRawEvents, turnBoundaryEpochs, resolvedSubAgentStartup, additionalToolsSummary, hasGeneratedImageFile };
