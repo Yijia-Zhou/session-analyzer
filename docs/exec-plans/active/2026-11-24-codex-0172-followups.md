@@ -109,6 +109,12 @@ Two synthetic sessions exercised all six findings and the independent reviewers'
 
 Local integration on code tree `c1cb2b98` passed 2,973 Node tests with 24 skips. The build and generated-asset check passed. The Chromium run passed 459 tests with two skips and one failure in “Read from here”. The compatibility scenario passed in both languages and presentations. An independent browser comparison reproduced the navigation failure at the pre-fix baseline `00b1075`. Both trees returned identical Timeline and Detail data for the selected patch. The navigation fix is tracked separately. / 本地代码树 `c1cb2b98` 的 Node 回归通过 2,973 项、跳过 24 项，构建和生成文件检查通过。Chromium 通过 459 项、跳过 2 项，“从此处阅读”导航失败 1 项。本轮兼容场景在双语及两种视图中均通过。独立浏览器对照在修复前基线 `00b1075` 复现导航错误；两棵树返回的选中补丁 Timeline 与 Detail 数据完全一致。导航问题单独修复。
 
+### Read from here / 从此处阅读
+
+On both `00b1075` and the compatibility candidate, a pending search highlight could select the first failed command while navigation restored a selected failed patch. The separate browser fix cancels that pending refresh when the reader invokes “Read from here”. A Playwright clock and a held navigation request reproduce the ordering. The tests check the original event, preserved search text, cleared filters, and a user choosing another event during restoration. / 在 `00b1075` 和兼容性候选上，待执行的搜索高亮刷新都可能在导航恢复已选失败补丁时改选首条失败命令。独立的浏览器修复在用户执行“从此处阅读”时取消这次刷新。测试用 Playwright 时钟和受控的导航请求复现先后顺序，核验原选中项、保留的搜索文本、清除的筛选及恢复期间用户主动选择的另一事件。
+
+The final local build passed `build:check`. The full Node suite passed 2,973 tests and skipped 24. The full Chromium suite passed 461 tests and skipped two, including passes for both navigation orderings above. Neither suite reported a failure. Remote CI was not run for these local commits. / 本地最终构建通过 `build:check`。Node 全套通过 2,973 项，跳过 24 项。Chromium 全套通过 461 项，跳过 2 项，上述两种导航时序均通过。两套测试均为零失败。本轮本地提交尚无远端 CI 结果。
+
 ## Acceptance units and remaining scope / 验收单元与后续范围
 
 The first seven rows describe the accepted foundation fixes. The last three are open and independently scoped. Convert the smallest case from the linked manual probes into a focused regression **before** changing production behavior. Validate Raw identity, event counts and actual search results on uncompacted, compact, cold materialized and verified reuse paths. For Main/detail changes, add bilingual Timeline/Trajectory and History CLI checks, with an older input as a negative control. / 前七项为本轮基础修复，最后三项继续独立规划。先将最小反例转成回归，再改生产逻辑；四条读取路径均验物理 Raw、事件数与检索结果。涉及主层或详情时验双语两种视图、CLI 及旧输入对照。

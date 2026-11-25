@@ -210,6 +210,8 @@ Visible-detail scheduling intersects the single measured timeline-pane rectangle
 
 ### Browser state and invalidation boundaries / 浏览器状态与失效边界
 
+`Read from here` captures the selected event before clearing structured filters. It cancels the pending highlight refresh from the previous search input, because clearing filters can return to the same query and let that refresh select the first hit while navigation is loading. A new user selection during restoration still takes precedence. / “从此处阅读”在清除结构化筛选前记录选中事件，并取消上一次输入尚未执行的高亮刷新。清除筛选可能回到相同查询，旧刷新会在导航加载期间选中首个命中。恢复期间若用户主动选择另一事件，以用户的新选择为准。
+
 | State / 状态 | Current responsibility / 当前职责 | Important coupling / 重要耦合 |
 | --- | --- | --- |
 | `timelineDataContext`, `currentEvents`, `currentEventsById`, `offset`, `timelineTotal` | One committed repository/scope/Session/Layer/query/filter/locale context; its materialized contiguous filtered prefix; a derived exact-object ID Map; and loaded/total counts / 单一已提交仓库／范围／会话／事件层／query／筛选／locale context；其已物化连续筛选前缀；派生的精确 object ID Map；以及已加载／总计 count | Context/array/Map/offset publish and retire together. The array owns order, paging, discovery, and traversal; the Map owns only exact canonical membership/retrieval. A different desired context may be pending while the rendered committed pair remains interactive. / Context／array／Map／offset 一起发布与 retire。Array 拥有排序、分页、发现与 traversal；Map 只拥有精确 canonical membership／retrieval。不同 desired context 可以 pending，同时已渲染 committed pair 继续可交互。 |
