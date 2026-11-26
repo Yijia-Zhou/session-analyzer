@@ -245,6 +245,17 @@ test('pending receipts and waits admit the same full generation-qualified cell i
   }
 });
 
+test('a late dynamic transport response keeps the current Code Mode cell available to wait', () => {
+  const foreign = raw(3, { recordType: 'event_msg', payloadType: 'dynamic_tool_call_response', turnId: 'previous-turn' });
+  const rows = [execCall(1, 'outer'), execOutput(2, 'outer', 'Script running with cell ID g2:14'),
+    foreign, waitCall(4, 'wait', 'g2:14'), waitOutput(5, 'wait', 'Script completed')];
+  const { operations, unassociatedWaits } = projectCodeModeOperations(rows);
+  assert.equal(operations.length, 1);
+  assert.equal(operations[0].observationState, 'terminal');
+  assert.equal(operations[0].phases.length, 2);
+  assert.equal(unassociatedWaits.length, 0);
+});
+
 test('parallel generations with the same local cell number keep distinct waits and output refs', () => {
   const pending = id => `Script running with cell ID ${id}`;
   const projection = projectCodeModeOperations([

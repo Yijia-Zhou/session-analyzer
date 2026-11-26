@@ -2,9 +2,17 @@
 
 ### Reading Codex 0.172 sessions / 阅读 Codex 0.172 会话
 
+An environment-qualified tool request keeps its recorded name in Main and search, including when it shares a short name with a native command or agent tool. A request with no result is incomplete. An ordinary output records that the call returned. Matching MCP terminals establish success or failure when their outcomes agree. If the typed and legacy terminals disagree, each stays individually searchable in Protocol with its own Raw reference. / 环境限定工具请求在 Main 和搜索中保留限定名称，即使它与原生命令或 agent 工具同名。只有请求时显示未完成，普通输出表示调用已返回。匹配的 MCP 终态可判定成功或失败。若带类型终态与旧式终态结论冲突，两条记录分别保留在 Protocol 中，可独立搜索并回查对应的 Raw。
+
+When a call ID belongs to an environment-qualified request, a receipt naming a different tool or namespace stays searchable in Protocol. An identified MCP or dynamic decline appears as `declined` even without an output. A verified failure remains visible on its request when another environment or the other call channel has records with that ID. A collaboration event with a conflicting sender or a receiver outside the request's declared thread IDs keeps its own Protocol entry. / 对环境限定请求的调用 ID，显式指向另一工具或命名空间的回执可在 Protocol 中独立检索。已核实归属的 MCP 或动态调用拒绝记录即使没有输出也显示为 `declined`。其他环境或另一调用通道复用该 ID 时，已核实的失败仍显示在对应请求上。协作事件的发送线程冲突，或接收线程超出请求明确指定的线程范围时，该事件独立保留在 Protocol。
+
+A unique historical MCP function keeps its recorded qualified name in Main and search even if several environment-qualified custom requests share its ID. Its ordinary receipt establishes completion. A verified MCP outcome can establish success or failure. For an environment-qualified request or a historical function sharing its ID with such a request, a terminal naming a different registration, environment or comparable argument value keeps its own Protocol entry and Raw reference. / 历史 MCP 函数请求唯一时，即使多个环境限定的 custom 请求复用其 ID，Main 和搜索也保留函数记录的限定名称。普通回执表示调用已返回，可核验的 MCP 终态可确定成功或失败。对环境限定的请求及与其复用 ID 的历史函数，注册身份、环境或可比参数值相冲突的终态均保留独立的 Protocol 条目及 Raw 引用。
+
 A submitted question may contain protocol-looking markup. When the native input and its mirrors establish authorship, Main, user counts and History search include the question once. A marked heartbeat and a verified TUI Side Chat bootstrap are inspectable in Protocol and Raw. Source attribution describes how Codex recorded the input. / 提交的问题可以包含形似协议标签的正文。原生输入与镜像能够确认来源时，主层、用户计数和 History 检索均只计一次。带标记的 heartbeat 及经验证的 TUI 旁聊引导可在 Protocol 和 Raw 中检查。来源归属描述 Codex 记录输入的方式。
 
 Code Mode waits can identify a cell by generation and number. Their batches are searchable under the original execution when that identity resolves uniquely. A recorded generated-image file can establish completion independently of preview availability. A matching environment-scoped MCP completion supplies the tool outcome. A uniquely identified sealed realtime frame with a valid voice transcript appears under its recorded speaker role, with its own physical evidence. / Code Mode 等待可用代次和编号标识 cell；唯一匹配时，各批输出可从原执行检索。已记录的生成图片文件可独立证明完成，预览取决于可读内容。匹配的环境限定 MCP 完成记录可确定工具终态。已封存的实时帧具有唯一身份及有效语音转录时，按记录的说话角色呈现，并保留独立物理依据。
+
+Raw detail uses the recorded namespace to choose how to present tool input. A namespaced tool called `shell_command`, `apply_patch` or `js_repl` shows its recorded payload. The dedicated command, patch and JavaScript sections apply to native tools. / Raw 详情按已记录命名空间选择工具输入的展示方式。其他命名空间下名为 `shell_command`、`apply_patch` 或 `js_repl` 的工具显示其记录的 payload。原生工具使用专门的命令、补丁和 JavaScript 分区。
 
 ### Codex recorded configuration inspection / Codex 已记录配置检查
 

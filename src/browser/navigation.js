@@ -71,7 +71,8 @@
     { id: 'patch_failed', label: 'Patch failed', matches: (event) => event.kind === 'patch' && event.status === 'failed' },
     { id: 'patches', label: 'All patches', matches: (event) => event.kind === 'patch' },
     { id: 'errors_warnings', label: 'Errors / warnings', matches: (event) => event.severity !== 'normal' || event.status === 'failed' || ['error', 'abort', 'rollback', 'compaction'].includes(event.kind) },
-    { id: 'mcp_calls', label: 'MCP calls', matches: (event) => event.kind === 'mcp_call' || String(event.toolName || '').startsWith('mcp__') },
+    { id: 'mcp_calls', label: 'MCP calls', matches: (event) => event.kind === 'mcp_call'
+      || (!(event.sourceKind === 'codex' && event.kind === 'other_tool_call') && String(event.toolName || '').startsWith('mcp__')) },
     { id: 'web_searches', label: 'Web searches', matches: (event) => event.kind === 'web_search' },
   ];
 

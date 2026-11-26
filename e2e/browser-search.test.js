@@ -2476,10 +2476,17 @@ test('browser assist filter transition keeps the next free-text edit on the find
   assert.equal(requestedUrls.slice(requestStart).some((value) => value.startsWith('/api/sessions?')), false);
 });
 
-test('browser read from here clears structured filters and preserves free text', async (t) => {
+for (const [name, selectAnotherEvent] of [
+  ['browser read from here clears structured filters and preserves free text', false],
+  ['browser read from here yields to a newer selection while restoring focus', true],
+]) test(name, async (t) => {
   const index = await buildFixtureIndex();
-  const { page } = await openApp(t, index);
+  const clockStart = Date.UTC(2026, 0, 1);
+  const { page } = await openApp(t, index, {
+    beforeGoto: (page) => page.clock.install({ time: clockStart }),
+  });
   await selectPrimarySession(page);
+  await page.clock.pauseAt(clockStart + 60_000);
 
   await fillSearch(page, 'failed');
   await addSearchFilter(page, 'kind', 'patch');
@@ -2487,13 +2494,35 @@ test('browser read from here clears structured filters and preserves free text',
     const events = [...document.querySelectorAll('#timeline .event[data-event-id]')];
     return events.length > 0 && events.every((event) => event.classList.contains('kind-patch'));
   });
-  await page.locator('#timeline .event.kind-patch.status-failed').first().click();
+  const patch = page.locator('#timeline .event.kind-patch.status-failed').first();
+  let expectedId = await patch.getAttribute('data-event-id');
+  await patch.click();
   await page.waitForSelector('[data-detail-action="read-from-here"]');
-  const selectedId = await page.locator('#timeline .event.selected').first().getAttribute('data-event-id');
 
+  const navigationGate = deferred();
+  const isContextNavigation = (url) => url.pathname.endsWith('/timeline')
+    && url.searchParams.get('limit') === '500'
+    && url.searchParams.get('q') === 'failed' && !url.searchParams.has('kind');
+  await page.route(isContextNavigation, async (route) => {
+    await navigationGate.promise;
+    await route.continue().catch(() => {});
+  });
+  t.after(() => navigationGate.resolve());
+  const navigationStarted = page.waitForRequest((request) => isContextNavigation(new URL(request.url())));
   await page.locator('[data-detail-action="read-from-here"]').click();
+  await navigationStarted;
   await expectInputValue(page, '#searchInput', 'failed');
   await expectInputValue(page, '#layerSelect', 'main');
   await assertEventCount(page, 29);
-  await page.waitForFunction((id) => document.querySelector('#timeline .event.selected')?.dataset.eventId === id, selectedId);
+  if (selectAnotherEvent) {
+    const other = page.locator('#timeline .event.kind-patch:not(.status-failed)').first();
+    expectedId = await other.getAttribute('data-event-id');
+    await other.click();
+  }
+  // Deliver the pending search callbacks after the filter round trip while focus restoration awaits navigation.
+  await page.clock.fastForward(1_000);
+  navigationGate.resolve();
+  await page.clock.resume();
+  await page.waitForLoadState('networkidle');
+  assert.equal(await page.locator('#timeline .event.selected').getAttribute('data-event-id'), expectedId);
 });

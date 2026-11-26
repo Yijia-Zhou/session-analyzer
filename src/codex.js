@@ -4140,9 +4140,11 @@ function rawToolSections(raw, relatedEvent, session = {}) {
     return { sections: [...detail.timelineSections, ...detail.inspectorSections], omitPayloadKeys };
   }
   sections.push(...recordedTruncationSections([raw]));
-  const toolName = raw.toolName || relatedEvent?.toolName || relatedEvent?.subtype || '';
+  const namespace = raw.parsed?.payload?.namespace;
+  const nativeToolName = namespace == null || namespace === '' || namespace === 'functions'
+    ? raw.toolName || relatedEvent?.toolName || relatedEvent?.subtype || '' : '';
 
-  if (raw.recordType === 'response_item' && raw.payloadType === 'function_call' && toolName === 'shell_command') {
+  if (raw.recordType === 'response_item' && raw.payloadType === 'function_call' && nativeToolName === 'shell_command') {
     const args = commandArgsFromRaw(raw);
     const commandText = commandToText(args?.command);
     maybePushCodeSection(sections, 'Command', commandText, inferCommandLanguage(commandText, args, commandLanguageContext(session)));
@@ -4181,7 +4183,7 @@ function rawToolSections(raw, relatedEvent, session = {}) {
     if (stdout) maybePushParsedOutputSection(sections, 'stdout (structured)', stdout);
     if (raw.stderr) maybePushParsedOutputSection(sections, 'stderr (structured)', raw.stderr);
     omitPayloadKeys.push('command', 'cwd', 'stdout', 'stderr', 'aggregated_output', 'formatted_output', 'exit_code', 'duration', 'status');
-  } else if (raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call' && toolName === 'apply_patch') {
+  } else if (raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call' && nativeToolName === 'apply_patch') {
     if (String(raw.output || '').trim() && !maybePushPatchSection(sections, 'Patch', raw.output)) sections.push({ type: 'diff', title: 'Patch', text: String(raw.output).trim() });
     omitPayloadKeys.push('input');
   } else if (raw.recordType === 'event_msg' && raw.payloadType === 'patch_apply_end') {
@@ -4211,7 +4213,7 @@ function rawToolSections(raw, relatedEvent, session = {}) {
       { key: 'durationMs', value: envelope?.metadata?.duration_seconds == null ? '' : String(Math.round(Number(envelope.metadata.duration_seconds) * 1000)) },
     ]);
     omitPayloadKeys.push('output');
-  } else if (raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call' && toolName === 'js_repl') {
+  } else if (raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call' && nativeToolName === 'js_repl') {
     maybePushCodeSection(sections, 'JavaScript', raw.output, 'javascript');
     omitPayloadKeys.push('input');
   } else if (raw.recordType === 'response_item' && raw.payloadType === 'custom_tool_call_output' && relatedEvent?.kind === 'js_repl') {
@@ -5151,6 +5153,7 @@ async function parseSessionFile(filePath, relFile, repoRoot, signal, options = {
       }
       const embeddedImages = [];
       const canonicalDigest = includeCanonicalRawDigests ? canonicalRawRecordDigest(record) : '';
+      codexMessageEvidence.captureToolArgumentEvidence(record, line);
       const attachmentSummary = codexMessageEvidence.summarizeCodexAttachments(
         codexMessageEvidence.typedItemRecord(record, session.id)?.payload || record.payload,
       );

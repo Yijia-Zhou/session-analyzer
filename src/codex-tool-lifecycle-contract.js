@@ -102,6 +102,10 @@ function isToolLifecycleFamily(wireType, family) {
   return toolLifecycleDescriptorFor(wireType)?.family === family;
 }
 
+function isDynamicTransport(row) {
+  return row?.recordType === 'event_msg' && (row.payloadType === 'dynamic_tool_call_request' || row.payloadType === 'dynamic_tool_call_response');
+}
+
 function isToolLifecycleCallGroupType(wireType) {
   return toolLifecycleDescriptorFor(wireType)?.callGroupAdmission === true;
 }
@@ -119,6 +123,7 @@ module.exports = {
   TOOL_LIFECYCLE_EVENT_TYPES,
   TOOL_LIFECYCLE_FAMILY,
   TOOL_LIFECYCLE_PHASE,
+  isDynamicTransport,
   isToolLifecycleCallGroupType,
   isToolLifecycleEventType,
   isToolLifecycleFamily,

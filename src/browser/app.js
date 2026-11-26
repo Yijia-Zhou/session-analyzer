@@ -10029,6 +10029,9 @@ function refreshSearchSensitiveDetailView() {
 async function readFromSelectedEvent() {
   const anchor = { ...captureFocusAnchor(), detailType: 'inspector' };
   if (!anchor.hadSelection) return;
+  // Clearing filters can restore the search key that queued a passive first-hit selection.
+  clearTimeout(state.searchHighlightTimer);
+  state.searchHighlightTimer = 0;
   resetDetailPane();
   hideSearchAssist();
   state.searchScope = 'session';

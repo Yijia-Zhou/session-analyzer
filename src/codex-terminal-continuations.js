@@ -218,4 +218,4 @@ function backgroundTerminalFactsForEvent(session, eventId) {
   return origin ? { ...fact, originEventId: relation.originEventId, commandPreview: origin.commandPreview } : { ...fact };
 }
 
-module.exports = { terminalSourceEvidence, parseTerminalReceipt, parseNativeCommandOutput, nativeExecCommandArguments, buildTerminalContinuations, backgroundTerminalFactsForEvent };
+module.exports = { terminalSourceEvidence, parseTerminalReceipt, parseNativeCommandOutput, uniqueArguments, nativeExecCommandArguments, buildTerminalContinuations, backgroundTerminalFactsForEvent };
